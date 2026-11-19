@@ -322,12 +322,19 @@ gui_deps() {
   say "installing xvfb, Electron's shared libraries and ffmpeg"
   # GitHub's Ubuntu image rebuilds the man-db index on every install (minutes): skip it there.
   [ -n "$SUDO" ] && $SUDO rm -f /var/lib/man-db/auto-update
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1
   local pkgs="xvfb xauth libnss3 libgbm1 libxss1 libxtst6 libdrm2 libxkbcommon0 libatk-bridge2.0-0 libxshmfence1"
   command -v ffmpeg >/dev/null || pkgs="$pkgs ffmpeg"
-  pkgs="$pkgs $(pick_pkg libgtk-3-0t64 libgtk-3-0) $(pick_pkg libasound2t64 libasound2) $(pick_pkg libcups2t64 libcups2)"
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $pkgs >/dev/null 2>&1
-  say "apt install exit: $? ($pkgs)"
+  local try rc=1
+  for try in 1 2 3; do
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$WORK/apt.out" 2>&1
+    [ "$try" = 1 ] && pkgs="$pkgs $(pick_pkg libgtk-3-0t64 libgtk-3-0) $(pick_pkg libasound2t64 libasound2) $(pick_pkg libcups2t64 libcups2)"
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $pkgs >>"$WORK/apt.out" 2>&1
+    rc=$?
+    say "apt install try $try exit: $rc ($pkgs)"
+    [ $rc -eq 0 ] && break
+    grep -E '^(E|W):' "$WORK/apt.out" | tail -4 | cut -c1-300 | sed 's/^/S1:   /'
+    sleep 20
+  done
 }
 
 make_fixture() {

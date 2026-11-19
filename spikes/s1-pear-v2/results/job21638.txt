@@ -1,0 +1,66 @@
+# kata-run job 21638 (agentrun, Kata VM, root), run.sh trials, 2026-11-19 12:01Z. Result lines only.
+npm ci: 0
+S1: == env
+S1: os: Debian GNU/Linux 12 (bookworm)
+S1: kernel: 6.18.63 arch: x86_64
+S1: id: uid=0(root) gid=0(root) groups=0(root)
+S1: nproc: 12 mem: 8151752 kB
+S1: status: NoNewPrivs: 1 Seccomp: 2 
+S1: node: v24.21.0 npm: 11.19.0
+S1: disk: 478G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U fails
+S1: sysctl: unprivileged_userns_clone=n/a apparmor_restrict_unprivileged_userns=n/a max_user_namespaces=31831
+S1: runner: kata agentrun
+S1: == Q2: re-home the pinned platform onto a release line we control
+S1: release line ready after 330s
+S1 {"tag":"release-line","t":321,"key":"4nk5dbor888my38r6h3dfxfmkjpr9kcibofrwwewjqhwaqmzqybo","length":1572,"fork":0,"files":1571,"added":1571,"bytesAdded":115660077,"sourceLength":3243,"version":"2.6.5"}
+S1 {"tag":"release-line-seeding","t":325,"discoveryKey":"980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686"}
+S1: release-line bootstrap ok
+S1: state[trial default: start]: current -> pear-rl-default/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/1; checkout: length 1572 fork 0
+S1: == Q2 trial [default]: sidecar args: none; app run flags: none
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"file://<repo>/spikes/s1-pear-v2/apps/terminal","key":null,"dev":false,"platform":{"key":"4nk5dbor888my38r6h3dfxfmkjpr9kcibofrwwewjqhwaqmzqybo","length":1572,"fork":0},"app":{"length":0,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5"}}
+S1: trial-default-run exit: 0
+S1 {"tag":"release-line-appended","t":361,"n":1,"length":1574,"version":"2.6.5-s1.1"}
+S1: trial [default] live sidecar, after 15s, update lines:
+S1:   - Updating to length 1574... [+12636.4832ms]
+S1:   Platform update available. Restart to update to: [+1550.0006ms]
+S1:   ✔ Applied update [+2.2768ms]
+S1:   ✔ Applied update [+2.2768ms]
+S1: state[trial default: after its sidecar shut down]: current -> pear-rl-default/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/2; checkout: length 1574 fork 0
+S1: trial [default] next normal sidecar, after 150s, update lines:
+S1: state[trial default: after a normal sidecar restart]: current -> pear-rl-default/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/2; checkout: length 1574 fork 0
+S1: release-line bootstrap ok
+S1: state[trial no-updates: start]: current -> pear-rl-no-updates/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/1; checkout: length 1574 fork 0
+S1: == Q2 trial [no-updates]: sidecar args: none; app run flags: --no-updates
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"file://<repo>/spikes/s1-pear-v2/apps/terminal","key":null,"dev":false,"platform":{"key":"4nk5dbor888my38r6h3dfxfmkjpr9kcibofrwwewjqhwaqmzqybo","length":1574,"fork":0},"app":{"length":0,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5-s1.1"}}
+S1: trial-no-updates-run exit: 0
+S1 {"tag":"release-line-appended","t":576,"n":2,"length":1576,"version":"2.6.5-s1.2"}
+S1: trial [no-updates] live sidecar, after 15s, update lines:
+S1:   - Updating to length 1576... [+12558.922ms]
+S1:   Platform update available. Restart to update to: [+1603.6388ms]
+S1:   ✔ Applied update [+2.5493ms]
+S1:   ✔ Applied update [+2.5493ms]
+S1: state[trial no-updates: after its sidecar shut down]: current -> pear-rl-no-updates/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/2; checkout: length 1576 fork 0
+S1: trial [no-updates] next normal sidecar, after 150s, update lines:
+S1: state[trial no-updates: after a normal sidecar restart]: current -> pear-rl-no-updates/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/2; checkout: length 1576 fork 0
+S1: release-line bootstrap ok
+S1: state[trial key-unseeded: start]: current -> pear-rl-key-unseeded/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/1; checkout: length 1576 fork 0
+S1: == Q2 trial [key-unseeded]: sidecar args: --key s9a8p7sob6574r3thaiprijuts4qzggo5zfus38rscjyrjndapzo; app run flags: none
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"file://<repo>/spikes/s1-pear-v2/apps/terminal","key":null,"dev":false,"platform":{"key":"4nk5dbor888my38r6h3dfxfmkjpr9kcibofrwwewjqhwaqmzqybo","length":1576,"fork":0},"app":{"length":0,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5-s1.2"}}
+S1: trial-key-unseeded-run exit: 0
+S1 {"tag":"release-line-appended","t":790,"n":3,"length":1578,"version":"2.6.5-s1.3"}
+S1: trial [key-unseeded] live sidecar, after 240s, update lines:
+S1: state[trial key-unseeded: after its sidecar shut down]: current -> pear-rl-key-unseeded/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/1; checkout: length 1576 fork 0
+S1: trial [key-unseeded] next normal sidecar, after 15s, update lines:
+S1:   - Updating to length 1578... [+2069.2513ms]
+S1:   Platform update available. Restart to update to: [+1561.9541ms]
+S1:   ✔ Applied update [+2.4917ms]
+S1: state[trial key-unseeded: after a normal sidecar restart]: current -> pear-rl-key-unseeded/by-dkey/980754b9da8c3d7b601b9f5fbbf59fe87a8a147f32a9f35b46d7a10651be2686/2; checkout: length 1578 fork 0
+KATA_RUN_RC=0
