@@ -1,5 +1,7 @@
-# Spike S1 (docs/spikes/S1-pear-v2-pin.md), on demand only: runs one phase of the harness in
-# spikes/s1-pear-v2 on a throwaway GitHub runner, as a non-root user. It downloads and runs the Pear
+# Spike S1 (docs/spikes/S1-pear-v2-pin.md), on demand only: runs phases of the harness in
+# spikes/s1-pear-v2 on throwaway GitHub runners, as a non-root user. GitHub dispatches only workflows
+# that exist on the default branch, so a push to the spike branch that changes this file also runs
+# it (both phases); it never runs on main or on other branches. It downloads and runs the Pear
 # v2.6.5 platform and its Electron, pinned by drive length; the job log records their sha256.
 #
 # Build and test only: no seeding, no staged pear:// link (S1_GUI_LINK=0), no secrets, a read-only
@@ -7,6 +9,9 @@
 name: s1-pear-v2
 
 on:
+  push:
+    branches: [spike/s1-pear-v2]
+    paths: [.github/workflows/s1-pear-v2.yml]
   workflow_dispatch:
     inputs:
       phase:
@@ -25,6 +30,10 @@ jobs:
   s1:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.phase)) || fromJSON('["gui","stock"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,10 +41,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-      - name: run.sh ${{ inputs.phase }}
+      - name: run.sh ${{ matrix.phase }}
         working-directory: spikes/s1-pear-v2
         env:
-          PHASE: ${{ inputs.phase }}
+          PHASE: ${{ matrix.phase }}
           PIN_LENGTH: '3243'
           PIN_FORK: '0'
           S1_GUI_LINK: '0'

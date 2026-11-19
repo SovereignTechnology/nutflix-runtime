@@ -384,6 +384,13 @@ phase_gui() {
   fi
   say "== Q5: ask for the sandbox (pear run --sandbox), as $who"
   gui_run "sandbox-$who" 300 "$HERE/apps/gui" --sandbox
+  if [ "$who" = user ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+    # Ubuntu 24.04 blocks unprivileged user namespaces for unconfined binaries; Debian does not.
+    # Throwaway runner only: lift the block and ask for the sandbox again.
+    $SUDO sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0
+    say "== Q5: --sandbox again with unprivileged user namespaces allowed (userns: $(unshare -U true 2>/dev/null && echo works || echo fails))"
+    gui_run sandbox-user-userns 300 "$HERE/apps/gui" --sandbox
+  fi
   current_state "end of gui"
   stop_all_pear
 }
