@@ -29,7 +29,7 @@
  
  // mobile doesn't have the executable path (argv[0])
  // and the worker entry path (argv[1]) in the workers argv‘s
-@@ -23,19 +38,176 @@
+@@ -23,19 +38,191 @@
    app: argv(5) // argv[5] is undefined in mobile
  }
  
@@ -192,13 +192,28 @@
 -  swarm.join(pear.updater.drive.core.discoveryKey, {
 +  swarm.on('connection', (connection) => {
 +    store.replicate(connection)
-+    log('swarm-connection', { connections: swarm.connections.size })
++    log('swarm-connection', {
++      connections: swarm.connections.size,
++      remote: hid.encode(connection.remotePublicKey)
++    })
 +    connection.on('close', () => log('swarm-close', { connections: swarm.connections.size }))
 +  })
 +  const discovery = swarm.join(pear.updater.drive.core.discoveryKey, {
      client: true,
      server: false
    })
++  // S2: a second path to the test's own seeder, by its swarm key (written by the harness), for
++  // when the topic lookup between two firewalled peers in one VM finds nothing.
++  const SEEDER = path.join(updaterConfig.dir, 's2-seeder.txt')
++  if (fs.existsSync(SEEDER)) {
++    const seeder = b4a.toString(fs.readFileSync(SEEDER)).trim()
++    try {
++      swarm.joinPeer(hid.decode(seeder))
++      log('join-peer', { seeder })
++    } catch (err) {
++      log('join-peer-error', { seeder, error: safe(err) })
++    }
++  }
 +  // S2: the test VM's HyperDHT lookups sometimes fail; without a peer the template would wait
 +  // ~15 min for its next lookup. Look again every 30 s while there is no connection.
 +  refreshTimer = setInterval(() => {
@@ -209,7 +224,7 @@
  }
  
  // An append on the app's drive doesn't check for an update straight away: the
-@@ -43,12 +215,201 @@
+@@ -43,12 +230,201 @@
  // so that a released fleet doesn't hit the seeder all at once. Forward the
  // delay so the app can say it is waiting rather than look inert — without it,
  // a staged update is indistinguishable from a broken updater for up to an hour.
@@ -413,7 +428,7 @@
    await swarm.destroy()
    await pear.close()
    await store.close()
-@@ -60,14 +421,9 @@
+@@ -60,14 +436,9 @@
      pipe.write('unknown-message ' + message)
      return
    }

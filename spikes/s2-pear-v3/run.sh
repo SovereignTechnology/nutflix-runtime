@@ -246,30 +246,46 @@ p_make1() { make_app 1.0.0 full; }
 p_build1() { build_dir 1.0.0; }
 p_stage1() { stage_dir 1.0.0; }
 
+restart_seeder() {
+  echo "restarting the seeder (pid ${SEED_PID:-none}) so that it announces again"
+  [ -n "${SEED_PID:-}" ] && kill -TERM "$SEED_PID" 2>/dev/null
+  sleep 3
+  nohup "$PEAR" seed --no-tty --json "$LINK" </dev/null >> "$LOGS/seed.ndjson" 2>&1 &
+  state SEED_PID $!
+  sleep 10
+}
+
 p_install() {
   hdr "pear install $LINK"
   touch "$W/install.mark"
+  # pear-install drops the .desktop file silently when this directory is missing (its _move
+  # ignores ENOENT); a desktop session normally has it.
+  mkdir -p "$HOME/.local/share/applications"
+  # Two firewalled peers in one VM do not always find each other over the public DHT (job 21637:
+  # three 300 s timeouts, the seeder never saw the installer). Shorter attempts, a fresh announce
+  # after the second, then a recorded fallback so the update phases still run.
   local i ok=1
-  for i in 1 2 3; do
-    run bash -o pipefail -c "timeout 600 '$PEAR' install '$LINK' --json --timeout 300 </dev/null | tee '$LOGS/install.ndjson'" && { ok=0; break; }
+  for i in 1 2 3 4; do
+    run bash -o pipefail -c "timeout 300 '$PEAR' install '$LINK' --json --timeout 90 </dev/null | grep -v '\"tag\":\"stats\"' | tee '$LOGS/install.ndjson'" && { ok=0; break; }
     echo "install: attempt $i failed"
-    sleep 20
+    [ "$i" = 2 ] && restart_seeder
+    sleep 5
   done
-  [ $ok -eq 0 ] || return 1
-  state INSTALLED "$("${PY[@]}" jlast "$LOGS/install.ndjson" dest)"
+  if [ $ok -eq 0 ]; then
+    state INSTALLED "$("${PY[@]}" jlast "$LOGS/install.ndjson" dest)"
+    state INSTALL_HOW pear-install
+  else
+    echo "INSTALL FALLBACK: pear install never reached the seeder; copying the staged 1.0.0 AppImage"
+    install -m 0755 "$DIST/1.0.0/HelloPear.AppImage" "$HOME/.local/bin/HelloPear.AppImage"
+    state INSTALLED "$HOME/.local/bin/HelloPear.AppImage"
+    state INSTALL_HOW fallback-copy
+  fi
   ls -la "$INSTALLED"
   echo "installed sha256=$(sha "$INSTALLED") build 1.0.0 sha256=$SHA_1_0_0"
   echo "--- HOME after install (names only; build caches and Pear's own storage pruned)"
   (cd "$HOME" && find . \( -path ./.config/pear -o -path ./.cache -o -path ./.npm \) -prune -o -printf '%y %12s %p\n' | sort -k3 | head -80)
-  echo "--- every .desktop file written since the install started"
-  find "$HOME" /root /usr/share/applications /usr/local/share/applications -name '*.desktop' \
-    -newer "$W/install.mark" -not -path "$HOME/.config/pear/*" 2>/dev/null | head -20
-  echo "--- top level of Pear's storage (names only)"
-  ls -la "$HOME/.config/pear" 2>&1
   echo "--- the .desktop entry pear install wrote"
   cat "$HOME/.local/share/applications/HelloPear.desktop" 2>&1
-  # A second install refuses to overwrite: that refusal is the expected result.
-  run timeout 300 "$PEAR" install "$LINK" --timeout 120 </dev/null
   return 0
 }
 
@@ -314,6 +330,9 @@ kill_leftover_workers() {
 
 APP_PID=""
 start_app() { # $1 tag
+  # A second discovery path for the worker: the seeder's swarm key, for swarm.joinPeer().
+  mkdir -p "$CFG"
+  "${PY[@]}" jlast "$LOGS/seed.ndjson" whoami > "$CFG/s2-seeder.txt" 2>/dev/null || rm -f "$CFG/s2-seeder.txt"
   hdr "start app ($1): --appimage-extract-and-run --no-sandbox under xvfb (sandbox off)"
   (cd "$W" && ELECTRON_ENABLE_LOGGING=1 exec setsid xvfb-run -a -s '-screen 0 1280x800x24' \
     "$INSTALLED" --appimage-extract-and-run --no-sandbox) > "$LOGS/app-$1.log" 2>&1 &

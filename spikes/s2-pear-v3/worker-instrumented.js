@@ -194,13 +194,28 @@ pear.updater.on('error', (err) => pipe.write('updater-error ' + err.message))
 if (updaterConfig.updates !== false) {
   swarm.on('connection', (connection) => {
     store.replicate(connection)
-    log('swarm-connection', { connections: swarm.connections.size })
+    log('swarm-connection', {
+      connections: swarm.connections.size,
+      remote: hid.encode(connection.remotePublicKey)
+    })
     connection.on('close', () => log('swarm-close', { connections: swarm.connections.size }))
   })
   const discovery = swarm.join(pear.updater.drive.core.discoveryKey, {
     client: true,
     server: false
   })
+  // S2: a second path to the test's own seeder, by its swarm key (written by the harness), for
+  // when the topic lookup between two firewalled peers in one VM finds nothing.
+  const SEEDER = path.join(updaterConfig.dir, 's2-seeder.txt')
+  if (fs.existsSync(SEEDER)) {
+    const seeder = b4a.toString(fs.readFileSync(SEEDER)).trim()
+    try {
+      swarm.joinPeer(hid.decode(seeder))
+      log('join-peer', { seeder })
+    } catch (err) {
+      log('join-peer-error', { seeder, error: safe(err) })
+    }
+  }
   // S2: the test VM's HyperDHT lookups sometimes fail; without a peer the template would wait
   // ~15 min for its next lookup. Look again every 30 s while there is no connection.
   refreshTimer = setInterval(() => {
