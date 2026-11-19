@@ -201,7 +201,7 @@ describe('NfxOriginServer + NfxOriginFiles', () => {
     for (const method of ['POST', 'PUT', 'DELETE']) {
       const r = await request(url, { method });
       expect(r.status, method).toBe(405);
-      expect(r.headers['allow'], method).toBe('GET, HEAD, OPTIONS');
+      expect(r.headers.allow, method).toBe('GET, HEAD, OPTIONS');
     }
   });
 
@@ -217,7 +217,7 @@ describe('NfxOriginServer + NfxOriginFiles', () => {
       `${hostPort}/${v.root}`,
       `${hostPort}/${v.root}/master.m3u8`,
       `${hostPort}/${'0'.repeat(32)}/${v.root}`,
-      `${base}`,
+      base,
       `${base}/`,
       `${base}/${other}`,
       `${base}/${other}/master.m3u8`,

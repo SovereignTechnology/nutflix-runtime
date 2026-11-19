@@ -141,7 +141,7 @@ export class WorkerClient {
   }
 
   private failAll(err: Error): void {
-    if (this.dead === null) this.dead = err;
+    this.dead ??= err;
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
       this.pending.delete(id);

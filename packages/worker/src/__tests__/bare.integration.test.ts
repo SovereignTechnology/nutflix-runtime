@@ -81,12 +81,26 @@ describe('dist/main.js under the real Bare', () => {
     sidecar.on('data', (c: unknown) => {
       if (c instanceof Uint8Array) client.push(c);
     });
-    const why = (): string => `; bare stderr: ${stderr.join('').slice(0, 2000)}`;
-
-    expect(
-      await client.request('init', { v: 1, storage: d.dir, bootstrap: testnet.bootstrap }),
-      why(),
-    ).toEqual({ v: 1 });
+    const why = (): string =>
+      `; bare stderr: ${stderr.join('').slice(0, 4000)}; events: ${JSON.stringify(
+        events.filter((e) => e.e === 'log').slice(-20),
+      ).slice(0, 4000)}`;
+    // A worker that dies at load never answers: say so, with what it printed.
+    const init = await Promise.race([
+      client
+        .request(
+          'init',
+          { v: 1, storage: d.dir, bootstrap: testnet.bootstrap },
+          { timeoutMs: 45_000 },
+        )
+        .catch((err: unknown) => {
+          throw new Error(`init failed: ${String(err)}${why()}`);
+        }),
+      exited.then((code) => {
+        throw new Error(`bare exited ${String(code)} before init answered${why()}`);
+      }),
+    ]);
+    expect(init).toEqual({ v: 1 });
     await until(() => events.some((e) => e.e === 'ready'), `the ready event${why()}`);
 
     const opened = await client.request('nfx.play.open', {

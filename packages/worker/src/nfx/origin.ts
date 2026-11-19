@@ -33,7 +33,7 @@
  * - Bound to `127.0.0.1` only, random port. A closed session's base 404s at once and its
  *   responses in flight are cut.
  */
-import { nfx } from '@sovit/core';
+import type { nfx } from '@sovit/core';
 import type { Logger, NfxStoreFile, SeederFs } from '@sovit/seeder';
 
 import type {
@@ -326,13 +326,18 @@ export class NfxOriginServer {
       return;
     }
     for (let at = start; at <= end; at += READ_BYTES) {
-      if (res.destroyed) return;
+      if (gone(res)) return;
       // A failure here throws: the connection is cut (`onRequest`), never a short body.
       const piece = await file.read(at, Math.min(READ_BYTES, end - at + 1));
       if (!(await write(res, piece))) return;
     }
     res.end();
   }
+}
+
+/** Read fresh after an `await` (an earlier check's narrowing no longer holds). */
+function gone(res: HttpResponseLike): boolean {
+  return res.destroyed;
 }
 
 /** `p`, or a rejection after `ms`. */
@@ -444,7 +449,7 @@ export class NfxOriginFiles implements NfxOriginSource {
       } catch (err) {
         const why = err instanceof NfxFetchError ? err.reasons.join(', ') : 'error';
         this.o.logger.debug('nfx: the origin could not fetch a file', { reason: why });
-        throw new Error('nfx: no source served the file');
+        throw new Error('nfx: no source served the file', { cause: err });
       }
       if (bytes.byteLength !== size) throw new Error('nfx: a file of another size');
       if (this.isClosed()) throw new Error('nfx: the session closed');

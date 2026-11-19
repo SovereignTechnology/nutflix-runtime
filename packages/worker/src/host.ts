@@ -87,7 +87,7 @@ export class WorkerHost implements WorkerRpcHandler {
 
   handle<M extends WorkerMethod>(m: M, a: ArgsOf<M>): Promise<ResultOf<M>> {
     // `M` and its arguments arrive together (`isRequest` checked them as one): the union says so.
-    return this.dispatch({ m, a } as unknown as Call) as Promise<ResultOf<M>>;
+    return this.dispatch({ m, a } as unknown as Call);
   }
 
   private async dispatch(c: Call): Promise<ResultOf<WorkerMethod>> {
