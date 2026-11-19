@@ -229,8 +229,18 @@ async function injectionProbe () {
     f.srcdoc = FRAME_SCRIPT(tag)
     document.body.appendChild(f)
   }
+  // Can the app impose a CSP itself? The bridge sends none, but a page may carry a <meta> one. This
+  // frame has default-src 'none' and two inline payloads; silence means the CSP blocked both.
+  const csp = document.createElement('iframe')
+  csp.srcdoc = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">' +
+    '<img src="data:image/png;base64,AA==" onerror="parent.postMessage({s1frame:\'meta-csp-onerror\',result:\'inline handler ran\'},\'*\')">' +
+    "<script>parent.postMessage({s1frame:'meta-csp-script',result:'inline script ran'},'*')</script>"
+  document.body.appendChild(csp)
   await sleep(3000)
   window.removeEventListener('message', onMsg)
+  for (const tag of ['srcdoc-same-origin', 'srcdoc-sandbox-allow-scripts', 'meta-csp-onerror', 'meta-csp-script']) {
+    if (!(tag in frames)) frames[tag] = 'no message in 3 s'
+  }
   R.injectionIframes = frames
 }
 

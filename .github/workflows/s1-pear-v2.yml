@@ -6,6 +6,7 @@
 #
 # Build and test only: no seeding, no staged pear:// link (S1_GUI_LINK=0), no secrets, a read-only
 # token, no credentials persisted, no artifacts. The phase input reaches the shell through env only.
+# Results: docs/spikes/S1-pear-v2-pin.md names the run ids it used.
 name: s1-pear-v2
 
 on:
