@@ -3,6 +3,16 @@
   <head>
     <meta charset="utf-8">
     <title>s1-gui</title>
+    <script>
+      // S1: report page errors to the Bare side's loopback beacon (apps/gui/index.js), so a module
+      // that fails to load or throws is visible without the pipe or the renderer's console.
+      (function () {
+        var b = function (m) { try { new Image().src = 'http://127.0.0.1:47199/b?' + encodeURIComponent(JSON.stringify(m)) } catch (e) {} }
+        b({ stage: 'inline-script', typeofRequire: typeof require, typeofPear: typeof Pear, typeofModule: typeof module, href: location.protocol + '//' + location.hostname + location.pathname })
+        window.addEventListener('error', function (e) { b({ stage: 'window-error', message: String(e.message), file: String(e.filename), line: e.lineno, col: e.colno }) })
+        window.addEventListener('unhandledrejection', function (e) { b({ stage: 'unhandledrejection', reason: String(e.reason && (e.reason.stack || e.reason)).slice(0, 800) }) })
+      })()
+    </script>
   </head>
   <body>
     <p id="status">S1 renderer probe</p>

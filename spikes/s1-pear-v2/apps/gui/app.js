@@ -2,6 +2,11 @@
 // Bare side for its loopback port over the pipe, tries <video> and MSE against that port, and
 // sends one results object back as a newline-terminated JSON line.
 const R = { started: Date.now() }
+const BEACON = 'http://127.0.0.1:47199' // index.js: a loopback channel that does not need the pipe
+const beacon = (stage, data = {}) => {
+  try { fetch(BEACON + '/b?' + encodeURIComponent(JSON.stringify({ stage, t: Date.now() - R.started, ...data })), { mode: 'no-cors' }).catch(() => {}) } catch {}
+}
+beacon('module-start')
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const err = (e) => String((e && (e.name ? e.name + ': ' : '') + (e.message || e)) || e)
 function timeout (p, ms, what) {
@@ -11,11 +16,19 @@ const status = (s) => { const el = document.getElementById('status'); if (el) el
 
 async function getPipe () {
   try {
-    const m = await import('pear-pipe')
+    const m = await timeout(import('pear-pipe'), 5000, "import('pear-pipe')")
     const p = (m.default || m)()
     if (p) return { pipe: p, via: "import('pear-pipe')" }
   } catch (e) {
     R.pearPipeImportError = err(e)
+  }
+  try {
+    if (typeof require === 'function') {
+      const p = require('pear-pipe')()
+      if (p) return { pipe: p, via: "require('pear-pipe')" }
+    }
+  } catch (e) {
+    R.pearPipeRequireError = err(e)
   }
   const P = globalThis.Pear
   const ipc = P && P[P.constructor.IPC]
@@ -247,14 +260,14 @@ async function injectionProbe () {
 async function main () {
   status('probing')
   runtimeInfo()
+  beacon('runtime-info', { uaElectron: R.uaElectron, uaChrome: R.uaChrome, typeofRequire: R.typeofRequire, typeofPear: R.typeofPear })
   const { pipe, via } = await getPipe()
   R.pipeVia = via
-  if (!pipe) {
-    console.log('S1R ' + JSON.stringify({ fatal: 'no pipe', ...R }))
-    return
-  }
+  beacon('pipe', { via, importError: R.pearPipeImportError, requireError: R.pearPipeRequireError })
+  const pipeOrStub = pipe || { on () {}, write () {} }
   let buffered = ''
   const config = new Promise((resolve) => {
+    const pipe = pipeOrStub
     pipe.on('data', (data) => {
       R.pipeChunkFromBare = { type: data && data.constructor && data.constructor.name, isString: typeof data === 'string', bytes: data && (data.byteLength ?? data.length) }
       buffered += typeof data === 'string' ? data : new TextDecoder().decode(data)
@@ -262,26 +275,38 @@ async function main () {
       if (nl !== -1) resolve(JSON.parse(buffered.slice(0, nl)))
     })
   })
-  pipe.write(JSON.stringify({ type: 'hello', sent: Date.now() }) + '\n')
+  pipeOrStub.write(JSON.stringify({ type: 'hello', sent: Date.now() }) + '\n')
   let port = null
   try {
-    const c = await timeout(config, 15000, 'config from Bare')
+    const c = await timeout(config, pipe ? 15000 : 1, 'config from Bare over the pipe')
     port = c.videoPort
     R.pipeRoundTripMs = Date.now() - R.started
   } catch (e) { R.pipeConfig = err(e) }
+  if (!port) {
+    try {
+      port = (await (await timeout(fetch(BEACON + '/config'), 5000, 'beacon config')).json()).videoPort
+      R.configVia = 'beacon'
+    } catch (e) { R.beaconConfig = err(e) }
+  }
+  beacon('config', { port, pipeConfig: R.pipeConfig })
 
   for (const [name, fn] of [['csp', cspProbe], ['wasm', wasmProbe], ['mse', mseProbe], ['webrtc', webrtcProbe], ['permission', permissionProbe], ['injection', injectionProbe]]) {
+    beacon('probe ' + name)
     try { await fn() } catch (e) { R[name + 'ProbeError'] = err(e) }
   }
   if (port) {
     for (const [name, fn] of [['video', videoProbe], ['fetch', fetchProbes], ['mseAppend', mseAppendProbe]]) {
+      beacon('probe ' + name)
       try { await fn(port) } catch (e) { R[name + 'ProbeError'] = err(e) }
     }
   }
   R.finished = Date.now() - R.started
   console.log('S1R ' + JSON.stringify(R))
-  pipe.write(JSON.stringify({ type: 'results', results: R }) + '\n')
+  pipeOrStub.write(JSON.stringify({ type: 'results', results: R }) + '\n')
+  // The same results over the beacon, after a moment, in case the pipe does not carry them.
+  await sleep(1500)
+  try { await fetch(BEACON + '/results', { method: 'POST', mode: 'no-cors', body: JSON.stringify(R) }) } catch (e) { beacon('results-post-error', { e: err(e) }) }
   status('done')
 }
 
-main().catch((e) => console.log('S1R ' + JSON.stringify({ fatal: err(e) })))
+main().catch((e) => { beacon('main-error', { e: err(e), stack: String(e && e.stack).slice(0, 800) }); console.log('S1R ' + JSON.stringify({ fatal: err(e) })) })

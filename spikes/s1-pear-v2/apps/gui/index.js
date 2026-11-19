@@ -12,6 +12,9 @@ const env = require('bare-env')
 const b4a = require('b4a')
 
 const FIXTURE = env.S1_FIXTURE || '/tmp/s1/fixture.mp4'
+// A loopback channel from the page to Bare that does not depend on the pipe: the page reports its
+// stages and errors here, fetches the video port from /config, and posts its results to /results.
+const BEACON_PORT = 47199
 const TIMEOUT_MS = Number(env.S1_GUI_TIMEOUT_MS || 150000)
 const out = (tag, data) => console.log('S1 ' + JSON.stringify({ tag, ...data }))
 const requests = []
@@ -70,8 +73,41 @@ function selfRequest (port, headers) {
   })
 }
 
+function beaconServer (port, onResults) {
+  const decode = (s) => { try { return decodeURIComponent(s) } catch { return s } }
+  const server = http.createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    if (req.method !== 'POST') {
+      if (req.url === '/config') {
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ videoPort: port }))
+        out('gui-beacon', { path: '/config' })
+        return
+      }
+      res.end('ok')
+      const q = req.url.indexOf('?')
+      out('gui-beacon', { msg: q === -1 ? req.url : decode(req.url.slice(q + 1)).slice(0, 3000) })
+      return
+    }
+    let body = ''
+    req.on('data', (d) => { body += b4a.toString(d) })
+    req.on('end', () => {
+      res.end('ok')
+      let r = null
+      try { r = JSON.parse(body) } catch { out('gui-beacon', { path: req.url, unparsedBytes: body.length }); return }
+      onResults(r)
+    })
+  })
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(BEACON_PORT, '127.0.0.1', () => resolve(server))
+  })
+}
+
 async function main () {
   const { port, size } = await serveFixture()
+  let onResults = (r) => out('gui-renderer', { via: 'beacon, before the pipe was up', ...r })
+  await beaconServer(port, (r) => onResults(r)).catch((err) => out('gui-bare', { stage: 'beacon-listen-error', message: err.message }))
   const bridge = new Bridge()
   // Every request the bridge gets: path, whether it carries X-Pear, and the status it answered.
   const bridgeRequests = []
@@ -100,6 +136,12 @@ async function main () {
   const chunks = []
   const timer = setTimeout(() => finish({ ok: false, reason: 'timeout after ' + TIMEOUT_MS + ' ms' }), TIMEOUT_MS)
 
+  onResults = (r) => {
+    if (done) { out('gui-bare', { stage: 'results-also-via-beacon' }); return }
+    out('gui-renderer', { via: 'beacon', ...r })
+    finish({ ok: true, via: 'beacon' })
+  }
+
   function finish (r) {
     if (done) return
     done = true
@@ -124,8 +166,9 @@ async function main () {
         out('gui-bare', { stage: 'hello-from-renderer', sent: msg.sent })
         pipe.write(JSON.stringify({ type: 'config', videoPort: port, sentFromBare: Date.now() }) + '\n')
       } else if (msg.type === 'results') {
-        out('gui-renderer', msg.results)
-        finish({ ok: true })
+        if (done) { out('gui-bare', { stage: 'results-also-via-pipe', bytes: line.length }); continue }
+        out('gui-renderer', { via: 'pipe', ...msg.results })
+        finish({ ok: true, via: 'pipe' })
       }
     }
   })
