@@ -1,0 +1,433 @@
+--- a/workers/main.js
++++ b/workers/main.js
+@@ -1,4 +1,14 @@
+ // https://github.com/holepunchto/hello-pear-worker v1.2.0
++//
++// Spike S2 (nutflix-runtime spikes/s2-pear-v3): the template's worker, instrumented.
++// - Logs every pear-runtime and updater event, with its full payload, to
++//   <dir>/s2-events.jsonl (one JSON object per line).
++// - Reads the new build before applyUpdate(): its versioned link, its package.json and the
++//   sha256 of its by-arch artifact, from the drive (read-ahead) and from updater.next.
++// - Gates applyUpdate() on <dir>/s2-notice.json, which stands in for the kind-30071 Nostr
++//   release notice: { "verlink": "pear://<fork>.<length>.<key>", "sha256": { "<host>": "<hex>" } }.
++//   The renderer's "Apply update" request is refused: the gate alone calls applyUpdate().
++// Only public keys are logged (the drive key, inside links). Nothing here is production code.
+ 
+ const PearRuntime = require('pear-runtime') // pear-runtime on desktop; pear-mobile on mobile
+ const Hyperswarm = require('hyperswarm')
+@@ -7,7 +17,12 @@
+ const FramedStream = require('framed-stream')
+ const path = require('bare-path')
+ const dir = require('bare-storage')
+-const { isBareKit } = require('which-runtime')
++const { isBareKit, platform, arch } = require('which-runtime')
++const fs = require('bare-fs')
++const b4a = require('b4a')
++const sodium = require('sodium-native')
++const plink = require('pear-link')
++const hid = require('hypercore-id-encoding')
+ 
+ // mobile doesn't have the executable path (argv[0])
+ // and the worker entry path (argv[1]) in the workers argv‘s
+@@ -23,19 +38,176 @@
+   app: argv(5) // argv[5] is undefined in mobile
+ }
+ 
++// S2: test override. The updater's default is a random delay of up to 3_600_000 ms.
++const S2_DELAY = 5000
++const host = platform + '-' + arch
++const EVENTS = path.join(updaterConfig.dir, 's2-events.jsonl')
++const NOTICE = path.join(updaterConfig.dir, 's2-notice.json')
++const BOOT = Bare.pid + '-' + Date.now()
++let seq = 0
++
++fs.mkdirSync(updaterConfig.dir, { recursive: true })
++const logFd = fs.openSync(EVENTS, 'a')
++
++function log(ev, data = {}) {
++  const rec = { ev, t: new Date().toISOString(), boot: BOOT, seq: seq++, ...data }
++  let line
++  try {
++    line = JSON.stringify(rec)
++  } catch (err) {
++    line = JSON.stringify({ ev, t: rec.t, boot: BOOT, seq: rec.seq, serializeError: err.message })
++  }
++  fs.writeSync(logFd, b4a.from(line + '\n'))
++}
++
++function safe(v, depth = 0) {
++  if (v === null || v === undefined) return v === undefined ? '<undefined>' : null
++  const t = typeof v
++  if (t === 'string' || t === 'number' || t === 'boolean') return v
++  if (t === 'bigint') return v.toString()
++  if (t === 'function') return '<function ' + (v.name || 'anonymous') + '>'
++  if (v instanceof Error) {
++    return {
++      error: v.message,
++      code: v.code,
++      stack: String(v.stack || '')
++        .split('\n')
++        .slice(0, 4)
++        .join(' | ')
++    }
++  }
++  if (ArrayBuffer.isView(v)) {
++    const buf = b4a.from(v.buffer, v.byteOffset, v.byteLength)
++    return { buffer: buf.byteLength, hex: b4a.toString(buf.subarray(0, 32), 'hex') }
++  }
++  if (depth > 4) return '<depth>'
++  if (Array.isArray(v)) return v.slice(0, 50).map((x) => safe(x, depth + 1))
++  const out = {}
++  const ctor = v.constructor && v.constructor.name
++  if (ctor && ctor !== 'Object') out.__class = ctor
++  for (const k of Object.keys(v).slice(0, 40)) out[k] = safe(v[k], depth + 1)
++  return out
++}
++
++function wrapEmit(emitter, ev) {
++  const orig = emitter.emit
++  emitter.emit = function (name, ...args) {
++    log(ev, { name, args: args.map((a) => safe(a)) })
++    return orig.call(this, name, ...args)
++  }
++}
++
++function sha256Stream(stream) {
++  const streaming = typeof sodium.crypto_hash_sha256_init === 'function'
++  return new Promise((resolve, reject) => {
++    const state = streaming ? b4a.alloc(sodium.crypto_hash_sha256_STATEBYTES) : null
++    const chunks = []
++    if (streaming) sodium.crypto_hash_sha256_init(state)
++    stream.on('data', (chunk) => {
++      if (streaming) sodium.crypto_hash_sha256_update(state, chunk)
++      else chunks.push(chunk)
++    })
++    stream.on('error', reject)
++    stream.on('end', () => {
++      const out = b4a.alloc(sodium.crypto_hash_sha256_BYTES)
++      if (streaming) sodium.crypto_hash_sha256_final(state, out)
++      else sodium.crypto_hash_sha256(out, b4a.concat(chunks))
++      resolve(b4a.toString(out, 'hex'))
++    })
++  })
++}
++
++const sha256File = (file) => sha256Stream(fs.createReadStream(file))
++
++function verlinkOf(fork, length, key) {
++  return plink.serialize({ drive: { fork, length, key } })
++}
++
++function listLocal(root, rel = '') {
++  const out = []
++  let names = []
++  try {
++    names = fs.readdirSync(path.join(root, rel))
++  } catch (err) {
++    return [{ error: err.message }]
++  }
++  for (const name of names) {
++    const p = path.join(rel, name)
++    const st = fs.statSync(path.join(root, p))
++    if (st.isDirectory()) out.push(...listLocal(root, p))
++    else out.push({ path: '/' + p, size: st.size, mode: (st.mode & 0o777).toString(8) })
++  }
++  return out
++}
++
++let refreshTimer = null
+ const pipe = new FramedStream(Bare.IPC)
+ const store = new Corestore(path.join(updaterConfig.dir, 'pear-runtime', 'corestore'))
+ const swarm = new Hyperswarm()
+-const pear = new PearRuntime({ ...updaterConfig, swarm, store })
++
++// S2: observe-only. The updater calls this at the start of every update check.
++async function skipUpdate() {
++  const d = pear.updater.drive
++  log('skipUpdate-called', {
++    coreLength: d.core.length,
++    coreFork: d.core.fork,
++    updating: pear.updater.updating,
++    updated: pear.updater.updated
++  })
++  return false
++}
++
++const pear = new PearRuntime({ ...updaterConfig, swarm, store, delay: S2_DELAY, skipUpdate })
++wrapEmit(pear, 'pear-event')
++wrapEmit(pear.updater, 'updater-event')
++
++function moduleVersion(name) {
++  try {
++    return require(name + '/package.json').version
++  } catch (err) {
++    return '<' + err.message + '>'
++  }
++}
++
++log('worker-start', {
++  config: updaterConfig,
++  host,
++  bare: Bare.version,
++  modules: {
++    'pear-runtime': moduleVersion('pear-runtime'),
++    'pear-runtime-updater': moduleVersion('pear-runtime-updater'),
++    hyperdrive: moduleVersion('hyperdrive'),
++    hyperswarm: moduleVersion('hyperswarm')
++  },
++  updater: {
++    link: pear.updater.link,
++    bundled: pear.updater.bundled,
++    delayDrawnMs: pear.updater._delay,
++    delayDefaultMs: pear.updater._defaultDelay,
++    bootGracePeriodMs: pear.updater._bootGracePeriod
++  },
++  sha256Streaming: typeof sodium.crypto_hash_sha256_init === 'function'
++})
+ 
+ pear.updater.on('error', (err) => pipe.write('updater-error ' + err.message))
+ 
+ if (updaterConfig.updates !== false) {
+-  swarm.on('connection', (connection) => store.replicate(connection))
+-  swarm.join(pear.updater.drive.core.discoveryKey, {
++  swarm.on('connection', (connection) => {
++    store.replicate(connection)
++    log('swarm-connection', { connections: swarm.connections.size })
++    connection.on('close', () => log('swarm-close', { connections: swarm.connections.size }))
++  })
++  const discovery = swarm.join(pear.updater.drive.core.discoveryKey, {
+     client: true,
+     server: false
+   })
++  // S2: the test VM's HyperDHT lookups sometimes fail; without a peer the template would wait
++  // ~15 min for its next lookup. Look again every 30 s while there is no connection.
++  refreshTimer = setInterval(() => {
++    if (swarm.connections.size > 0) return
++    log('swarm-refresh', {})
++    discovery.refresh().catch((err) => log('swarm-refresh-error', { error: safe(err) }))
++  }, 30000)
+ }
+ 
+ // An append on the app's drive doesn't check for an update straight away: the
+@@ -43,12 +215,201 @@
+ // so that a released fleet doesn't hit the seeder all at once. Forward the
+ // delay so the app can say it is waiting rather than look inert — without it,
+ // a staged update is indistinguishable from a broken updater for up to an hour.
+-pear.updater.on('update-scheduled', (delay) => pipe.write('update-scheduled ' + delay))
++pear.updater.on('update-scheduled', (delay) => {
++  pipe.write('update-scheduled ' + delay)
++  readAhead('update-scheduled').catch((err) => log('read-ahead-error', { error: safe(err) }))
++})
+ pear.updater.on('updating', () => pipe.write('updating'))
+-pear.updater.on('updated', () => pipe.write('updated'))
++pear.updater.on('updated', () => {
++  pipe.write('updated')
++  onUpdated().catch((err) => log('gate-error', { where: 'onUpdated', error: safe(err) }))
++})
+ pear.on('minver-required', () => pipe.write('minver-required')) // for mobile store update notification
+ 
++function driveState() {
++  const d = pear.updater.drive
++  return {
++    key: hid.encode(d.key),
++    fork: d.core.fork,
++    length: d.core.length,
++    verlink: d.core.length ? verlinkOf(d.core.fork, d.core.length, d.key) : null,
++    corePeers: d.core.peers.length
++  }
++}
++
++// S2 question 3: read the newest build on the drive, before the updater mirrors it.
++async function readAhead(trigger) {
++  const d = pear.updater.drive
++  await d.ready()
++  await d.update()
++  const length = d.core.length
++  const fork = d.core.fork
++  if (!length) return log('read-ahead', { trigger, empty: true })
++  const co = d.checkout(length)
++  try {
++    const pkgBuf = await co.get('/package.json')
++    const pkg = pkgBuf ? JSON.parse(b4a.toString(pkgBuf)) : null
++    const files = []
++    for await (const entry of co.list('/', { recursive: true })) {
++      files.push({
++        path: entry.key,
++        bytes: entry.value.blob ? entry.value.blob.byteLength : null,
++        executable: entry.value.executable
++      })
++    }
++    const p = '/by-arch/' + host + '/app/' + updaterConfig.name
++    const entry = await co.entry(p)
++    const t0 = Date.now()
++    const sha256 = entry ? await sha256Stream(co.createReadStream(p)) : null
++    log('read-ahead', {
++      trigger,
++      verlink: verlinkOf(fork, length, d.key),
++      version: pkg && pkg.version,
++      upgrade: pkg && pkg.upgrade,
++      files,
++      artifact: p,
++      entry: safe(entry),
++      sha256,
++      hashMs: Date.now() - t0
++    })
++  } finally {
++    await co.close()
++  }
++}
++
++// S2 question 3: what the updater holds once 'updated' fires, before applyUpdate().
++let candidate = null
++let applying = false
++let lastHeld = null
++
++async function onUpdated() {
++  const u = pear.updater
++  const next = u.next
++  const id = path.basename(next) // the updater names it `${length}.${fork}`
++  const [length, fork] = id.split('.').map(Number)
++  const file = path.join(next, 'by-arch', host, 'app', updaterConfig.name)
++  const t0 = Date.now()
++  const sha256 = await sha256File(file)
++  const c = {
++    next,
++    id,
++    verlink: verlinkOf(fork, length, u.drive.key),
++    version: u.nextVersion,
++    file,
++    size: fs.statSync(file).size,
++    sha256
++  }
++  candidate = c
++  log('gate-candidate', {
++    ...c,
++    hashMs: Date.now() - t0,
++    updater: {
++      length: u.length,
++      nextVersion: u.nextVersion,
++      updated: u.updated,
++      updating: u.updating,
++      applied: !!u.applied,
++      bundled: u.bundled,
++      app: u.app
++    },
++    drive: driveState(),
++    nextListing: listLocal(next)
++  })
++}
++
++function held(c, reason) {
++  const k = c.verlink + ' ' + reason
++  if (lastHeld === k) return
++  lastHeld = k
++  log('gate-held', { verlink: c.verlink, version: c.version, sha256: c.sha256, reason })
++  pipe.write('update-held ' + reason)
++}
++
++async function gate() {
++  if (!candidate || applying) return
++  const c = candidate
++  let notice = null
++  if (fs.existsSync(NOTICE)) {
++    try {
++      notice = JSON.parse(b4a.toString(fs.readFileSync(NOTICE)))
++    } catch (err) {
++      return held(c, 'notice unreadable: ' + err.message)
++    }
++  }
++  if (!notice) return held(c, 'no release notice names this build')
++  if (notice.verlink !== c.verlink) return held(c, 'the notice names ' + notice.verlink)
++  const want = notice.sha256 && notice.sha256[host]
++  if (want !== c.sha256) return held(c, 'sha256 mismatch: the notice says ' + want)
++  applying = true
++  const again = await sha256File(c.file)
++  const u = pear.updater
++  if (again !== c.sha256) {
++    applying = false
++    return held(c, 'artifact changed on disk since it was hashed')
++  }
++  if (u.next !== c.next) {
++    applying = false
++    return held(c, 'the updater moved on to ' + u.next)
++  }
++  // No await between the check above and this call: applyUpdate() reads this.next synchronously.
++  log('gate-apply', { verlink: c.verlink, sha256: c.sha256, app: u.app })
++  const applied = u.applyUpdate()
++  try {
++    await applied
++    const appSha256 = u.app ? await sha256File(u.app) : null
++    log('gate-applied', {
++      verlink: c.verlink,
++      appSha256,
++      matches: appSha256 === c.sha256,
++      nextStillExists: fs.existsSync(c.next),
++      applied: !!u.applied
++    })
++    candidate = null
++  } catch (err) {
++    log('gate-apply-failed', { error: safe(err), applied: !!u.applied })
++  }
++}
++
++const gateTimer = setInterval(() => {
++  gate().catch((err) => log('gate-error', { where: 'gate', error: safe(err) }))
++}, 2000)
++
++let lastStatus = ''
++const statusTimer = setInterval(() => {
++  const s = JSON.stringify({
++    connections: swarm.connections.size,
++    drive: driveState(),
++    updating: pear.updater.updating,
++    updated: pear.updater.updated,
++    next: pear.updater.next
++  })
++  if (s !== lastStatus) {
++    lastStatus = s
++    log('status', JSON.parse(s))
++  }
++}, 5000)
++
++pear
++  .ready()
++  .then(async () => {
++    log('pear-ready', { drive: driveState(), storage: pear.storage })
++    pear.updater.drive.core.on('append', () => log('drive-append', { drive: driveState() }))
++    pear.updater.drive.core.on('truncate', (ancestors, forkId) =>
++      log('drive-truncate', { ancestors, forkId })
++    )
++    await pear.updater.drive.core.update({ wait: true })
++    await readAhead('startup')
++  })
++  .catch((err) => log('startup-error', { error: safe(err) }))
++
++Bare.on('uncaughtException', (err) => log('uncaught', { error: safe(err) }))
++Bare.on('unhandledRejection', (err) => log('unhandled-rejection', { error: safe(err) }))
++
+ goodbye(async () => {
++  log('worker-exit', {})
++  clearInterval(gateTimer)
++  clearInterval(statusTimer)
++  if (refreshTimer) clearInterval(refreshTimer)
+   await swarm.destroy()
+   await pear.close()
+   await store.close()
+@@ -60,14 +421,9 @@
+     pipe.write('unknown-message ' + message)
+     return
+   }
+-
+-  try {
+-    await pear.ready()
+-    await pear.updater.applyUpdate()
+-    pipe.write('pear:updateApplied')
+-  } catch (err) {
+-    pipe.write('pear:updateFailed ' + err.message)
+-  }
++  // S2: the release-notice gate alone calls applyUpdate().
++  log('renderer-apply-refused', {})
++  pipe.write('pear:updateFailed the update gate applies updates, not the renderer')
+ })
+ 
+ pipe.write('Hello from worker')

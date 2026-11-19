@@ -1,0 +1,45 @@
+# Spike S2 (docs/spikes/S2-pear-v3-ota.md): runs spikes/s2-pear-v3/run.sh on a GitHub-hosted
+# Ubuntu 24.04 runner, the second environment beside the Kata VM. Dispatch only: it builds and
+# runs Holepunch's Electron template, bootstraps Pear over HyperDHT and keeps a `pear seed` of
+# its own throwaway link for the job's duration. The harness runs as root (it installs packages
+# and creates a user for the sandbox test). The link write keys stay in the runner's scratch
+# directory and are destroyed with it; only the log is uploaded.
+name: spike-s2
+
+on:
+  workflow_dispatch:
+    inputs:
+      phases:
+        description: 'S2_PHASES, space-separated (empty: every phase)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  NODE_OPTIONS: ''
+
+jobs:
+  s2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: run the S2 harness
+        env:
+          S2_PHASES: ${{ inputs.phases }}
+        run: |
+          sudo env "PATH=$PATH" "S2_PHASES=$S2_PHASES" S2_ENV=github-actions-ubuntu-24.04 \
+            bash spikes/s2-pear-v3/run.sh 2>&1 | tee "$RUNNER_TEMP/s2-run.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: s2-run
+          path: ${{ runner.temp }}/s2-run.txt
+          retention-days: 14

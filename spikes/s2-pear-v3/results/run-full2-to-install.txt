@@ -1,0 +1,1235 @@
+[kata-run] snapshot of the spike worktree
+[kata-run] command: bash spikes/s2-pear-v3/run.sh
+[kata-run] agentrun job 21606 (pipeline 6705)
+[kata-run] waiting for an agentrun runner (ubuntu-server, booty overflow)
+[kata-run] running on ci-agentrun@ubuntu-server
+== kata-run setup
+== kata-run command
+======== [S2 08:36:47] env: the VM ========
+$ node --check /builds/gitlab/sovtech/agent-run/spikes/s2-pear-v3/worker-instrumented.js
+[exit 0]
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+VERSION_ID="12"
+ID=debian
+Linux 2282b95a70a4 6.18.63 #1 SMP Mon Nov 16 23:11:55 UTC 2026 x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+CapEff:	00000000a80425fb
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+nproc=12
+               total        used        free      shared  buff/cache   available
+Mem:            7960         221        7631           8         198        7738
+Swap:              0           0           0
+Filesystem     Type      Size  Used Avail Use% Mounted on
+none           virtiofs  717G  205G  482G  30% /
+none           virtiofs  717G  205G  482G  30% /
+none           virtiofs  717G  205G  482G  30% /
+none           virtiofs  717G  205G  482G  30% /
+--- FUSE
+ls: cannot access '/dev/fuse': No such file or directory
+no fusermount
+	libatomic.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libatomic.so.1
+--- user namespaces
+/proc/sys/kernel/unprivileged_userns_clone=cat: /proc/sys/kernel/unprivileged_userns_clone: No such file or directory
+/proc/sys/user/max_user_namespaces=31831
+/proc/sys/kernel/apparmor_restrict_unprivileged_userns=cat: /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
+$ unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+$ setpriv --reuid=65534 --regid=65534 --clear-groups unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+--- tools
+xvfb-run=missing
+Xvfb=missing
+apt-get=/usr/bin/apt-get
+node=/usr/local/bin/node
+npm=/usr/local/bin/npm
+npx=/usr/local/bin/npx
+git=/usr/bin/git
+python3=/usr/bin/python3
+curl=/usr/bin/curl
+v24.21.0
+11.19.0
+git version 2.39.5
+--- network
+88.99.3.86      node1.hyperdht.org
+142.93.90.113   node2.hyperdht.org
+138.68.147.8    node3.hyperdht.org
+104.16.9.34     registry.npmjs.org
+104.16.2.34     registry.npmjs.org
+104.16.4.34     registry.npmjs.org
+104.16.1.34     registry.npmjs.org
+104.16.3.34     registry.npmjs.org
+104.16.11.34    registry.npmjs.org
+104.16.7.34     registry.npmjs.org
+104.16.6.34     registry.npmjs.org
+104.16.8.34     registry.npmjs.org
+104.16.0.34     registry.npmjs.org
+104.16.5.34     registry.npmjs.org
+104.16.10.34    registry.npmjs.org
+udp/123 to pool.ntp.org: reply 48 bytes from 23.150.41.122
+https://registry.npmjs.org/ -> 200
+https://github.com/ -> 200
+PHASE OK: env
+======== [S2 08:36:49] deps: xvfb and Electron's libraries ========
+$ bash -c apt-get update -qq 2>&1 | tail -3
+[exit 0]
+$ bash -c apt-get install -y -qq --no-install-recommends  xvfb xauth libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libxtst6 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libatomic1 libsecret-1-0 libnotify4 dbus-x11 file squashfs-tools procps 2>&1 | tail -3
+Setting up xserver-common (2:21.1.7-3+deb12u13) ...
+Setting up xvfb (2:21.1.7-3+deb12u13) ...
+Processing triggers for libc-bin (2.36-9+deb12u14) ...
+[exit 0]
+xvfb-run=/usr/bin/xvfb-run
+Xvfb=/usr/bin/Xvfb
+unsquashfs=/usr/bin/unsquashfs
+PHASE OK: deps
+======== [S2 08:37:48] bootstrap: npx pear@3.0.0 (HOME=/var/tmp/s2/home) ========
+registry dist.integrity: sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+integrity matches the pin
+$ timeout 1500 npx --yes pear@3.0.0
+Installing Pear (Please stand by, this might take a bit...)
+Bootstrapping: pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+Pear installed!
+Please open a new terminal (or restart your current one) for the updated PATH to take effect.
+[exit 0]
+bootstrap: attempt 1 installed /var/tmp/s2/home/.local/bin/pear
+--- what npx installed (registry integrity of each)
+node_modules/corestore 7.16.1 sha512-Zk2lirmXxNKxdKp7aqObnPxQKUzc+DmAfzff45EZDxSeW2k8UbXlEEPrg35Xme5OC6E/ZkZgSZaAe3Ki9NI44w==
+node_modules/hyperdrive 13.3.4 sha512-cbh4Zoov2l6GMn6NCYs8VNBzPU3C2M5/otOjIR1qagsrLbKZsfSC4Q7ryTbnDrj8FK32Jkdo0jLU1NeRmTkj3Q==
+node_modules/hyperswarm 4.17.2 sha512-yKTNgHjijwrmSj5neC2Lu5JyKDvj9gZK/zkVLySP6J2M7nF+uvFMoxzRlWKKjdySfZVHZXPLfhk4xAnpqibm5A==
+node_modules/pear 3.0.0 sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+node_modules/pear-install 1.6.0 sha512-aMTWX6TaUgbzo0MtQfPrRH8bDFH/LDAvGZ8LPw/ql2iPyTMIxKhisLjYsaA+VOJEd+fr0o7VoxozT6Nu/Ptwyg==
+total 97352
+drwxr-xr-x 2 root root     4096 Nov 19 08:38 .
+drwxr-xr-x 3 root root     4096 Nov 19 08:38 ..
+-rwxr-xr-x 1 root root 99679496 Nov 19 08:38 pear
+/var/tmp/s2/home/.local/bin/pear: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, not stripped
+PHASE OK: bootstrap
+======== [S2 08:38:30] cli: platform version and help ========
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear -v
+pear://0.0.smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy / v3.7.0
+Key=pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+SemVer=3.7.0
+Fork=0
+Length=0
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear -v --json
+{"cmd":"-v","tag":"error","data":{"success":false,"code":"UNKNOWN_FLAG","message":"Unrecognized Flag: --json"}}
+[exit 1]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear versions -m
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+pear: 3.7.0 | bare: 1.35.0 | uv: 1.53.0 | v8: 14.8.178.31
+link: pear://0.0.smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+b4a: ^1.6.7
+bare-daemon: ^1.2.4
+bare-events: ^2.9.1
+bare-file-logger: ^1.2.3
+bare-format: ^1.0.2
+bare-fs: ^4.7.4
+bare-os: ^3.9.3
+bare-path: ^3.1.1
+bare-readline: ^1.3.1
+bare-stream: ^2.13.3
+bare-subprocess: ^6.1.0
+bare-tty: ^5.1.2
+bare-tui-paparam: ^0.2.0
+bare-which: ^2.0.1
+bare-worker: ^4.4.0
+blind-peer: ^3.12.6
+blind-peering: ^2.6.3
+blind-relay: ^1.6.1
+corestore: ^7.2.1
+db-lock: ^1.2.0
+debounceify: ^1.1.0
+fs-native-extensions: ^1.5.1
+hyper-multisig: ^2.0.0
+hypercore: ^11.33.5
+hypercore-crypto: ^3.5.0
+hypercore-id-encoding: ^1.3.0
+hypercore-sign: ^4.1.1
+hyperdb: ^6.6.3
+hyperdht: ^6.33.2
+hyperdrive: ^13.1.1
+hyperschema: ^1.10.4
+hyperswarm: ^4.11.1
+localdrive: ^2.2.0
+localwatch: ^1.4.3
+paparam: ^1.12.0
+pear-build: ^1.3.1
+pear-changelog: ^1.0.1
+pear-errors: ^1.0.1
+pear-gracedown: ^1.0.4
+pear-install: ^1.5.0
+pear-ipc: ^6.17.0
+pear-link: ^5.0.0
+pear-opstream: ^1.0.0
+pear-opwait: ^1.0.0
+pear-runtime-updater: ^3.1.0
+rache: ^1.0.0
+ready-resource: ^1.2.0
+safety-catch: ^1.0.2
+semifies: ^1.0.0
+sodium-native: ^5.0.0
+speedometer: ^1.1.0
+streamx: ^2.22.0
+tiny-byte-size: ^1.1.0
+unix-path-resolve: ^1.0.2
+url-file-url: ^1.0.5
+which-runtime: ^1.2.1
+z32: ^1.1.0
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear info
+  Info:          pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+  Verlink:       pear://0.0.smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+  App:           pear@3.7.0
+  Product Name:  pear
+  Writable:      false
+  Drive Key:     smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+  Drive Fork:    0
+  Drive Length:  0
+  Drive Size:    0B
+  Discovery Key: kce648eyukwr9rbkzmzsgra1uxej15b65dtgoz9i4xib5uw1diay
+  Upgrade:       {
+    "production": "pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy",
+    "stage": "pear://ixhpogtfu9fd3drcbwqf7rebab8wsr1idwmmqchaxuoby4math9o",
+    "dev": "pear://w35om9zdgi6nwdbtjhk3m378tne3izsnotpd7syfiebgzcd6czio"
+  }
+✔ Success
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear touch ~ Generate a project link
+  pear seed ~ Seed or reseed a project
+  pear stage ~ Sync disk changes into project
+  pear build ~ Create project deployment folder
+  pear provision ~ Block-sync source & production
+  pear multisig ~ Production signing coordination
+  pear info ~ View project information
+  pear dump ~ Synchronize files from a link to a directory
+  pear install ~ Install applications from peers
+  pear data ~ Explore platform database
+  pear changelog ~ View project changelog
+  pear sidecar ~ Advanced. Run sidecar in terminal
+  pear identity ~ Show local network public keys
+  pear blind-peer ~ Manage blind peers
+  pear gc ~ Advanced. Clear dangling resources
+  pear cores ~ List platform cores
+  pear blind-relay ~ Run a blind relay for peers that cannot hole-punch
+  pear make ~ Build a Pear CLI app
+  pear versions ~ View dependency versions
+  pear help ~ View help for command
+  Legend: [arg] = optional, <arg> = required, | = or 
+  Run pear help to output full help for all commands
+  For command help: pear help [cmd] or pear [cmd] -h
+🍐 
+]8;;https://pears.compears.com]8;; | ]8;;https://holepunch.toholepunch.to]8;; | ]8;;https://keet.iokeet.io]8;;
+Pear ~ Welcome to the IoP
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear help
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear touch [flags]
+  Generate a project link
+  Create a new randomly generated Pear link
+  Flags:
+    --json              Newline delimited JSON output
+    --vanity <vanity>   Generate a link starting with this z32 prefix
+    --help|-h           Show help
+  pear seed [flags] <link>
+  Seed or reseed a project
+  Announce a project link on the network and serve its blocks to peers.
+  Runs until you exit, or until every --until-sync peer has fully synced.
+  Arguments:
+    <link>                            Pear link to seed
+  Flags:
+    --no-tty                          Print plain log lines instead of the live terminal UI
+    --until-sync <key>                Exit once this peer has synced. Pass multiple flags to wait for more peers
+    --blind-peer <key>                Add the drive being seeded to this blind peer key
+    --stats-interval <milliseconds>   Stats refresh interval in milliseconds
+    --json                            Newline delimited JSON output
+    --help|-h                         Show help
+  pear stage [flags] <link> [dir=.]
+  Sync disk changes into project
+  Stage local changes to a project link.
+  Outputs diff information and the resulting project link.
+  Arguments:
+    <link>                Pear link to stage
+    [dir=.]               Optional. Project directory to stage from
+  Flags:
+    --dry-run|-d          Execute a stage without writing
+    --ignore <paths>      Don't stage these comma-separated paths
+    --purge               Also delete already-staged files that now match the ignore list
+    --only <paths>        Only stage these comma-separated paths
+    --truncate <n>        Advanced. Truncate the project to this version length. Destructive — later versions are dropped
+    --skip-package-json   Stage a folder without package.json
+    --json                Newline delimited JSON output
+    --help|-h             Show help
+  pear build [flags]
+  Create project deployment folder
+  Flags:
+    --help|-h                      Show help
+    --package [path]               Path to project package.json (default: ./package.json)
+    --target [path]                Target build dir
+    --config [path]                Path to project pear.json (mandatory for mobile)
+    --darwin-arm64-app [path]      Path to Mac ARM64 app
+    --darwin-x64-app [path]        Path to Mac x64 app
+    --linux-arm64-app [path]       Path to Linux ARM64 app
+    --linux-x64-app [path]         Path to Linux x64 app
+    --win32-x64-app [path]         Path to Windows x64 app
+    --win32-arm64-app [path]       Path to Windows ARM64 app
+    --ios-arm64 [path]             Path to iOS ARM64 folder (ota bundle and assets)
+    --ios-arm64-simulator [path]   Path to iOS ARM64-Simulator folder (ota bundle and asset)
+    --ios-x64-simulator [path]     Path to iOS x64-Simulator folder (ota bundle and assets)
+    --android-arm64 [path]         Path to Android ARM64 folder (ota bundle and assets)
+    --json                         Newline delimited JSON output
+  pear provision [flags] <source-verlink> <target-link> <production-verlink>
+  Block-sync source & production
+  Synchronize blocks from a source link to a pre-production target link.
+  The target can then be multisig'd against a production link.
+  Use pear touch to generate the target link first.
+  Arguments:
+    <source-verlink>       Versioned source link
+    <target-link>          Target link to sync to, as generated by pear touch
+    <production-verlink>   Versioned production link to sync against
+  Flags:
+    --dry-run|-d           Execute provision to a disposable target
+    --json                 Newline delimited JSON output
+    --help|-h              Show help
+  pear multisig [flags] [command]
+  Production signing coordination
+  Quorum-based cryptographic cosigning for production releases.
+  Gather enough signatures to approve a release to synchronize
+  onto a production link.
+  Example - 2/3 must sign to approve
+  pear.json: {
+    "multisig": {
+      "publicKeys": ["<pubkey1>", "<pubkey2>", "<pubkey3>"],
+      "namespace": "my-org/my-app",
+      "quorum": 2
+    }
+  }
+  Flags:
+    --help|-h   Show help
+  Commands:
+    keys        Manage signing keys
+    link        Print project multisig link
+    request     Create a multisig request
+    sign        Sign a multisig request
+    verify      Verify multisig request & responses
+    commit      Commit multisig to go live
+  pear info [flags] [link] [dir=.]
+  View project information
+  View information about a project.
+  Supply a link to inspect a specific project, or omit it to view
+  platform information.
+  Arguments:
+    [link]       Optional. Project to view info for
+    [dir=.]      Optional. Project directory path
+  Flags:
+    --metadata   Print the project metadata
+    --manifest   Print the app manifest
+    --multisig   Print the multisig quorum and signing keys
+    --key        Print the view key
+    --json       Newline delimited JSON output
+    --help|-h    Show help
+  pear dump [flags] <link> [dir]
+  Synchronize files from a link to a directory
+  Arguments:
+    <link>           Link to dump from
+    [dir]            Optional. Directory path to dump to. Use - for output-only
+  Flags:
+    --dry-run|-d     Preview without writing any changes
+    --checkout <n>   Dump the project as it was at this version length
+    --only <paths>   Only dump these comma-separated paths
+    --force|-f       Force overwrite existing files
+    --list           List the paths inside the link instead of writing any files
+    --no-prune       Keep destination files that are missing from the source
+    --json           Newline delimited JSON output
+    --help|-h        Show help
+  pear install [flags] <link>
+  Install applications from peers
+  Installs from peers directly into OS application folder
+  Arguments:
+    <link>                    Pear link origin to install from
+  Flags:
+    --help|-h                 Show help
+    --only <paths>            Advanced. Filter by app filenames
+    --timeout <seconds>       Advanced. Override network timeout (30s)
+    --to <dir>                Advanced. Override install target directory
+    --dht-bootstrap <nodes>   Advanced. Custom DHT bootstrap
+    --json                    Newline delimited JSON output
+  pear data [flags] [command]
+  Explore platform database
+  Flags:
+    --json      Newline delimited JSON output
+    --help|-h   Show help
+  Commands:
+    dht         DHT known-nodes cache
+    multisig    Multisig records
+  pear changelog [flags] [link]
+  View project changelog
+  View a project's changelog.
+  Supply a link to inspect a specific project, or omit it to view
+  Pear's own changelog.
+  Arguments:
+    [link]             Optional. Project to view changelog of
+  Flags:
+    --max|-m <n=10>    Maximum number of entries to show
+    --of <semver=^*>   Only show entries matching this semver range. Default: latest major
+    --full             Show entire changelog
+    --json             Newline delimited JSON output
+    --help|-h          Show help
+  pear sidecar [flags] [command]
+  Advanced. Run sidecar in terminal
+  The sidecar is a local IPC server that brokers corestore access
+  for every running Pear app.
+  Running pear sidecar shuts down any existing sidecar and takes
+  over as the new one, staying attached to this terminal.
+  Flags:
+    --log-level <level>   Verbosity to log at — 0=off, 1=error, 2=info, or 3=trace
+    --help|-h             Show help
+  Commands:
+    shutdown              Shutdown running sidecar
+  pear identity [flags] [command]
+  Show local network public keys
+  Flags:
+    --json              Newline delimited JSON output
+    --help|-h           Show help
+  Commands:
+    seed                Show seed key
+    blind-relay         Show blind relay key
+    blind-peer          Show blind peer key
+    blind-peer-client   Show blind peer client key
+  pear blind-peer [flags] [command]
+  Manage blind peers
+  Flags:
+    --json      Newline delimited JSON output
+    --help|-h   Show help
+  Commands:
+    start       Start a blind peer
+    request     Request a blind peer to seed
+  pear gc [flags] [command]
+  Advanced. Clear dangling resources
+  Flags:
+    --json      Newline delimited JSON output
+    --help|-h   Show help
+  Commands:
+    cores       Clear corestore cores
+  pear cores [flags]
+  List platform cores
+  Lists the cores in the platform corestore.
+  Empty cores are omitted unless --all-cores is set.
+  Flags:
+    --all-cores   List all cores, including empty cores
+    --json        Newline delimited JSON output
+    --help|-h     Show help
+  pear blind-relay [flags] [command]
+  Run a blind relay for peers that cannot hole-punch
+  Flags:
+    --help|-h   Show help
+  Commands:
+    start       Start the blind relay
+  pear make [flags] [entry]
+  Build a Pear CLI app
+  Arguments:
+    [entry]         optional. entry point of the app
+  Flags:
+    --host <host>   Host to target
+    --path <dir>    Output directory
+    --name <name>   Output file name
+    --no-install    Skip pear-make CLI installation
+    --version|-v    Show version
+    --json          Newline delimited JSON output
+    --help|-h       Show help
+  pear versions [flags]
+  View dependency versions
+  Flags:
+    --modules|-m   Include module versions
+    --json         Newline delimited JSON output
+    --help|-h      Show help
+  pear help [flags] [command]
+  View help for command
+  Arguments:
+    [command]   Optional. Command to show help for. Omit to show the full overview
+  Flags:
+    --help|-h   Show help
+  Legend: [arg] = optional, <arg> = required, | = or 
+  Run pear help to output full help for all commands
+  For command help: pear help [cmd] or pear [cmd] -h
+🍐 
+]8;;https://pears.compears.com]8;; | ]8;;https://holepunch.toholepunch.to]8;; | ]8;;https://keet.iokeet.io]8;;
+Pear ~ Welcome to the IoP
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear touch -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear touch [flags]
+  Generate a project link
+  Create a new randomly generated Pear link
+  Flags:
+    --json              Newline delimited JSON output
+    --vanity <vanity>   Generate a link starting with this z32 prefix
+    --help|-h           Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear seed -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear seed [flags] <link>
+  Seed or reseed a project
+  Announce a project link on the network and serve its blocks to peers.
+  Runs until you exit, or until every --until-sync peer has fully synced.
+  Arguments:
+    <link>                            Pear link to seed
+  Flags:
+    --no-tty                          Print plain log lines instead of the live terminal UI
+    --until-sync <key>                Exit once this peer has synced. Pass multiple flags to wait for more peers
+    --blind-peer <key>                Add the drive being seeded to this blind peer key
+    --stats-interval <milliseconds>   Stats refresh interval in milliseconds
+    --json                            Newline delimited JSON output
+    --help|-h                         Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear build -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear build [flags]
+  Create project deployment folder
+  Flags:
+    --help|-h                      Show help
+    --package [path]               Path to project package.json (default: ./package.json)
+    --target [path]                Target build dir
+    --config [path]                Path to project pear.json (mandatory for mobile)
+    --darwin-arm64-app [path]      Path to Mac ARM64 app
+    --darwin-x64-app [path]        Path to Mac x64 app
+    --linux-arm64-app [path]       Path to Linux ARM64 app
+    --linux-x64-app [path]         Path to Linux x64 app
+    --win32-x64-app [path]         Path to Windows x64 app
+    --win32-arm64-app [path]       Path to Windows ARM64 app
+    --ios-arm64 [path]             Path to iOS ARM64 folder (ota bundle and assets)
+    --ios-arm64-simulator [path]   Path to iOS ARM64-Simulator folder (ota bundle and asset)
+    --ios-x64-simulator [path]     Path to iOS x64-Simulator folder (ota bundle and assets)
+    --android-arm64 [path]         Path to Android ARM64 folder (ota bundle and assets)
+    --json                         Newline delimited JSON output
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear stage -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear stage [flags] <link> [dir=.]
+  Sync disk changes into project
+  Stage local changes to a project link.
+  Outputs diff information and the resulting project link.
+  Arguments:
+    <link>                Pear link to stage
+    [dir=.]               Optional. Project directory to stage from
+  Flags:
+    --dry-run|-d          Execute a stage without writing
+    --ignore <paths>      Don't stage these comma-separated paths
+    --purge               Also delete already-staged files that now match the ignore list
+    --only <paths>        Only stage these comma-separated paths
+    --truncate <n>        Advanced. Truncate the project to this version length. Destructive — later versions are dropped
+    --skip-package-json   Stage a folder without package.json
+    --json                Newline delimited JSON output
+    --help|-h             Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear provision -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear provision [flags] <source-verlink> <target-link> <production-verlink>
+  Block-sync source & production
+  Synchronize blocks from a source link to a pre-production target link.
+  The target can then be multisig'd against a production link.
+  Use pear touch to generate the target link first.
+  Arguments:
+    <source-verlink>       Versioned source link
+    <target-link>          Target link to sync to, as generated by pear touch
+    <production-verlink>   Versioned production link to sync against
+  Flags:
+    --dry-run|-d           Execute provision to a disposable target
+    --json                 Newline delimited JSON output
+    --help|-h              Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear multisig [flags] [command]
+  Production signing coordination
+  Quorum-based cryptographic cosigning for production releases.
+  Gather enough signatures to approve a release to synchronize
+  onto a production link.
+  Example - 2/3 must sign to approve
+  pear.json: {
+    "multisig": {
+      "publicKeys": ["<pubkey1>", "<pubkey2>", "<pubkey3>"],
+      "namespace": "my-org/my-app",
+      "quorum": 2
+    }
+  }
+  Flags:
+    --help|-h   Show help
+  Commands:
+    keys        Manage signing keys
+    link        Print project multisig link
+    request     Create a multisig request
+    sign        Sign a multisig request
+    verify      Verify multisig request & responses
+    commit      Commit multisig to go live
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear info -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear info [flags] [link] [dir=.]
+  View project information
+  View information about a project.
+  Supply a link to inspect a specific project, or omit it to view
+  platform information.
+  Arguments:
+    [link]       Optional. Project to view info for
+    [dir=.]      Optional. Project directory path
+  Flags:
+    --metadata   Print the project metadata
+    --manifest   Print the app manifest
+    --multisig   Print the multisig quorum and signing keys
+    --key        Print the view key
+    --json       Newline delimited JSON output
+    --help|-h    Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear dump -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear dump [flags] <link> [dir]
+  Synchronize files from a link to a directory
+  Arguments:
+    <link>           Link to dump from
+    [dir]            Optional. Directory path to dump to. Use - for output-only
+  Flags:
+    --dry-run|-d     Preview without writing any changes
+    --checkout <n>   Dump the project as it was at this version length
+    --only <paths>   Only dump these comma-separated paths
+    --force|-f       Force overwrite existing files
+    --list           List the paths inside the link instead of writing any files
+    --no-prune       Keep destination files that are missing from the source
+    --json           Newline delimited JSON output
+    --help|-h        Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear install -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear install [flags] <link>
+  Install applications from peers
+  Installs from peers directly into OS application folder
+  Arguments:
+    <link>                    Pear link origin to install from
+  Flags:
+    --help|-h                 Show help
+    --only <paths>            Advanced. Filter by app filenames
+    --timeout <seconds>       Advanced. Override network timeout (30s)
+    --to <dir>                Advanced. Override install target directory
+    --dht-bootstrap <nodes>   Advanced. Custom DHT bootstrap
+    --json                    Newline delimited JSON output
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear data -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear data [flags] [command]
+  Explore platform database
+  Flags:
+    --json      Newline delimited JSON output
+    --help|-h   Show help
+  Commands:
+    dht         DHT known-nodes cache
+    multisig    Multisig records
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear changelog -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear changelog [flags] [link]
+  View project changelog
+  View a project's changelog.
+  Supply a link to inspect a specific project, or omit it to view
+  Pear's own changelog.
+  Arguments:
+    [link]             Optional. Project to view changelog of
+  Flags:
+    --max|-m <n=10>    Maximum number of entries to show
+    --of <semver=^*>   Only show entries matching this semver range. Default: latest major
+    --full             Show entire changelog
+    --json             Newline delimited JSON output
+    --help|-h          Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear sidecar -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear sidecar [flags] [command]
+  Advanced. Run sidecar in terminal
+  The sidecar is a local IPC server that brokers corestore access
+  for every running Pear app.
+  Running pear sidecar shuts down any existing sidecar and takes
+  over as the new one, staying attached to this terminal.
+  Flags:
+    --log-level <level>   Verbosity to log at — 0=off, 1=error, 2=info, or 3=trace
+    --help|-h             Show help
+  Commands:
+    shutdown              Shutdown running sidecar
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear gc -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear gc [flags] [command]
+  Advanced. Clear dangling resources
+  Flags:
+    --json      Newline delimited JSON output
+    --help|-h   Show help
+  Commands:
+    cores       Clear corestore cores
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear cores -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear cores [flags]
+  List platform cores
+  Lists the cores in the platform corestore.
+  Empty cores are omitted unless --all-cores is set.
+  Flags:
+    --all-cores   List all cores, including empty cores
+    --json        Newline delimited JSON output
+    --help|-h     Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear identity -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear identity [flags] [command]
+  Show local network public keys
+  Flags:
+    --json              Newline delimited JSON output
+    --help|-h           Show help
+  Commands:
+    seed                Show seed key
+    blind-relay         Show blind relay key
+    blind-peer          Show blind peer key
+    blind-peer-client   Show blind peer client key
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear versions -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear versions [flags]
+  View dependency versions
+  Flags:
+    --modules|-m   Include module versions
+    --json         Newline delimited JSON output
+    --help|-h      Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear blind-peer -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear blind-peer [flags] [command]
+  Manage blind peers
+  Flags:
+    --json      Newline delimited JSON output
+    --help|-h   Show help
+  Commands:
+    start       Start a blind peer
+    request     Request a blind peer to seed
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear blind-relay -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear blind-relay [flags] [command]
+  Run a blind relay for peers that cannot hole-punch
+  Flags:
+    --help|-h   Show help
+  Commands:
+    start       Start the blind relay
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear make -h
+Pear ~ Welcome to the Internet of Peers
+🍐 pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy - 3.7.0
+  pear make [flags] [entry]
+  Build a Pear CLI app
+  Arguments:
+    [entry]         optional. entry point of the app
+  Flags:
+    --host <host>   Host to target
+    --path <dir>    Output directory
+    --name <name>   Output file name
+    --no-install    Skip pear-make CLI installation
+    --version|-v    Show version
+    --json          Newline delimited JSON output
+    --help|-h       Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig keys -h
+pear multisig keys [flags] [command]
+Manage signing keys
+Flags:
+  --help|-h   Show help
+Commands:
+  get         Get signing key, initializing if needed
+  paths       Print paths to public & private key files
+  list        List signing keys
+  add         Add signing keys
+  remove      Remove signing keys
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig keys get -h
+pear multisig keys get [flags] [name=default]
+Get signing key, initializing if needed
+Idempotent.
+Creates a public/private keypair if one doesn't already exist.
+Always prints the public key.
+Arguments:
+  [name=default]   Optional. Key identifier for the keypair's on-disk names. Defaults to "default"
+Flags:
+  --secret         Also print the private key in plain text — make sure nobody can see your screen
+  --json           Newline delimited JSON output
+  --help|-h        Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig keys paths -h
+pear multisig keys paths [flags] [name=default]
+Print paths to public & private key files
+Arguments:
+  [name=default]   Optional. Key identifier for the keypair's on-disk names. Defaults to "default"
+Flags:
+  --json           Newline delimited JSON output
+  --help|-h        Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig keys list -h
+pear multisig keys list [flags]
+List signing keys
+Output all names and public keys
+Flags:
+  --json      Newline delimited JSON output
+  --help|-h   Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig keys add -h
+pear multisig keys add [flags] <name> <public-key> [private-key]
+Add signing keys
+Import a signing keypair or add a known public key
+Arguments:
+  <name>          Name to store this key under. Must not already exist
+  <public-key>    Public key — a key path or key string
+  [private-key]   Optional. Private key — a key path or key string. A path avoids leaving it in shell history. Omit for public-key only
+Flags:
+  --json          Newline delimited JSON output
+  --help|-h       Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig keys remove -h
+pear multisig keys remove [flags] <name>
+Remove signing keys
+Arguments:
+  <name>      Name of the key to remove. Permanent — no confirmation, no backup
+Flags:
+  --json      Newline delimited JSON output
+  --help|-h   Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig link -h
+pear multisig link [flags]
+Print project multisig link
+The multisig link is derived from the publicKeys, quorum and
+namespace fields of your project's pear.json.
+Run pear help multisig for an example config.
+Flags:
+  --config [./pear.json]   Path to the project's pear.json. Defaults to ./pear.json
+  --vanity <vanity>        Generate a link starting with this z32 prefix
+  --json                   Newline delimited JSON output
+  --help|-h                Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig request -h
+pear multisig request [flags] <verlink>
+Create a multisig request
+Create a signing request to synchronize a versioned source link
+onto the project's multisig link, as printed by pear multisig link.
+Arguments:
+  <verlink>                              Versioned source link to sign off
+Flags:
+  --force                                Skip sanity checks
+  --config [./pear.json]                 Path to the project's pear.json. Defaults to ./pear.json
+  --peer-update-timeout <milliseconds>   How long to wait for peers to update, in milliseconds
+  --json                                 Newline delimited JSON output
+  --help|-h                              Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig sign -h
+pear multisig sign [flags] <request> [name=default]
+Sign a multisig request
+Sign a multisig request using a local signing key.
+The key's public counterpart must be listed in the
+multisig.publicKeys field of the pear.json at the source link
+supplied to pear multisig request.
+Arguments:
+  <request>        As returned by pear multisig request
+  [name=default]   Optional. Local key to sign with, by name. Defaults to "default"
+Flags:
+  --json           Newline delimited JSON output
+  --help|-h        Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig verify -h
+pear multisig verify [flags] <source-link> <request> [...responses]
+Verify multisig request & responses
+Verify inputs and perform a commit dry run
+Arguments:
+  <source-link>                          Source pear link
+  <request>                              Signing request, as printed by pear multisig request
+  [...responses]                         Signing responses, as printed by pear multisig sign
+Flags:
+  --config [./pear.json]                 Path to the project's pear.json. Defaults to ./pear.json
+  --peer-update-timeout <milliseconds>   How long to wait for peers to update, in milliseconds
+  --json                                 Newline delimited JSON output
+  --help|-h                              Show help
+[exit 0]
+$ timeout 60 /var/tmp/s2/home/.local/bin/pear multisig commit -h
+pear multisig commit [flags] <source-link> <request> [...responses]
+Commit multisig to go live
+Apply signatures to allow sync from source drive to multisig drive
+Arguments:
+  <source-link>                          Source pear link
+  <request>                              Signing request, as printed by pear multisig request
+  [...responses]                         Signing responses, as printed by pear multisig sign
+Flags:
+  --config [./pear.json]                 Path to the project's pear.json. Defaults to ./pear.json
+  --peer-update-timeout <milliseconds>   How long to wait for peers to update, in milliseconds
+  --json                                 Newline delimited JSON output
+  --help|-h                              Show help
+[exit 0]
+PHASE OK: cli
+======== [S2 08:38:48] template: https://github.com/holepunchto/hello-pear-electron.git @ ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2 ========
+$ git clone -q https://github.com/holepunchto/hello-pear-electron.git /var/tmp/s2/dl-template/app
+[exit 0]
+$ git -C /var/tmp/s2/dl-template/app checkout -q ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2
+[exit 0]
+ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2 2026-11-17 22:45:23 +0100 update electron-forge dependencies (#99)
+$ bash -o pipefail -c npm ci --ignore-scripts --no-audit --no-fund --loglevel=error 2>&1 | tail -5
+added 530 packages in 12s
+[exit 0]
+$ node node_modules/electron/install.js
+[exit 0]
+hello-pear-electron@1.0.0 /var/tmp/s2/dl-template/app
++-- @electron-forge/cli@8.0.1
++-- electron@42.11.18
++-- hello-pear-worker@1.2.0
+| +-- hyperswarm@4.17.2 deduped
+| `-- pear-runtime@1.3.1 deduped
++-- hyperswarm@4.17.2
++-- pear-electron-forge-maker-appimage@3.0.1
++-- pear-mobile@4.3.0
+| +-- hyperswarm@4.17.2 deduped
+| `-- pear-runtime-updater@3.4.0
+|   `-- hyperdrive@13.3.4
+`-- pear-runtime@1.3.1
+  +-- bare-sidecar@0.5.16
+  +-- hyperswarm@4.17.2 deduped
+  `-- pear-runtime-updater@3.4.0 deduped
+{
+  "multisig": {
+    "publicKeys": ["<PUBKEY_HERE>", "<PUBKEY_HERE>", "<PUBKEY_HERE>"],
+    "namespace": "holepunchto/hello-pear-electron",
+    "quorum": 2
+  }
+}
+PHASE OK: template
+======== [S2 08:39:12] link: pear touch, a background seeder, package.json#upgrade, the instrumented worker ========
+$ bash -o pipefail -c timeout 120 '/var/tmp/s2/home/.local/bin/pear' touch --json </dev/null | tee '/var/tmp/s2/logs/touch.ndjson'
+{"cmd":"touch","tag":"final","data":{"success":true,"key":"fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","link":"pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky"}}
+[exit 0]
+STATE LINK=pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+STATE SEED_PID=2915
+{
+  "name": "hello-pear-electron",
+  "productName": "HelloPear",
+  "version": "1.0.0",
+  "upgrade": "pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky",
+  "main": "electron/main.js"
+}
+ package.json    |   2 +-
+ workers/main.js | 384 +++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 371 insertions(+), 15 deletions(-)
+PHASE OK: link
+======== [S2 08:39:13] make 1.0.0 (full) ========
+$ bash -o pipefail -c timeout 1500 npm run make 2>&1 | tail -40
+> hello-pear-electron@1.0.0 make
+> electron-forge make
+❯ Checking your system
+❯ Checking package manager version
+✔ Found npm@11.19.0
+✔ Checking your system
+❯ Loading configuration
+✔ Loading configuration
+❯ Resolving make targets
+✖ Resolving make targets [FAILED: Cannot make for snap, the following external binaries need to be installed: snapcraft, lxd]
+An unhandled rejection has occurred inside Forge:
+Error: Cannot make for snap, the following external binaries need to be installed: snapcraft, lxd
+at MakerSnap.ensureExternalBinariesExist (file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/maker-base/src/Maker.ts:167:13)
+    at file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/core/src/api/make.ts:249:21
+    at Task.taskFn (file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/tracer/src/index.ts:60:14)
+    at Task.run (file:///var/tmp/s2/dl-template/app/node_modules/listr2/dist/index.mjs:1965:5)
+[exit 1]
+$ bash -o pipefail -c timeout 1500 npx electron-forge make --targets pear-electron-forge-maker-appimage 2>&1 | tail -30
+› Determining targets...
+❯ Packaging for x64 on linux
+❯ Copying files
+✔ Copying files
+❯ Preparing native dependencies
+✔ Preparing native dependencies
+❯ Finalizing package
+✔ Finalizing package
+✔ Packaging for x64 on linux
+✔ Packaging application
+❯ Running postPackage hook
+✔ Running postPackage hook
+✔ Running package command
+❯ Running preMake hook
+❯ Running preMake hook from forgeConfig
+✔ Running preMake hook from forgeConfig
+✔ Running preMake hook
+❯ Making distributables
+❯ Making a appImage distributable for linux/x64
+  • downloaded      label=appimage-12.0.1.7z progress=100%
+  • downloaded      label=7zip-linux-x64.tar.gz progress=100%
+  • building embedded block map  file=out/make/HelloPear-1.0.0-x64.AppImage
+✔ Making a appImage distributable for linux/x64
+✔ Making distributables
+❯ Running postMake hook
+› Artifacts available at: /var/tmp/s2/dl-template/app/out/make
+✔ Running postMake hook
+❯ Saving make results
+› Make results saved to: /var/tmp/s2/dl-template/app/out/make-results
+✔ Saving make results
+[exit 0]
+--- out/ (depth 2)
+d         4096 .
+d         4096 ./HelloPear-linux-x64
+f    220253400 ./HelloPear-linux-x64/HelloPear
+f         1096 ./HelloPear-linux-x64/LICENSE
+f     20008860 ./HelloPear-linux-x64/LICENSES.chromium.html
+f        15232 ./HelloPear-linux-x64/chrome-sandbox
+f       120284 ./HelloPear-linux-x64/chrome_100_percent.pak
+f       198601 ./HelloPear-linux-x64/chrome_200_percent.pak
+f      1906240 ./HelloPear-linux-x64/chrome_crashpad_handler
+f     10876560 ./HelloPear-linux-x64/icudtl.dat
+f       256744 ./HelloPear-linux-x64/libEGL.so
+f      6460064 ./HelloPear-linux-x64/libGLESv2.so
+f      2714344 ./HelloPear-linux-x64/libffmpeg.so
+f      4636360 ./HelloPear-linux-x64/libvk_swiftshader.so
+f      2450616 ./HelloPear-linux-x64/libvulkan.so.1
+d         4096 ./HelloPear-linux-x64/locales
+d         4096 ./HelloPear-linux-x64/resources
+f      7058669 ./HelloPear-linux-x64/resources.pak
+f       346664 ./HelloPear-linux-x64/snapshot_blob.bin
+f       721416 ./HelloPear-linux-x64/v8_context_snapshot.bin
+f            8 ./HelloPear-linux-x64/version
+f          107 ./HelloPear-linux-x64/vk_swiftshader_icd.json
+d         4096 ./make
+d         4096 ./make-results
+f         2922 ./make-results/835da05e7b0fd6d00ea3246d69b07b0e980e63b2cbb5aa1c6afe041e3b4d74b5.forge-make.json
+f    154159474 ./make/HelloPear-1.0.0-x64.AppImage
+forge AppImage: /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage sha256=cf213fa90028a3c9724d83abd145fa1b60e03f2dd2d89fdb09586a009d53cf8c
+STATE FORGE_AIMG_1_0_0=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage
+STATE SHA_1_0_0=cf213fa90028a3c9724d83abd145fa1b60e03f2dd2d89fdb09586a009d53cf8c
+PHASE OK: make1
+======== [S2 08:39:52] pear build with Forge's own file name (expected to be refused) ========
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage --target /var/tmp/s2/builds/refused-1.0.0 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.0","target":"/var/tmp/s2/builds/refused-1.0.0"}}
+{"cmd":"build","tag":"error","data":{"success":false,"code":"ERR_INVALID_APP_NAME","message":"expected HelloPear but got HelloPear-1.0.0-x64.AppImage for linux-x64"}}
+[exit 1]
+======== [S2 08:39:52] pear build 1.0.0 ========
+$ timeout 300 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dist/1.0.0/HelloPear.AppImage --target /var/tmp/s2/builds/hello-pear-electron-1.0.0 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.0","target":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"build","tag":"executable","data":{"file":"/var/tmp/s2/builds/hello-pear-electron-1.0.0/by-arch/linux-x64/app/HelloPear.AppImage","origin":"/var/tmp/s2/dist/1.0.0/HelloPear.AppImage"}}
+{"cmd":"build","tag":"final","data":{"success":true}}
+[exit 0]
+--- deployment folder /var/tmp/s2/builds/hello-pear-electron-1.0.0
+d         4096 755 .
+d         4096 755 ./by-arch
+d         4096 755 ./by-arch/linux-x64
+d         4096 755 ./by-arch/linux-x64/app
+f    154159474 755 ./by-arch/linux-x64/app/HelloPear.AppImage
+f         2470 644 ./package.json
+2df8adc0d394786b892488fc2ef75f220498dcec1b18d72f6468a679b18ecb3a  package.json
+cf213fa90028a3c9724d83abd145fa1b60e03f2dd2d89fdb09586a009d53cf8c  by-arch/linux-x64/app/HelloPear.AppImage
+{'name': 'hello-pear-electron', 'productName': 'HelloPear', 'version': '1.0.0', 'upgrade': 'pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky', 'main': 'electron/main.js'}
+PHASE OK: build1
+======== [S2 08:39:55] pear stage --dry-run 1.0.0 ========
+$ bash -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' stage --dry-run --json 'pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky' '/var/tmp/s2/builds/hello-pear-electron-1.0.0' </dev/null > '/var/tmp/s2/logs/stage-dry-1.0.0.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","link":"pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","verlink":"pear://0.0.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","current":1,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"stage","tag":"dry"}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[154159474],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":2,"remove":0,"change":0,"length":0,"byteLength":0,"blobs":{"length":0,"fork":0,"byteLength":0}}}
+{"cmd":"stage","tag":"skipping","data":{"reason":"dry-run","success":true}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":true}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+======== [S2 08:39:55] pear stage 1.0.0 ========
+$ bash -c timeout 900 '/var/tmp/s2/home/.local/bin/pear' stage --json 'pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky' '/var/tmp/s2/builds/hello-pear-electron-1.0.0' </dev/null > '/var/tmp/s2/logs/stage-1.0.0.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","link":"pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","verlink":"pear://0.0.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","current":1,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[154159474],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":2,"remove":0,"change":0,"length":3,"byteLength":397,"blobs":{"length":114,"fork":0,"byteLength":154162618}}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":false}}
+{"cmd":"stage","tag":"addendum","data":{"version":3,"key":"fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","link":"pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","verlink":"pear://0.3.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky"}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+STATE VERLINK_1_0_0=pear://0.3.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear info pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+  Info:          pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+  Verlink:       pear://0.3.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+  App:           hello-pear-electron@1.0.0
+  Product Name:  HelloPear
+  Writable:      true
+  Targets:
+    linux-x64 (154.2MB)
+  Drive Key:     fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+  Drive Fork:    0
+  Drive Length:  3
+  Drive Size:    397B
+  Blobs Key:     bwfnwj3rkeabnc6ieu63cm5ixofimcd3d3fo7iuruzi1e838s3wy
+  Blobs Fork:    0
+  Blobs Length:  114
+  Blobs Size:    154.2MB
+  Discovery Key: yetszcxpkfumfq9g5parhokndkphujbpfgbknwm93puawddoi7jy
+  Upgrade:       pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+✔ Success
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear dump --list pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+🍐 Output pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+/by-arch/linux-x64/app/HelloPear.AppImage
+/package.json
+✔ Success
+[exit 0]
+PHASE OK: stage1
+======== [S2 08:40:02] pear install pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky ========
+$ bash -o pipefail -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' install 'pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky' --json --timeout 300 </dev/null | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","host":"linux-x64"}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":4377823,"blocks":5,"speed":4377823,"progress":0.044642857142857144},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":34361868,"blocks":26,"speed":34361868,"progress":0.23214285714285715},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":49439921,"blocks":34,"speed":39551936.8,"progress":0.30357142857142855},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":72650221,"blocks":46,"speed":48433480.666666664,"progress":0.4107142857142857},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":92217235,"blocks":62,"speed":52695562.85714286,"progress":0.5535714285714286},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":113670506,"blocks":80,"speed":56835253,"progress":0.7142857142857143},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":135674143,"blocks":97,"speed":60299619.11111111,"progress":0.8660714285714286},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"stats","data":{"peers":1,"download":{"bytes":146037400,"blocks":106,"speed":58414960,"progress":0.9464285714285714},"upload":{"bytes":0,"blocks":0,"speed":0}}}
+{"cmd":"install","tag":"app","data":{"app":"HelloPear","name":"hello-pear-electron","version":"1.0.0","upgrade":"pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","verlink":"pear://0.3.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","key":"/by-arch/linux-x64/app/HelloPear.AppImage","tmp":"/var/tmp/s2/home/.config/pear/gc/1deae66778fdadda9e9969dd8a94c55d/targets","dest":"/var/tmp/s2/home/.local/bin/HelloPear.AppImage"}}
+{"cmd":"install","tag":"final","data":{"success":true,"installed":1,"exists":[]}}
+[exit 0]
+STATE INSTALLED=/var/tmp/s2/home/.local/bin/HelloPear.AppImage
+-rwxr-xr-x 1 root root 154159474 Nov 19 08:40 /var/tmp/s2/home/.local/bin/HelloPear.AppImage
+installed sha256=cf213fa90028a3c9724d83abd145fa1b60e03f2dd2d89fdb09586a009d53cf8c build 1.0.0 sha256=cf213fa90028a3c9724d83abd145fa1b60e03f2dd2d89fdb09586a009d53cf8c
+--- HOME after install (names only; npm cache and Pear's own storage pruned)
+d         4096 .
+d         4096 ./.cache
+d         4096 ./.cache/electron
+d         4096 ./.cache/electron-builder
+d         4096 ./.cache/electron-builder/7zip@1.0.0
+d         4096 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr
+f          117 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr.state
+f        27032 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr/COPYING
+f         6341 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr/LICENSE.txt
+d         4096 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr/bin
+l            3 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr/bin/7za
+f      2869808 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64-16wjr/bin/7zz
+f      1307612 ./.cache/electron-builder/7zip@1.0.0/7zip-linux-x64.tar.gz
+d         4096 ./.cache/electron-builder/appimage-12.0.1
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17
+f          118 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17.state
+f         6148 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/.DS_Store
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/darwin
+f       714352 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/darwin/desktop-file-validate
+f       262516 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/darwin/mksquashfs
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32
+f         9688 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32/libXss.so.1
+f        22048 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32/libXtst.so.6
+f        51000 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32/libappindicator.so.1
+f       186640 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32/libgconf-2.so.4
+f        55276 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32/libindicator.so.7
+f        26240 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/ia32/libnotify.so.4
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64
+f        14488 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64/libXss.so.1
+f        22880 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64/libXtst.so.6
+f        52128 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64/libappindicator.so.1
+f       192296 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64/libgconf-2.so.4
+f        60648 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64/libindicator.so.7
+f        31304 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/lib/x64/libnotify.so.4
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-arm32
+f       181988 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-arm32/mksquashfs
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-arm64
+f        62272 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-arm64/desktop-file-validate
+f       330120 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-arm64/mksquashfs
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-ia32
+f        36424 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-ia32/desktop-file-validate
+f       248924 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-ia32/mksquashfs
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64
+f        42296 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/desktop-file-validate
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib
+f       465766 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/libopenjp2.a
+l           15 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/libopenjp2.so
+f       371853 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/libopenjp2.so.2.3.0
+l           19 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/libopenjp2.so.7
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/openjpeg-2.3
+f         1327 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/openjpeg-2.3/OpenJPEGConfig.cmake
+f         3514 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/openjpeg-2.3/OpenJPEGTargets-release.cmake
+f         1231 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/openjpeg-2.3/OpenJPEGTargets.cmake
+d         4096 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/pkgconfig
+f          313 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/lib/pkgconfig/libopenjp2.pc
+f       270264 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/mksquashfs
+f      1156690 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/linux-x64/opj_decompress
+f       197808 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/runtime-arm64
+f       143620 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/runtime-armv7l
+f       182208 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/runtime-ia32
+f       188392 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1-qkv17/runtime-x64
+f      1573447 ./.cache/electron-builder/appimage-12.0.1/appimage-12.0.1.7z
+d         4096 ./.cache/electron-builder/downloads
+d         4096 ./.cache/electron-builder/downloads/8965a105abe2d4e835bf2ad3bdadf8cb43bca11085d4778ac64002e75a482f1c
+f      1573447 ./.cache/electron-builder/downloads/8965a105abe2d4e835bf2ad3bdadf8cb43bca11085d4778ac64002e75a482f1c/appimage-12.0.1.7z
+d         4096 ./.cache/electron-builder/downloads/cfdeea0a4db84f58987e55bae3e48d9bcc36b8af815bd084b4474995879db443
+f      1307612 ./.cache/electron-builder/downloads/cfdeea0a4db84f58987e55bae3e48d9bcc36b8af815bd084b4474995879db443/7zip-linux-x64.tar.gz
+d         4096 ./.cache/electron/a63606e2e6c4dc8c0e968cde53f2ef68d20f3706cd313a89bec2149735cec575
+f    124970294 ./.cache/electron/a63606e2e6c4dc8c0e968cde53f2ef68d20f3706cd313a89bec2149735cec575/electron-v42.11.18-linux-x64.zip
+d         4096 ./.config
+d         4096 ./.local
+d         4096 ./.local/bin
+f    154159474 ./.local/bin/HelloPear.AppImage
+f     99679496 ./.local/bin/pear
+d         4096 ./.local/share
+d         4096 ./.local/share/icons
+d         4096 ./.local/share/icons/hicolor
+d         4096 ./.local/share/icons/hicolor/128x128
+d         4096 ./.local/share/icons/hicolor/128x128/apps
+--- top level of Pear's storage (names only)
+total 24
+drwxr-xr-x 5 root root 4096 Nov 19 08:38 .
+drwxr-xr-x 3 root root 4096 Nov 19 08:38 ..
+drwxr-xr-x 3 root root 4096 Nov 19 08:38 corestores
+drwxr-xr-x 2 root root 4096 Nov 19 08:38 db
+drwxr-xr-x 2 root root 4096 Nov 19 08:40 gc
+-rw-r--r-- 1 root root    0 Nov 19 08:38 pear.lock
+-rw-r--r-- 1 root root 1165 Nov 19 08:40 pear.log
+srwxr-xr-x 1 root root    0 Nov 19 08:38 pear.sock
+--- the .desktop entry pear install wrote
+cat: /var/tmp/s2/home/.local/share/applications/HelloPear.desktop: No such file or directory
+$ timeout 300 /var/tmp/s2/home/.local/bin/pear install pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky --timeout 120
+Installing... pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+Refusing to overwrite existing:
+  /var/tmp/s2/home/.local/bin/HelloPear.AppImage
+To reinstall, manually remove then rerun command
+Failed
+[exit 1]
+PHASE FAILED: install
+======== [S2 08:40:38] cleanup ========
+--- seeder log (tail)
+driveFork":0,"driveSynced":3,"driveLength":3,"blobsSynced":114,"blobsLength":114,"blobsByteLength":154162618,"name":"hello-pear-electron","semver":"1.0.0","discoveryKey":"yetszcxpkfumfq9g5parhokndkphujbpfgbknwm93puawddoi7jy","contentKey":"bwfnwj3rkeabnc6ieu63cm5ixofimcd3d3fo7iuruzi1e838s3wy","whoami":"ydkfjifc3bqxahdcpjcuk6sw7tqqrkecm3mw8p9ed755mtn4qgxy","uptime":81248,"upload":{"totalBytes":154163015,"totalBlocks":117,"speed":0},"download":{"totalBytes":12,"totalBlocks":1,"speed":0},"natType":"Consistent","connections":0,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+{"cmd":"seed","tag":"stats","data":{"firewalled":true,"peers":0,"driveKey":"fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky","driveFork":0,"driveSynced":3,"driveLength":3,"blobsSynced":114,"blobsLength":114,"blobsByteLength":154162618,"name":"hello-pear-electron","semver":"1.0.0","discoveryKey":"yetszcxpkfumfq9g5parhokndkphujbpfgbknwm93puawddoi7jy","contentKey":"bwfnwj3rkeabnc6ieu63cm5ixofimcd3d3fo7iuruzi1e838s3wy","whoami":"ydkfjifc3bqxahdcpjcuk6sw7tqqrkecm3mw8p9ed755mtn4qgxy","uptime":84249,"upload":{"totalBytes":154163015,"totalBlocks":117,"speed":0},"download":{"totalBytes":12,"totalBlocks":1,"speed":0},"natType":"Consistent","connections":0,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+{"cmd":"seed","tag":"peer-add","data":"48j41kc3y63pzackq8j1pfd866h3bcxmmdcd5yttgo8gefobhzay"}
+{"cmd":"seed","tag":"peer-remove","data":"48j41kc3y63pzackq8j1pfd866h3bcxmmdcd5yttgo8gefobhzay"}
+- Closing any current Sidecar clients...
+- Shutting down current Sidecar...
+✔ Sidecar has shutdown
+--- state
+LINK=pear://fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+SEED_PID=2915
+FORGE_AIMG_1_0_0=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage
+SHA_1_0_0=cf213fa90028a3c9724d83abd145fa1b60e03f2dd2d89fdb09586a009d53cf8c
+VERLINK_1_0_0=pear://0.3.fwbfg69jw3e511d41wua66id18rqec9yshhaw543ncq36117wuky
+INSTALLED=/var/tmp/s2/home/.local/bin/HelloPear.AppImage
+KATA_RUN_RC=1
+ERROR: Job failed: exit status 1
+[kata-run] job failed, exit 1

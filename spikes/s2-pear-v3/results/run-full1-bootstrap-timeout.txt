@@ -1,0 +1,24 @@
+======== [S2 07:49:20] bootstrap: npx pear@3.0.0 (HOME=/var/tmp/s2/home) ========
+registry dist.integrity: sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+integrity matches the pin
+$ timeout 1500 npx --yes pear@3.0.0
+Installing Pear (Please stand by, this might take a bit...)
+Bootstrapping: pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+Network Timeout 30s
+[exit 0]
+--- what npx installed (registry integrity of each)
+node_modules/corestore 7.16.1 sha512-Zk2lirmXxNKxdKp7aqObnPxQKUzc+DmAfzff45EZDxSeW2k8UbXlEEPrg35Xme5OC6E/ZkZgSZaAe3Ki9NI44w==
+node_modules/hyperdrive 13.3.4 sha512-cbh4Zoov2l6GMn6NCYs8VNBzPU3C2M5/otOjIR1qagsrLbKZsfSC4Q7ryTbnDrj8FK32Jkdo0jLU1NeRmTkj3Q==
+node_modules/hyperswarm 4.17.2 sha512-yKTNgHjijwrmSj5neC2Lu5JyKDvj9gZK/zkVLySP6J2M7nF+uvFMoxzRlWKKjdySfZVHZXPLfhk4xAnpqibm5A==
+node_modules/pear 3.0.0 sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+node_modules/pear-install 1.6.0 sha512-aMTWX6TaUgbzo0MtQfPrRH8bDFH/LDAvGZ8LPw/ql2iPyTMIxKhisLjYsaA+VOJEd+fr0o7VoxozT6Nu/Ptwyg==
+ls: cannot access '/var/tmp/s2/home/.local/bin': No such file or directory
+/var/tmp/s2/home/.local/bin/pear: cannot open `/var/tmp/s2/home/.local/bin/pear' (No such file or directory)
+PHASE FAILED: bootstrap
+======== [S2 07:50:13] cleanup ========
+--- state
+KATA_RUN_RC=1
+ERROR: Job failed: exit status 1
+[kata-run] job failed, exit 1
+[kata-run] timing (agentrun): sync 2.8 s, queue 3158.3 s, setup 0.0 s, command 156.7 s, job 165.7 s, total 3394.8 s
+kata-run exit 1
