@@ -1,0 +1,44 @@
+{
+  "name": "nutflix-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A Pear-native Nutflix: a Bare worker speaking NFX-12 over HyperDHT, a Chromium renderer, thin Pear shells.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SovereignTechnology/nutflix-runtime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SovereignTechnology/nutflix-runtime/issues"
+  },
+  "homepage": "https://github.com/SovereignTechnology/nutflix-runtime#readme",
+  "author": "Sovereign Technology",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "vendor/nutflix-pear/packages/core",
+    "vendor/nutflix-pear/packages/seeder",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "ci": "npm run lint && npm run build && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.6",
+    "@vitest/coverage-v8": "5.1.0",
+    "eslint": "10.14.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.2",
+    "vitest": "5.1.0"
+  }
+}

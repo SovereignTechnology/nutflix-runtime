@@ -1,0 +1,40 @@
+{
+  "name": "@nutflix-runtime/worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Bare worker (data plane): NFX-12 fetch and seed over HyperDHT, a sha256-checked NFX store, a loopback progressive range server and a loopback NFX origin, behind a framed JSON RPC",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./main": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@sovit/core": "0.0.0",
+    "@sovit/seeder": "0.0.0",
+    "bare-encoding": "1.0.3",
+    "bare-fs": "4.8.4",
+    "bare-http1": "4.6.3",
+    "bare-path": "3.1.2",
+    "corestore": "7.16.1",
+    "hyperdht": "6.36.0",
+    "sodium-native": "5.2.0"
+  },
+  "devDependencies": {
+    "bare-sidecar": "0.5.4",
+    "fast-check": "4.10.2"
+  }
+}

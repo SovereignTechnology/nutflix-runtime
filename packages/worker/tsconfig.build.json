@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": ["ES2023"]
+  },
+  "include": ["src"],
+  "exclude": ["src/**/__tests__/**"],
+  "references": [
+    { "path": "../../vendor/nutflix-pear/packages/core" },
+    { "path": "../../vendor/nutflix-pear/packages/seeder" }
+  ]
+}

@@ -1,0 +1,3 @@
+[submodule "vendor/nutflix-pear"]
+	path = vendor/nutflix-pear
+	url = https://github.com/SovereignTechnology/nutflix-pear.git

@@ -1,0 +1,93 @@
+# CI for the public nutflix-runtime repo (GitHub Actions). Tests and CI never run on a developer
+# machine; this is where they run. After nutflix-pear's ci.yml (the submodule's pinned commit).
+#
+# Supply-chain policy (as nutflix-pear's threat T12): actions pinned by commit SHA; `npm ci
+# --ignore-scripts` (lockfile-only, exact pins, no lifecycle scripts); lockfile drift and
+# non-registry resolutions fail; registry signatures and provenance verified; least-privilege
+# token; no credentials persisted. nutflix-pear's packages come from the pinned submodule
+# (vendor/nutflix-pear), checked out with the repository and built here.
+#
+# A weekly run on main (Monday) surfaces a new npm advisory without waiting for a push; it has a
+# concurrency group of its own, so a push to main never cancels it. Every job has a timeout.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'schedule' && 'schedule-' || '' }}${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Never let the runner's environment inject loaders into anything we execute here.
+  NODE_OPTIONS: ''
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: the submodule is at the commit this tree pins
+        run: |
+          git submodule status --recursive
+          ! git submodule status --recursive | grep -q '^[-+U]'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: lockfile drift
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          git diff --exit-code --stat package-lock.json
+      - name: every dependency resolves to registry.npmjs.org
+        run: |
+          node -e '
+            const p = require("./package-lock.json").packages;
+            const bad = Object.entries(p).filter(([k, v]) => k.startsWith("node_modules/") && !v.link && v.resolved && !/^https:\/\/registry\.npmjs\.org\//.test(v.resolved));
+            if (bad.length) { console.error("non-registry resolutions:", bad.map(([k]) => k)); process.exit(1); }'
+      - name: registry signatures and provenance
+        run: npm audit signatures
+      - name: advisories (high and above)
+        run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # The worker's tests import nutflix-pear's packages from their dist/, so the build comes first.
+      - run: npm run build
+      # With --coverage (v8): a summary in the log, the reports as the job's artifact.
+      - run: npm test -- --coverage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage
+          path: |
+            coverage/coverage-summary.json
+            coverage/lcov.info
+          if-no-files-found: ignore
+          retention-days: 14
