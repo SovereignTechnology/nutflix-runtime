@@ -12,6 +12,8 @@ export default tseslint.config(
       '**/coverage/**',
       // nutflix-pear, pinned (ADR 0001 §6): linted by its own CI, never by this one.
       'vendor/**',
+      // Spike harnesses: throwaway code that runs only in VMs and CI (docs/spikes/).
+      'spikes/**',
     ],
   },
   js.configs.recommended,

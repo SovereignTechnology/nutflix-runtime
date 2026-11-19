@@ -1,0 +1,19 @@
+{
+  "name": "s1-pear-v2-harness",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike S1: can a pre-v3 Pear platform still be bootstrapped, held, and run pear:// apps. Runs only in a throwaway VM. overrides pin hypercore to Pear v2.6.5's own 11.28.1 (hypercore-storage 2.x): a corestore written by today's hypercore-storage 3.x is one the v2.6.5 sidecar refuses.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "corestore": "7.9.2",
+    "hypercore-id-encoding": "1.3.0",
+    "hyperdrive": "13.3.2",
+    "hyperswarm": "4.17.0",
+    "pear": "2.0.1",
+    "pear-updater": "3.10.0"
+  },
+  "overrides": {
+    "hypercore": "11.28.1",
+    "hypercore-storage": "2.8.0"
+  }
+}

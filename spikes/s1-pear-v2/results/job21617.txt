@@ -1,0 +1,23 @@
+# kata-run job 21617 (agentrun, Kata VM), run.sh gui, 2026-11-19 09:07Z. Failed in pin-bootstrap.js: protomux 3.13.1
+# loaded a compact-encoding without optionalBuffer (2.x has none; 3.x has it). The lockfile now nests compact-encoding
+# 3.7.0 under protomux. Job 21619 (run.sh hold) never started its script: it stalled at checkout and GitLab timed it out.
+npm ci: 0
+S1: == env
+S1: os: Debian GNU/Linux 12 (bookworm)
+S1: kernel: 6.18.63 arch: x86_64
+S1: id: uid=0(root) gid=0(root) groups=0(root)
+S1: nproc: 12 mem: 8151752 kB
+S1: status: NoNewPrivs: 1 Seccomp: 2 
+S1: node: v24.21.0 npm: 11.19.0
+S1: disk: 478G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U fails
+S1: == install: pinned bootstrap length=3243 fork=0
+<repo>/spikes/s1-pear-v2/node_modules/protomux/index.js:103
+TypeError: Cannot read properties of undefined (reading 'preencode')
+    at Channel.open (<repo>/spikes/s1-pear-v2/node_modules/protomux/index.js:103:22)
+    at Replicator._makePeer (<repo>/spikes/s1-pear-v2/node_modules/hypercore/lib/replicator.js:3160:18)
+    at <repo>/spikes/s1-pear-v2/node_modules/hypercore/lib/replicator.js:3076:38
+Node.js v24.21.0
+S1: pin-bootstrap exit: 1
+KATA_RUN_RC=1

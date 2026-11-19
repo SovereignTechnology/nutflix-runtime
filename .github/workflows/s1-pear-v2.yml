@@ -1,0 +1,45 @@
+# Spike S1 (docs/spikes/S1-pear-v2-pin.md), on demand only: runs one phase of the harness in
+# spikes/s1-pear-v2 on a throwaway GitHub runner, as a non-root user. It downloads and runs the Pear
+# v2.6.5 platform and its Electron, pinned by drive length; the job log records their sha256.
+#
+# Build and test only: no seeding, no staged pear:// link (S1_GUI_LINK=0), no secrets, a read-only
+# token, no credentials persisted, no artifacts. The phase input reaches the shell through env only.
+name: s1-pear-v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: run.sh phase
+        type: choice
+        options: [gui, stock]
+        default: gui
+
+permissions:
+  contents: read
+
+env:
+  NODE_OPTIONS: ''
+
+jobs:
+  s1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: run.sh ${{ inputs.phase }}
+        working-directory: spikes/s1-pear-v2
+        env:
+          PHASE: ${{ inputs.phase }}
+          PIN_LENGTH: '3243'
+          PIN_FORK: '0'
+          S1_GUI_LINK: '0'
+          S1_ENV: github-actions ubuntu-24.04
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          bash run.sh "$PHASE"
