@@ -33,6 +33,17 @@ This repository reuses nutflix-pear's packages (`@sovit/core`, `@sovit/ui`, `@so
 through a pinned git submodule rather than copying them, so the wire formats stay byte-compatible
 with deployed seeders.
 
+## Layout
+
+- `vendor/nutflix-pear`: nutflix-pear, a git submodule pinned to one commit. Its `core` and
+  `seeder` packages are npm workspaces here, built from source.
+- `packages/worker`: the Bare worker, the data plane. Its protocol is in
+  [its README](packages/worker/README.md).
+
+Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain
+clone. `npm ci`, `npm run build`, `npm run lint` and `npm test` work as in nutflix-pear. The tests
+run in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
 ## Licence
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -63,6 +63,8 @@ htmlcov/
 vendor/
 # docs/vendor/ holds the pinned upstream specs every lane must read (execution plan §0 rule 6)
 !docs/vendor/
+# /vendor/nutflix-pear is the pinned nutflix-pear submodule (ADR 0001 §6), not Go vendoring.
+!/vendor/
 
 # --- Nutflix build artefacts ------------------------------------------------
 # screenshots/diffs are generated per lane run; only the directory skeleton is tracked

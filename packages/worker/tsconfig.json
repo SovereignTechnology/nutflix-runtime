@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "lib": ["ES2023"]
+  },
+  "include": [
+    "src",
+    "../../vendor/nutflix-pear/packages/app-desktop/src/worker/__tests__/helpers/nfx-video.ts"
+  ],
+  "references": [
+    { "path": "../../vendor/nutflix-pear/packages/core" },
+    { "path": "../../vendor/nutflix-pear/packages/seeder" }
+  ]
+}
