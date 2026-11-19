@@ -1,0 +1,85 @@
+# --- Secrets: never commit these -------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+*.credentials
+
+# --- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editors / IDEs ---------------------------------------------------------
+.idea/
+.vscode/
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.direnv/
+
+# --- Logs & temp ------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-error.log*
+tmp/
+temp/
+*.tmp
+
+# --- Node -------------------------------------------------------------------
+node_modules/
+dist/
+build/
+.cache/
+coverage/
+.next/
+.nuxt/
+.turbo/
+*.tsbuildinfo
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+htmlcov/
+
+# --- Rust / Go --------------------------------------------------------------
+/target/
+# Each crate under crates/ is its own Cargo workspace (ADR 0021): its build output stays local.
+/crates/*/target/
+*.rs.bk
+vendor/
+# docs/vendor/ holds the pinned upstream specs every lane must read (execution plan §0 rule 6)
+!docs/vendor/
+
+# --- Nutflix build artefacts ------------------------------------------------
+# screenshots/diffs are generated per lane run; only the directory skeleton is tracked
+artifacts/**/*.png
+artifacts/**/*.jpg
+artifacts/**/*.webm
+artifacts/**/*.json
+storybook-static/
+.worktrees/
+# Electron Forge output: staged app, packaged builds, installers, release manifests (issue #6)
+packages/app-desktop/out/
+
+# --- Media (large binaries do not belong in git) ----------------------------
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.iso
+.lane
