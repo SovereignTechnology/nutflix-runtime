@@ -1,0 +1,56 @@
+# GitHub Actions run 44513178657, job 135522325589 (ubuntu-24.04, non-root), run.sh stock, 2026-11-19 11:17Z. Result lines only.
+S1: == env
+S1: os: Ubuntu 24.04.5 LTS
+S1: kernel: 7.0.0-1014-aws arch: x86_64
+S1: id: uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),117(docker),999(systemd-journal)
+S1: nproc: 4 mem: 16078420 kB
+S1: status: NoNewPrivs: 0 Seccomp: 0 
+S1: node: v24.22.2 npm: 11.19.1
+S1: disk: 89G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U works
+S1: sysctl: unprivileged_userns_clone=1 apparmor_restrict_unprivileged_userns=1 max_user_namespaces=55514
+S1: runner: github-actions ubuntu-24.04
+S1: == stock: npx pear@2.0.1 with today's dependency tree
+S1: stock 2.0.1 npm install exit: 0
+S1: stock 2.0.1 tree: corestore@7.16.1 hypercore-storage@3.4.0 hypercore@11.40.4 rocksdb-native@3.19.6 
+S1:   Installing Pear Runtime (Please stand by, this might take a bit...)
+S1:   
+S1:   Pear Runtime installed!
+S1:   
+S1:   Finish the installation by opening the runtime app
+S1:   
+S1:   npx pear run pear://runtime
+S1:   
+S1:   Or by adding the following to your path
+S1:   
+S1:   export PATH="/tmp/s1/stockhome-2.0.1/.config/pear/bin:$PATH"
+S1: stock-2.0.1-bootstrap exit: 0
+S1: stock 2.0.1 current -> stockhome-2.0.1/.config/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1
+S1: versions-stock-2-0-1 exit: 0
+S1: == stock: npx pear@2.0.4 with today's dependency tree
+S1: stock 2.0.4 npm install exit: 0
+S1: stock 2.0.4 tree: corestore@7.9.2 hypercore-storage@2.9.0 hypercore@11.29.0 rocksdb-native@3.19.6 
+S1:   Installing Pear Runtime (Please stand by, this might take a bit...)
+S1:   
+S1:   Pear Runtime installed!
+S1:   
+S1:   Finish the installation by opening the runtime app
+S1:   
+S1:   npx pear run pear://runtime
+S1:   
+S1:   Or by adding the following to your path
+S1:   
+S1:   export PATH="/tmp/s1/stockhome-2.0.4/.config/pear/bin:$PATH"
+S1: stock-2.0.4-bootstrap exit: 0
+S1: stock 2.0.4 current -> stockhome-2.0.4/.config/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1
+S1:   Pear ~ Welcome to the Internet of Peers
+S1:   🍐 v0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o
+S1:   
+S1:   pear: 2.6.5 | bare: 1.24.3 | uv: 1.51.0 | v8: 14.2.231.14
+S1:   
+S1:   link: pear://0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o
+S1:   
+S1:   Use --modules|-m flag for module versions
+S1:   
+S1: versions-stock-2-0-4 exit: 0

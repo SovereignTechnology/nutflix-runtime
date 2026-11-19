@@ -320,8 +320,11 @@ pick_pkg() { local p; for p in "$@"; do apt-cache show "$p" >/dev/null 2>&1 && {
 
 gui_deps() {
   say "installing xvfb, Electron's shared libraries and ffmpeg"
+  # GitHub's Ubuntu image rebuilds the man-db index on every install (minutes): skip it there.
+  [ -n "$SUDO" ] && $SUDO rm -f /var/lib/man-db/auto-update
   $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1
-  local pkgs="xvfb xauth libnss3 libgbm1 libxss1 libxtst6 libdrm2 libxkbcommon0 libatk-bridge2.0-0 libxshmfence1 ffmpeg"
+  local pkgs="xvfb xauth libnss3 libgbm1 libxss1 libxtst6 libdrm2 libxkbcommon0 libatk-bridge2.0-0 libxshmfence1"
+  command -v ffmpeg >/dev/null || pkgs="$pkgs ffmpeg"
   pkgs="$pkgs $(pick_pkg libgtk-3-0t64 libgtk-3-0) $(pick_pkg libasound2t64 libasound2) $(pick_pkg libcups2t64 libcups2)"
   $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $pkgs >/dev/null 2>&1
   say "apt install exit: $? ($pkgs)"
@@ -342,16 +345,15 @@ gui_run() {
   local pslog="$WORK/ps-$label.txt"
   ( while :; do ps -eo pid,user,args | grep -E -- '--type=|pear-runtime-app' | grep -v grep >>"$pslog"; sleep 2; done ) &
   local sampler=$!
-  ( cd "$HERE/apps/gui" && S1_FIXTURE="$WORK/fixture.mp4" S1_GUI_TIMEOUT_MS=240000 ELECTRON_ENABLE_LOGGING=1 timeout "$secs" \
+  ( cd "$HERE/apps/gui" && S1_FIXTURE="$WORK/fixture.mp4" S1_GUI_TIMEOUT_MS=180000 ELECTRON_ENABLE_LOGGING=1 timeout "$secs" \
       xvfb-run -a -s '-screen 0 1280x800x24' "$PEAR" run "$@" "$target" </dev/null >"$WORK/gui-$label.out" 2>&1 )
   local rc=$?
   kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
   say "gui [$label] exit: $rc; output lines: $(wc -l <"$WORK/gui-$label.out")"
-  grep -E '^S1 |S1R |Error|ERR_|error:|FATAL|Running as root|sandbox' "$WORK/gui-$label.out" | cut -c1-16000 | head -40
-  say "gui [$label] last lines:"
-  tail -5 "$WORK/gui-$label.out" | cut -c1-400 | sed 's/^/S1:   /'
-  say "gui [$label] Electron process types and sandbox flags seen:"
-  grep -oE -- '--type=[a-z-]+|--no-sandbox|--enable-sandbox|--disable-gpu-sandbox|--no-zygote|--disable-setuid-sandbox' "$pslog" 2>/dev/null | sort | uniq -c | sed 's/^/S1:   /'
+  say "gui [$label] full output (first 120 lines):"
+  head -120 "$WORK/gui-$label.out" | cut -c1-16000 | sed 's/^/S1:   /'
+  say "gui [$label] Electron processes seen (sampled every 2 s), by type and sandbox flags:"
+  awk '{ t = "main"; f = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^--type=/) t = substr($i, 8); if ($i ~ /^--(no-sandbox|enable-sandbox|disable-gpu-sandbox|no-zygote|disable-setuid-sandbox|service-sandbox-type=.*)$/) f = f " " $i } print t ":" f }' "$pslog" 2>/dev/null | sort | uniq -c | sed 's/^/S1:   /'
   return $rc
 }
 
@@ -369,7 +371,7 @@ phase_gui() {
   say "ui asset electron binary: ${ui:+${ui#$WORK/}} sha256 $( [ -n "$ui" ] && sha256sum "$ui" | cut -d' ' -f1 )"
   local who=root; [ "$(id -u)" = 0 ] || who=user
   say "== Q3b/Q4/Q5: GUI app from a local dir (default flags: pear-electron adds --no-sandbox), as $who"
-  gui_run dir 420 "$HERE/apps/gui"
+  gui_run dir 300 "$HERE/apps/gui"
   crash_logs "gui dir"
   if [ "${S1_GUI_LINK:-1}" = 1 ]; then
     say "== Q3b: GUI app from a pear:// link (pear touch + pear stage)"
@@ -379,17 +381,17 @@ phase_gui() {
     say "touch link: ${link:-none}"
     if [ -n "$link" ]; then
       runlog gui-stage 600 "$HERE/apps/gui" "$PEAR" stage "$link" "$HERE/apps/gui"
-      gui_run link 420 "$link" --trusted
+      gui_run link 300 "$link" --trusted
     fi
   fi
   say "== Q5: ask for the sandbox (pear run --sandbox), as $who"
-  gui_run "sandbox-$who" 300 "$HERE/apps/gui" --sandbox
+  gui_run "sandbox-$who" 240 "$HERE/apps/gui" --sandbox
   if [ "$who" = user ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
     # Ubuntu 24.04 blocks unprivileged user namespaces for unconfined binaries; Debian does not.
     # Throwaway runner only: lift the block and ask for the sandbox again.
     $SUDO sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0
     say "== Q5: --sandbox again with unprivileged user namespaces allowed (userns: $(unshare -U true 2>/dev/null && echo works || echo fails))"
-    gui_run sandbox-user-userns 300 "$HERE/apps/gui" --sandbox
+    gui_run sandbox-user-userns 240 "$HERE/apps/gui" --sandbox
   fi
   current_state "end of gui"
   stop_all_pear

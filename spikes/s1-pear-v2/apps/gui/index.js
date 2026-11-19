@@ -52,10 +52,45 @@ function serveFixture () {
   })
 }
 
+// A request from Bare to the bridge, to tell a bridge failure from a renderer one.
+function selfRequest (port, headers) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve({ error: 'timeout' }), 10000)
+    try {
+      const req = http.request({ method: 'GET', host: '127.0.0.1', port, path: '/', headers }, (res) => {
+        let bytes = 0
+        let head = ''
+        res.on('data', (d) => { bytes += d.byteLength; if (head.length < 160) head += b4a.toString(d).slice(0, 160) })
+        res.on('end', () => { clearTimeout(t); resolve({ status: res.statusCode, bytes, contentType: res.headers['content-type'] || null, head: head.slice(0, 160) }) })
+        res.on('error', (e) => { clearTimeout(t); resolve({ status: res.statusCode, error: e.message }) })
+      })
+      req.on('error', (e) => { clearTimeout(t); resolve({ error: e.message }) })
+      req.end()
+    } catch (e) { clearTimeout(t); resolve({ error: e.message }) }
+  })
+}
+
 async function main () {
   const { port, size } = await serveFixture()
   const bridge = new Bridge()
+  // Every request the bridge gets: path, whether it carries X-Pear, and the status it answered.
+  const bridgeRequests = []
+  bridge.server.on('request', (req, res) => {
+    const r = { url: req.url, xPear: req.headers['x-pear'] ? 'present' : 'absent', status: null }
+    bridgeRequests.push(r)
+    res.on('finish', () => { r.status = res.statusCode })
+    res.on('close', () => { if (r.status === null) r.status = 'closed ' + res.statusCode })
+  })
   await bridge.ready()
+  const config = Pear.config || Pear.app || {}
+  out('gui-bare', {
+    stage: 'bridge-ready',
+    bridgeAddr: bridge.addr,
+    noHeader: await selfRequest(bridge.port, {}),
+    withHeader: await selfRequest(bridge.port, { 'x-pear': 'Pear ' + config.id }),
+    configIdShape: typeof config.id === 'string' ? config.id.replace(/[0-9a-z]/g, 'x').slice(0, 80) : typeof config.id
+  })
+  setTimeout(() => out('gui-bare', { stage: 'bridge-requests-at-30s', bridgeRequests: bridgeRequests.slice(0, 20) }), 30000)
   const runtime = new Runtime()
   const pipe = await runtime.start({ bridge })
   out('gui-bare', { stage: 'started', bridgeAddr: bridge.addr, videoPort: port, fixtureBytes: size })
@@ -69,7 +104,7 @@ async function main () {
     if (done) return
     done = true
     clearTimeout(timer)
-    out('gui-bare', { stage: 'finish', ...r, pipeChunks: chunks.slice(0, 6), serverRequests: requests.slice(0, 12), serverRequestCount: requests.length })
+    out('gui-bare', { stage: 'finish', ...r, pipeChunks: chunks.slice(0, 6), serverRequests: requests.slice(0, 12), serverRequestCount: requests.length, bridgeRequests: bridgeRequests.slice(0, 20) })
     try { pipe.end() } catch {}
     setTimeout(() => Pear.exit(r.ok ? 0 : 1), 3000)
   }

@@ -146,6 +146,14 @@ stays in `~/.config/pear`, but `pear` on PATH is v3 from then on, and v3 has no 
   also set `webSecurity: false` ("disable CORS"). With Node integration on, Electron does not
   sandbox that renderer even if Chromium's sandbox is running, so `pear run --sandbox` cannot give
   the renderer a sandbox either.
+- **An app cannot change any of this.** `open()` in `gui/gui.js` spreads the app's window and view
+  options first and then sets its own `webPreferences` object, so every `Pear.Window` and
+  `Pear.View` an app opens gets the same preferences. `webviewTag` is never set, so there is no
+  `<webview>`. The one isolation tool left to an app is an `<iframe>`: `nodeIntegrationInSubFrames:
+  false` keeps Node out of subframes.
+- Also set, for every app: `nodeIntegrationInWorker: true` (Web Workers get Node too),
+  `experimentalFeatures: true`, `ELECTRON_DISABLE_SECURITY_WARNINGS=true`, the
+  `allow-loopback-in-peer-connection` switch, and on Linux x64 `disableHardwareAcceleration()`.
 
 @@Q5SANDBOX@@
 
