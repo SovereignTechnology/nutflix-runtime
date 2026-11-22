@@ -633,16 +633,20 @@ export async function run(o: Options): Promise<number> {
     });
     report.launched = `${installedPath.launch}: ${launched.reason}`;
 
-    await phase('read the tripwire again (the app has its own DHT node)', async () => {
+    // The app starts no DHT node until a play or a stored video needs one, and this one has
+    // neither: a packet here would be a GitHub runner talking to the public network.
+    await phase('read the tripwire again: the launched app sent nothing', async () => {
       const hits = await barrier(tw, process.platform === 'win32' ? 120_000 : 15_000);
       const total = publicBootstrapHits(hits);
       const fromApp = total - publicBootstrapHits(duringPear);
       say(`tripwire: ${JSON.stringify(hits)}`);
       say(
-        `packets to the public bootstrap during Pear: 0; during the app's launch: ${String(fromApp)} (dropped)`,
+        `packets to the public bootstrap during Pear: 0; during the app's launch: ${String(fromApp)}`,
       );
       if (report.tripwire !== undefined)
         report.tripwire = { ...report.tripwire, publicBootstrapHitsFromTheApp: fromApp };
+      if (fromApp !== 0)
+        throw new Error(`${String(fromApp)} packets went to the public bootstrap from the app`);
     });
   } catch (e) {
     if (!(e instanceof Handled)) {
@@ -892,7 +896,7 @@ function writeSummary(work: string, r: Report): void {
     `| public bootstrap | ${
       r.tripwire === undefined
         ? 'NOT MEASURED'
-        : `${r.tripwire.kind}: canary counted ${String(r.tripwire.canaryCounted)}; packets to the public bootstrap during Pear: ${String(r.tripwire.publicBootstrapHitsDuringPear)}; during the app's launch (dropped): ${String(r.tripwire.publicBootstrapHitsFromTheApp)}`
+        : `${r.tripwire.kind}: canary counted ${String(r.tripwire.canaryCounted)}; packets to the public bootstrap during Pear: ${String(r.tripwire.publicBootstrapHitsDuringPear)}; during the app's launch: ${String(r.tripwire.publicBootstrapHitsFromTheApp)}`
     } |`,
     `| sidecar's bootstrap | ${r.bootstrapProof === undefined ? 'NOT READ' : `${r.bootstrapProof.set ? 'set' : 'NOT SET'}, names the private node: ${String(r.bootstrapProof.names)}, read known-nodes cache: ${String(r.bootstrapProof.readKnownNodes)}`} |`,
     '',

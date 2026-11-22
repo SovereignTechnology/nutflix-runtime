@@ -202,9 +202,8 @@ private network, and measures that it never touched the public one.
   Windows Defender Firewall with its blocked-packet log on Windows). The job proves the instrument
   first: it sends one datagram to a documentation address (RFC 5737) that the same rule watches, and
   fails unless the rule counted it. After Pear has run, the count for the public bootstrap must be
-  **zero**. It is read again after the app's launch: the app's own worker starts a HyperDHT node on
-  the public bootstrap at startup (`packages/worker/src/host.ts`), so those packets are expected
-  there, and they are dropped and counted, not sent.
+  **zero**, and it must still be zero after the installed app's launch: the app starts no DHT node
+  until a play or a stored video needs one (`packages/worker/src/net/dht-node.ts`).
 - **The Pear CLI is not fetched from the DHT.** `npx pear` bootstraps by downloading the platform
   drive over the public HyperDHT. This job downloads the platform's GitHub release asset instead
   (`https://github.com/holepunchto/pear/releases/download/v3.7.0/pear-<target>.zip`, an ordinary
@@ -249,10 +248,9 @@ signs. No secret is used.
   running process belongs to. A Windows file system cannot keep a macOS bundle's symlinks, so on the
   Windows runner the macOS entries of the deployment are stand-ins (compared by their files only);
   the other four legs unpack them exactly. Those four legs' deployments hold the unsigned `.msix`.
-- **The app's own DHT node.** The worker starts a HyperDHT node on the public bootstrap when the app
-  starts (`packages/worker/src/host.ts`, `init` takes no bootstrap from main). In the install job
-  that node's packets are dropped and counted (a few datagrams per launch); in the `shell` job,
-  which has no tripwire, they are sent. Neither job seeds, serves or announces anything with it.
+- **The app's own DHT node.** The worker uses the public bootstrap, but starts its node only when a
+  play or a stored video needs one. CI launches have neither, so they send nothing to the public
+  network, and the install job fails if one does.
 
 ### The AppImage runtime (for amendment, item 3)
 
