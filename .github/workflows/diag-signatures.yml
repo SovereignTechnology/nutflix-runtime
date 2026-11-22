@@ -1,0 +1,43 @@
+# Throwaway probe, never merged: what does each runner image receive from the npm registry?
+# Prints public values only (image, CDN colo, hashes, key id tails) and env var NAMES, never values.
+name: diag-signatures
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - name: probe
+        shell: bash
+        run: |
+          set +e
+          P=enhanced-resolve@5.27.0; B=https://registry.npmjs.org
+          echo "S image=$ImageVersion registry=$(npm config get registry) npm_env_names=$(env | cut -d= -f1 | grep -i '^npm' | sort | tr '\n' ',')"
+          echo "S userconfig_exists=$([ -f "$(npm config get userconfig)" ] && echo yes || echo no) globalconfig_exists=$([ -f "$(npm config get globalconfig)" ] && echo yes || echo no)"
+          for i in 1 2 3; do
+            curl -sS --max-time 15 -D h -o a.json "$B/-/npm/v1/attestations/$P"
+            echo "S att colo=$(tr -d '\r' < h | awk 'tolower($1)=="cf-ray:"{n=split($2,x,"-"); print x[n]}') http=$(head -1 h | awk '{print $2}') age=$(tr -d '\r' < h | awk 'tolower($1)=="age:"{print $2}') sha=$(sha256sum a.json | cut -c1-10) $(node -e 'const r=JSON.parse(require("fs").readFileSync("a.json"));console.log(r.attestations.map(a=>a.predicateType.split("/").at(-2)+":"+(a.bundle.dsseEnvelope.signatures[0].keyid||"none").slice(-8)).join(" "))')"
+          done
+          curl -sS --max-time 15 -D h -o k.json "$B/-/npm/v1/keys"
+          echo "S keys colo=$(tr -d '\r' < h | awk 'tolower($1)=="cf-ray:"{n=split($2,x,"-"); print x[n]}') sha=$(sha256sum k.json | cut -c1-10) $(node -e 'console.log(JSON.parse(require("fs").readFileSync("k.json")).keys.map(k=>k.keyid.slice(-8)).join(" "))')"
+          curl -sS --max-time 15 -H 'accept: application/json' -o p.json "$B/enhanced-resolve/5.27.0"
+          echo "S dist $(node -e 'const d=JSON.parse(require("fs").readFileSync("p.json")).dist;console.log("att_url="+(d.attestations&&d.attestations.url)+" sigs="+(d.signatures||[]).map(s=>s.keyid.slice(-8)).join(","))')"
+          npm audit signatures > out 2>&1; rc=$?
+          echo "S result rc=$rc $(grep -E 'npm error code|has attestations|packages have verified' out | tr '\n' ';' | cut -c1-170)"
+          exit 0
