@@ -55,6 +55,8 @@ describe('resolveAppPath', () => {
     ['app://nutflix/index.html', 'index.html'],
     ['app://nutflix/app.js', 'app.js'],
     ['app://nutflix/ui.css?x=1#y', 'ui.css'],
+    // The URL parser resolves a plain dot segment before the handler sees it: still inside the bundle.
+    ['app://nutflix/a/../index.html', 'index.html'],
   ])('%s -> %s', (url, rel) => {
     expect(resolveAppPath(url)).toBe(rel);
   });
@@ -65,7 +67,6 @@ describe('resolveAppPath', () => {
     'https://nutflix/index.html',
     'file:///etc/passwd',
     'app://nutflix/../etc/passwd',
-    'app://nutflix/a/../index.html',
     'app://nutflix/%2e%2e/index.html',
     'app://nutflix/%2E%2E%2findex.html',
     'app://nutflix/a%2fb.js',

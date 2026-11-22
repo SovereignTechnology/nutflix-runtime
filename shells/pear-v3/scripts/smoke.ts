@@ -16,7 +16,7 @@
  * a name match. Output is the verdict plus, on a failure, the tail of what the app printed.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -226,6 +226,53 @@ export async function launch(
   };
 }
 
+/**
+ * The Bare version of a packaged `bare`, by asking it: bare-sidecar's runtime is a launcher, not
+ * the stock `bare` binary (it has no `--version`), so a one-line script prints `Bare.version`. The
+ * launcher expects its IPC pipe on fd 3, as `pear-runtime`'s `run()` gives it, so fd 3 is a pipe,
+ * closed once the line is read (the launcher exits when it closes).
+ */
+export async function bareVersion(bin: string): Promise<{ version?: string; detail: string }> {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-v3-bare-'));
+  try {
+    const script = join(dir, 'version.js');
+    writeFileSync(script, "console.log('BARE_VERSION ' + Bare.version);\n");
+    const child = spawn(bin, [script], {
+      stdio: ['ignore', 'pipe', 'pipe', 'overlapped'],
+      detached: process.platform !== 'win32',
+    });
+    const exited = new Promise<number | null>((r) => {
+      child.once('exit', (code) => {
+        r(code);
+      });
+      child.once('error', () => {
+        r(null);
+      });
+    });
+    let out = '';
+    let err = '';
+    const found = new Promise<string | undefined>((resolveFound) => {
+      child.stdout?.on('data', (c: Buffer) => {
+        out += c.toString('utf8');
+        const m = /BARE_VERSION v?(\d+\.\d+\.\d+)/.exec(out);
+        if (m !== null) resolveFound(m[1]);
+      });
+      void exited.then(() => {
+        resolveFound(undefined);
+      });
+    });
+    child.stderr?.on('data', (c: Buffer) => {
+      err += c.toString('utf8');
+    });
+    const version = await Promise.race([found, sleep(30_000).then(() => undefined)]);
+    child.stdio[3]?.destroy();
+    await stop(child, exited);
+    return { ...(version === undefined ? {} : { version }), detail: `${out}${err}`.slice(0, 400) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function report(label: string, r: LaunchResult): void {
   process.stdout.write(
     `SMOKE ${r.ok ? 'PASS' : 'FAIL'} ${label}: ${r.reason} (${String(r.ms)} ms)\n`,
@@ -303,15 +350,16 @@ export async function main(argv: readonly string[]): Promise<number> {
       const platform = need(rest, '--platform');
       const arch = need(rest, '--arch');
       const bin = join(resolve(need(rest, '--app')), bareBinary(platform, arch));
-      const v = spawnSync(bin, ['--version'], { encoding: 'utf8' });
-      const version = /\d+\.\d+\.\d+/.exec(`${v.stdout}${v.stderr}`)?.[0];
-      if (v.status !== 0 || version === undefined) {
-        process.stdout.write(`SMOKE FAIL bare: \`bare --version\` exited ${String(v.status)}\n`);
+      const v = await bareVersion(bin);
+      if (v.version === undefined) {
+        process.stdout.write(
+          `SMOKE FAIL bare: no version from the packaged runtime: ${v.detail}\n`,
+        );
         return 1;
       }
-      const ok = compareVersions(version, MIN_BARE) >= 0;
+      const ok = compareVersions(v.version, MIN_BARE) >= 0;
       process.stdout.write(
-        `SMOKE ${ok ? 'PASS' : 'FAIL'} bare ${version} (the worker needs ${MIN_BARE} or later)\n`,
+        `SMOKE ${ok ? 'PASS' : 'FAIL'} bare ${v.version} (the worker needs ${MIN_BARE} or later)\n`,
       );
       return ok ? 0 : 1;
     }
