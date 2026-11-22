@@ -1,0 +1,196 @@
+--- a/src/runtime/runtime.c
++++ b/src/runtime/runtime.c
+@@ -64,6 +64,8 @@
+ #include <libgen.h>
+ #include <dirent.h>
+ #include <ctype.h>
++#include <sys/file.h>
++#include <sys/prctl.h>
+ 
+ const char* fusermountPath = NULL;
+ 
+@@ -970,7 +972,9 @@
+     // FTW_MOUNT: prevent deletion of files on other mounted filesystems
+     // FTW_PHYS: do not follow symlinks, but report symlinks as such; this way, the symlink targets, which might point
+     //           to locations outside path will not be deleted accidentally (attackers might abuse this)
+-    int rv = nftw(path, &rm_recursive_callback, 0, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
++    // nutflix-runtime: musl's nftw returns 0 at once for a limit of 0, and does not descend past
++    // the limit, so upstream's call removes nothing in this static build.
++    int rv = nftw(path, &rm_recursive_callback, 128, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+ 
+     return rv == 0;
+ }
+@@ -1463,6 +1467,129 @@
+     }
+ }
+ 
++/*
++ * nutflix-runtime: whether a FUSE mount can work on this machine, decided before trying it.
++ * Upstream tries, fails and exits, before the app can tell the user anything.
++ */
++static bool nutflix_fuse_usable(const bool verbose) {
++    if (getenv("FUSERMOUNT_PROG") == NULL) {
++        char* const prog = find_fusermount(verbose);
++        if (prog == NULL)
++            return false;
++        free(prog);
++    }
++    if (access("/dev/fuse", R_OK | W_OK) != 0)
++        return false;
++    /* A setuid fusermount cannot gain privileges under no_new_privs. */
++    if (geteuid() != 0 && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1)
++        return false;
++    return true;
++}
++
++static bool nutflix_join(char* const out, const size_t size, const char* const a, const char* const b) {
++    const int n = snprintf(out, size, "%s/%s", a, b);
++    return n > 0 && (size_t) n < size;
++}
++
++/* A real directory (not a symlink) that belongs to this user. */
++static bool nutflix_owned_dir(const char* const path) {
++    struct stat sb;
++    return lstat(path, &sb) == 0 && S_ISDIR(sb.st_mode) && sb.st_uid == geteuid();
++}
++
++/* `<cache>/nutflix-runtime`, mode 0700, or false when there is no such place of this user's. */
++static bool nutflix_cache_base(char* const base, const size_t size) {
++    const char* const cache = getenv("XDG_CACHE_HOME");
++    const char* const home = getenv("HOME");
++    char parent[PATH_MAX];
++    int n;
++    if (cache != NULL && cache[0] == '/')
++        n = snprintf(parent, sizeof(parent), "%s", cache);
++    else if (home != NULL && home[0] == '/')
++        n = snprintf(parent, sizeof(parent), "%s/.cache", home);
++    else
++        return false;
++    if (n <= 0 || (size_t) n >= sizeof(parent) || mkdir_p(parent) != 0)
++        return false;
++    if (!nutflix_join(base, size, parent, "nutflix-runtime"))
++        return false;
++    if (mkdir(base, 0700) != 0 && errno != EEXIST)
++        return false;
++    return nutflix_owned_dir(base) && chmod(base, 0700) == 0;
++}
++
++/* Removes other builds' extractions and interrupted ones, unless a running copy holds them. */
++static void nutflix_sweep(const char* const base, const char* const keep) {
++    DIR* const d = opendir(base);
++    if (d == NULL)
++        return;
++    struct dirent* e;
++    char path[PATH_MAX];
++    while ((e = readdir(d)) != NULL) {
++        if (strncmp(e->d_name, "appimage-", 9) != 0 || !nutflix_join(path, sizeof(path), base, e->d_name) ||
++            strcmp(path, keep) == 0)
++            continue;
++        const int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++        if (fd < 0)
++            continue;
++        if (flock(fd, LOCK_EX | LOCK_NB) == 0)
++            rm_recursive(path);
++        close(fd);
++    }
++    closedir(d);
++}
++
++/*
++ * nutflix-runtime: extract somewhere only this user can reach. Upstream extracts to a predictable
++ * name in the shared temp directory, trusts a directory already there and keeps any file of the
++ * right size, so another local user could plant the code that runs next. Here the extraction is
++ * private, appears under its final name only when complete, and is kept per build, so only the
++ * first start is slow. With no private cache, it is a new private directory for this run alone.
++ */
++static char* nutflix_extract(const char* const appimage_path, const char* const digest,
++                             const char* const temp_base, const bool verbose, bool* const is_temporary) {
++    char base[PATH_MAX];
++    char final_dir[PATH_MAX];
++    char work[PATH_MAX];
++    char name[64];
++
++    *is_temporary = false;
++    snprintf(name, sizeof(name), "appimage-%s", digest);
++    if (nutflix_cache_base(base, sizeof(base)) && nutflix_join(final_dir, sizeof(final_dir), base, name) &&
++        nutflix_join(work, sizeof(work), base, "appimage-tmp.XXXXXX")) {
++        bool fresh = false;
++        if (!nutflix_owned_dir(final_dir) && mkdtemp(work) != NULL) {
++            const int lock = open(work, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++            if (lock >= 0)
++                (void) flock(lock, LOCK_EX);
++            if (extract_appimage(appimage_path, work, NULL, false, verbose) && rename(work, final_dir) == 0)
++                fresh = true;
++            else
++                rm_recursive(work);
++            if (lock >= 0)
++                close(lock);
++        }
++        if (nutflix_owned_dir(final_dir)) {
++            /* Held until this process exits, so another build's sweep leaves this one alone. */
++            const int held = open(final_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++            if (held >= 0)
++                (void) flock(held, LOCK_SH);
++            if (fresh)
++                nutflix_sweep(base, final_dir);
++            return strdup(final_dir);
++        }
++    }
++
++    if (!nutflix_join(work, sizeof(work), temp_base, "nutflix-appimage.XXXXXX") || mkdtemp(work) == NULL)
++        return NULL;
++    if (!extract_appimage(appimage_path, work, NULL, false, verbose)) {
++        rm_recursive(work);
++        return NULL;
++    }
++    *is_temporary = true;
++    return strdup(work);
++}
++
+ int main(int argc, char* argv[]) {
+     const bool verbose = (getenv("VERBOSE") != NULL);
+     if (verbose) {
+@@ -1577,7 +1704,16 @@
+         free(abspath);
+     }
+ 
+-    if (getenv("APPIMAGE_EXTRACT_AND_RUN") != NULL || (arg && strcmp(arg, "appimage-extract-and-run") == 0)) {
++    /* nutflix-runtime: with no usable FUSE, extract and run instead of exiting. */
++    const bool extract_requested =
++        getenv("APPIMAGE_EXTRACT_AND_RUN") != NULL || (arg && strcmp(arg, "appimage-extract-and-run") == 0);
++    const bool no_fuse =
++        !extract_requested && !(arg && strncmp(arg, "appimage-", 9) == 0) && !nutflix_fuse_usable(verbose);
++    unsetenv("NUTFLIX_APPIMAGE_NO_FUSE");
++    if (no_fuse)
++        setenv("NUTFLIX_APPIMAGE_NO_FUSE", "1", 1);
++
++    if (extract_requested || no_fuse) {
+         char* hexlified_digest = NULL;
+ 
+         // calculate MD5 hash of file, and use it to make extracted directory name "content-aware"
+@@ -1604,13 +1740,10 @@
+             hexlified_digest = appimage_hexlify((const char*)digest.bytes, sizeof(digest.bytes));
+         }
+ 
+-        char* prefix = malloc(strlen(temp_base) + 20 + strlen(hexlified_digest) + 2);
+-        strcpy(prefix, temp_base);
+-        strcat(prefix, "/appimage_extracted_");
+-        strcat(prefix, hexlified_digest);
++        bool prefix_is_temporary = false;
++        char* prefix = nutflix_extract(appimage_path, hexlified_digest, temp_base, verbose, &prefix_is_temporary);
+         free(hexlified_digest);
+-
+-        if (!extract_appimage(appimage_path, prefix, NULL, false, verbose)) {
++        if (prefix == NULL) {
+             fprintf(stderr, "Failed to extract AppImage\n");
+             exit(EXIT_EXECERROR);
+         }
+@@ -1658,7 +1791,7 @@
+         int rv = waitpid(pid, &status, 0);
+         status = rv > 0 && WIFEXITED (status) ? WEXITSTATUS (status) : EXIT_EXECERROR;
+ 
+-        if (getenv("NO_CLEANUP") == NULL) {
++        if (prefix_is_temporary && getenv("NO_CLEANUP") == NULL) {
+             if (!rm_recursive(prefix)) {
+                 fprintf(stderr, "Failed to clean up cache directory\n");
+                 if (status == 0)        /* avoid messing existing failure exit status */

@@ -1,0 +1,62 @@
+# Builds the patched AppImage runtime from its pinned upstream commit and proves it on both Linux
+# architectures (shells/pear-v3/packaging/appimage-runtime/README.md). A manual run on main also
+# records build provenance for the binaries, which is what a release of them points to.
+name: appimage-runtime
+
+on:
+  pull_request:
+    paths:
+      - shells/pear-v3/packaging/appimage-runtime/**
+      - .github/workflows/appimage-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUNTIME_DIR: shells/pear-v3/packaging/appimage-runtime
+
+jobs:
+  build:
+    name: build and prove (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-24.04 }
+          - { arch: aarch64, os: ubuntu-24.04-arm }
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: FUSE and the squashfs tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fuse3 squashfs-tools
+      - name: build from the pinned commit
+        run: bash "$RUNTIME_DIR/build.sh" "$ARCH" "$RUNNER_TEMP/runtime"
+      - name: prove it on this machine
+        run: bash "$RUNTIME_DIR/test.sh" "$RUNNER_TEMP/runtime/runtime-$ARCH"
+      - name: record build provenance (manual run on main)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/runtime/runtime-${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: appimage-runtime-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runtime/runtime-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 30
