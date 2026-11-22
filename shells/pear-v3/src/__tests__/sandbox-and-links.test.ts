@@ -9,6 +9,7 @@ import {
   type Consent,
   type SandboxGateDeps,
 } from '../main/sandbox-gate.ts';
+import { fromMetrics, fromProcStatus } from '../main/sandbox-proof.ts';
 
 function gateDeps(o: Partial<SandboxGateDeps> & { answer?: 'quit' | 'run-anyway' }): {
   deps: SandboxGateDeps;
@@ -157,5 +158,23 @@ describe('external links', () => {
     });
     t += LINK_WINDOW_MS;
     expect(o.request('https://example.com/')).toBe(false);
+  });
+});
+
+describe('what the OS is doing to the renderer', () => {
+  it('reads seccomp on Linux, and only filter mode counts', () => {
+    expect(fromProcStatus('Name:\tNutflix\nSeccomp:\t2\nSeccomp_filters:\t3\n')).toBe('enforced');
+    expect(fromProcStatus('Seccomp:\t0\n')).toBe('absent');
+    expect(fromProcStatus('Seccomp:\t1\n')).toBe('absent');
+    expect(fromProcStatus('Seccomp_filters:\t2\n')).toBe('unknown');
+    expect(fromProcStatus('')).toBe('unknown');
+  });
+
+  it("reads Electron's metrics for that process only", () => {
+    const metrics = [{ pid: 1, sandboxed: false }, { pid: 2, sandboxed: true }, { pid: 3 }];
+    expect(fromMetrics(metrics, 2)).toBe('enforced');
+    expect(fromMetrics(metrics, 1)).toBe('absent');
+    expect(fromMetrics(metrics, 3)).toBe('unknown');
+    expect(fromMetrics(metrics, 4)).toBe('unknown');
   });
 });

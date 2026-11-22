@@ -102,6 +102,17 @@ export function startRenderer(o: RendererOptions): RendererClient {
     }),
   );
 
+  // The page's own round trip to the worker, through the pipe the shell gave it. A shell's launch
+  // check reads this: the worker answering the SHELL says nothing about this path.
+  void link.ready().then(
+    () => {
+      o.container.dataset['workerLink'] = 'up';
+    },
+    () => {
+      o.container.dataset['workerLink'] = 'down';
+    },
+  );
+
   let stopped: Promise<void> | null = null;
   return {
     adapter,

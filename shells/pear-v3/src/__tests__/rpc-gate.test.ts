@@ -310,3 +310,35 @@ describe('RpcGate: windows and the worker', () => {
     expect(closed).toEqual([1]);
   });
 });
+
+describe('RpcGate: a quit', () => {
+  it("waits for a departed window's close to be answered", async () => {
+    const h = harness();
+    h.gate.attach(1, MAIN_WINDOW_POLICY);
+    h.ask(1, req(1, 'nfx.play.open', { sid: SID }));
+    h.answer({ op: 'res', id: h.toWorker.at(-1)?.['id'], ok: true, r: {} });
+    h.gate.detach(1);
+    const close = h.toWorker.at(-1);
+    expect(close?.['m']).toBe('nfx.play.close');
+    let done = false;
+    const wait = h.gate.drained(5_000).then(() => {
+      done = true;
+    });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(done).toBe(false);
+    h.answer({ op: 'res', id: close?.['id'], ok: true, r: null });
+    await wait;
+    expect(h.gate.inflight).toBe(0);
+  });
+
+  it('stops waiting at its limit, and at once when the worker is gone', async () => {
+    const h = harness();
+    h.gate.attach(1, MAIN_WINDOW_POLICY);
+    h.ask(1, req(1, 'status'));
+    await h.gate.drained(30);
+    expect(h.gate.inflight).toBe(1);
+    h.gate.workerGone();
+    await h.gate.drained(60_000);
+    expect(h.gate.inflight).toBe(0);
+  });
+});

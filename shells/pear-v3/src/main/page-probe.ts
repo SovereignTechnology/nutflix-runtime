@@ -1,7 +1,8 @@
 /**
  * What main reads from the page, read only, in an isolated world of its own (the page's scripts
  * cannot see it). Nothing from the page is trusted beyond the three facts `parseProbe` accepts:
- * the renderer mounted, whether its WebRTC player is available (the renderer's own capability
+ * the renderer mounted and its own `status` came back through the preload, main's gate and the
+ * worker (no answer until then), whether its WebRTC player is available (the renderer's own capability
  * probe: `RTCPeerConnection`, WebAssembly and `MediaSource`), and whether this Chromium can
  * decode the two codecs a video is likely to carry, which says what the packaged engine can
  * play. Whether a video plays needs a seeder and a relay, and is not asserted here (README).
@@ -11,6 +12,7 @@
 export const PROBE_CODE =
   "(() => { const r = document.getElementById('root');" +
   ' if (r === null || r.dataset.webrtcPlayer === undefined || r.childElementCount === 0) return null;' +
+  " if (r.dataset.workerLink !== 'up') return null;" +
   " if ((r.textContent ?? '').startsWith('Nutflix could not start')) return null;" +
   " const ok = (t) => typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(t);" +
   ' return { player: r.dataset.webrtcPlayer,' +

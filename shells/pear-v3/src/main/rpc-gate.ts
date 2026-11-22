@@ -160,6 +160,13 @@ export class RpcGate {
     for (const sid of w.sids) this.#sendDropped('nfx.play.close', { sid });
   }
 
+  /** Resolves once nothing is in flight to the worker, or after `ms`, whichever is first. */
+  async drained(ms: number): Promise<void> {
+    const end = Date.now() + ms;
+    while (this.#pending.size > 0 && !this.#dead && Date.now() < end)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
   /** Bytes a window wrote to its pipe. */
   fromWindow(windowId: number, bytes: unknown): void {
     const w = this.#windows.get(windowId);

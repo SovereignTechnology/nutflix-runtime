@@ -141,8 +141,10 @@ than 1.29.4 (`smoke.ts bare`).
 2. the packaged Bare is 1.29.4 or later (`smoke.ts bare` asks the shipped `bare-sidecar` runtime
    for `Bare.version`; it is a launcher with no `--version`, so it runs a one-line script);
 3. the packaged app is launched with no switch, and prints `NUTFLIX_SHELL_READY {…}`: **the window
-   loaded `app://nutflix`, the renderer mounted in it, and the worker answered `status`** (main's
-   own request, after `init`), with the sandbox on. Every build prints this line; no switch makes it
+   loaded `app://nutflix`, the renderer mounted in it, the worker answered main's `status`, the
+   page's own `status` came back through the preload, main's gate and the worker (`pipe`), and the
+   OS is confining the renderer** (`rendererSandbox`: seccomp on Linux, Electron's process metrics
+   on macOS and Windows). Every build prints this line; no switch makes it
    print. The line also says what the packaged engine can do: whether the renderer's WebRTC player
    probe passed, and whether `MediaSource` takes VP9 or H.264 in MP4;
 4. with `--no-sandbox`, the warning comes first and no window opens.
@@ -172,7 +174,9 @@ Seen on GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` runners, with the type-2 
   one.
 - `AppRun` here is the Electron binary, so nothing adds `--no-sandbox`. The sandbox then needs
   unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not setuid (CI lifts
-  Ubuntu 24.04's AppArmor restriction on its throwaway runner).
+  Ubuntu 24.04's AppArmor restriction on its throwaway runner, so that pass says nothing about a
+  stock Ubuntu 24.04 or later; CI prints what happens there first, as information). The launcher
+  that item 3 needs is also where a machine with no usable sandbox must reach the warning.
 
 ## Layout
 

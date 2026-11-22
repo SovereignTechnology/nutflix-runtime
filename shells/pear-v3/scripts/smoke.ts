@@ -46,6 +46,8 @@ export interface ReadyFields {
   readonly renderer?: unknown;
   readonly worker?: unknown;
   readonly sandbox?: unknown;
+  readonly pipe?: unknown;
+  readonly rendererSandbox?: unknown;
   readonly player?: unknown;
   readonly vp9?: unknown;
   readonly h264?: unknown;
@@ -70,6 +72,8 @@ export function readyProblems(f: ReadyFields, sandbox: 'on' | 'off' = 'on'): str
     ['renderer', 'mounted'],
     ['worker', 'status-ok'],
     ['sandbox', sandbox],
+    ['pipe', 'round-trip'],
+    ['rendererSandbox', sandbox === 'on' ? 'enforced' : 'absent'],
   ];
   return want
     .filter(([k, v]) => f[k] !== v)

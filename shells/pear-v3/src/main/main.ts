@@ -46,6 +46,7 @@ import {
   parseConsent,
   sandboxGate,
 } from './sandbox-gate.ts';
+import { fromMetrics, fromProcStatus, type RendererSandbox } from './sandbox-proof.ts';
 import { APP_SCHEME, APP_URL, isAppUrl, privilegedSchemes } from './schemes.ts';
 import { hardenWebContents, installSessionPolicy, refusedSwitch } from './security.ts';
 import { startWorker, type WorkerHandle } from './worker-proc.ts';
@@ -137,6 +138,20 @@ app.on('second-instance', () => {
 });
 app.on('window-all-closed', () => {
   app.quit();
+});
+// `stop` kills the worker, so a quit first gives it time to finish each `nfx.play.close`: that is
+// what deletes the temporary files of the video being watched.
+const QUIT_GRACE_MS = 3000;
+let quitReady = false;
+app.on('before-quit', (e) => {
+  if (quitReady || worker === undefined) return;
+  e.preventDefault();
+  quitReady = true;
+  mainWindow?.hide();
+  for (const id of [...windowIds]) gate.detach(id);
+  void gate.drained(QUIT_GRACE_MS).finally(() => {
+    app.quit();
+  });
 });
 app.on('will-quit', () => {
   worker?.stop();
@@ -245,6 +260,9 @@ async function main(): Promise<void> {
       renderer: 'mounted',
       worker: 'status-ok',
       sandbox: unsandboxed ? 'off' : 'on',
+      pipe: 'round-trip',
+      rendererSandbox:
+        mainWindow === undefined ? 'unknown' : rendererSandbox(mainWindow.webContents),
       player: probe.player,
       vp9: probe.vp9,
       h264: probe.h264,
@@ -311,6 +329,17 @@ async function main(): Promise<void> {
     });
   });
   void win.loadURL(APP_URL);
+}
+
+/** What the OS is doing to this window's renderer (`sandbox-proof.ts`). */
+function rendererSandbox(wc: WebContents): RendererSandbox {
+  const pid = wc.getOSProcessId();
+  if (process.platform !== 'linux') return fromMetrics(app.getAppMetrics(), pid);
+  try {
+    return fromProcStatus(readFileSync(`/proc/${String(pid)}/status`, 'utf8'));
+  } catch {
+    return 'unknown';
+  }
 }
 
 // ---- reading the page (read only, in an isolated world) ----------------------------------------

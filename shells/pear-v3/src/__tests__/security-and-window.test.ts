@@ -233,6 +233,10 @@ describe('what main reads from the page', () => {
     },
   );
 
+  it("waits for the page's own round trip to the worker", () => {
+    expect(PROBE_CODE).toContain("r.dataset.workerLink !== 'up'");
+  });
+
   it('is a read-only expression: no eval, no HTML, no network, no navigation', () => {
     expect(PROBE_CODE).not.toMatch(
       /\b(eval|Function|innerHTML|fetch|XMLHttpRequest|location|open)\b/,

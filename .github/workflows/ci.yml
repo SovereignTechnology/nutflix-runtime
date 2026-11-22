@@ -220,6 +220,17 @@ jobs:
             "https://github.com/AppImage/type2-runtime/releases/download/20251108/$asset"
       - name: package (stage, Forge, fuses, layout)
         run: node shells/pear-v3/scripts/package.ts build --platform "$PLATFORM" --arch "$ARCH"
+      # Information, not a gate: what a user on stock Ubuntu 24.04 gets today. The lift below hides it.
+      - name: the AppImage on stock Ubuntu, restriction still on (information only)
+        if: matrix.platform == 'linux'
+        continue-on-error: true
+        run: |
+          f="$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage"
+          echo "apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+          code=0
+          out=$(xvfb-run -a timeout 45 "$f" 2>&1) || code=$?
+          echo "exit $code (124 = still running when stopped)"
+          printf '%s\n' "$out" | grep -E 'NUTFLIX_SHELL|FATAL|SUID|sandbox' | cut -c1-200 | head -6 || true
       # Chromium's sandbox stays on: Ubuntu 24.04 restricts the unprivileged user namespaces it
       # uses, so lift that on this throwaway runner (the AppImage's chrome-sandbox is not setuid).
       - name: allow Chromium's user-namespace sandbox on this runner
