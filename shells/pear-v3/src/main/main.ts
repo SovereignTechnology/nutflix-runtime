@@ -41,6 +41,12 @@ import {
 import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
+import {
+  FUSE_NOTICE_ENV,
+  FUSE_NOTICE_FILE,
+  fuseNoticeCode,
+  shouldShowFuseNotice,
+} from './fuse-notice.ts';
 import { event, readyLine } from './log.ts';
 import { PROBE_CODE, parseProbe, type Probe } from './page-probe.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
@@ -328,6 +334,7 @@ async function main(): Promise<void> {
     if (!isAppUrl(win.webContents.getURL())) return;
     state.window = true;
     if (unsandboxed) void injectBanner(win.webContents);
+    void showFuseNotice(win.webContents);
     void untilMounted(win.webContents).then((probe) => {
       if (probe !== null) {
         state.renderer = probe;
@@ -375,6 +382,35 @@ async function untilMounted(wc: WebContents): Promise<Probe | null> {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return null;
+}
+
+let fuseNoticeDone = false;
+
+/** Once per version, on a run the AppImage runtime had to extract (`fuse-notice.ts`). */
+async function showFuseNotice(wc: WebContents): Promise<void> {
+  if (fuseNoticeDone) return;
+  fuseNoticeDone = true;
+  const file = join(app.getPath('userData'), FUSE_NOTICE_FILE);
+  let seen: string | null = null;
+  try {
+    seen = readFileSync(file, 'utf8').slice(0, 64);
+  } catch {
+    // Not shown yet.
+  }
+  if (!shouldShowFuseNotice(process.env[FUSE_NOTICE_ENV], seen, PKG.version)) return;
+  try {
+    const shown: unknown = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [
+      { code: fuseNoticeCode() },
+    ]);
+    if (shown !== true) {
+      event('fuse-notice-failed');
+      return;
+    }
+    await writeFile(file, `${PKG.version}\n`, { mode: 0o600 });
+    event('fuse-notice-shown');
+  } catch {
+    event('fuse-notice-failed');
+  }
 }
 
 /** The banner while the sandbox is off: set through the CSSOM (the page's policy has no inline style). */

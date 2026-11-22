@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { LINK_LIMIT, LINK_WINDOW_MS, LinkOpener, checkedLink } from '../main/external-links.ts';
+import { FUSE_NOTICE_TEXT, fuseNoticeCode, shouldShowFuseNotice } from '../main/fuse-notice.ts';
 import {
   BANNER_TEXT,
   WARNING,
@@ -176,5 +177,24 @@ describe('what the OS is doing to the renderer', () => {
     expect(fromMetrics(metrics, 1)).toBe('absent');
     expect(fromMetrics(metrics, 3)).toBe('unknown');
     expect(fromMetrics(metrics, 4)).toBe('unknown');
+  });
+});
+
+describe('the no-FUSE notice', () => {
+  it('shows only on an extracted run, once per version', () => {
+    expect(shouldShowFuseNotice('1', null, '0.1.0')).toBe(true);
+    expect(shouldShowFuseNotice('1', '0.0.9\n', '0.1.0')).toBe(true);
+    expect(shouldShowFuseNotice('1', '0.1.0\n', '0.1.0')).toBe(false);
+    expect(shouldShowFuseNotice(undefined, null, '0.1.0')).toBe(false);
+    expect(shouldShowFuseNotice('0', null, '0.1.0')).toBe(false);
+  });
+
+  it('is fixed text set as text, blocks nothing and goes away', () => {
+    const code = fuseNoticeCode();
+    expect(code).toContain(JSON.stringify(FUSE_NOTICE_TEXT));
+    expect(code).toContain('textContent');
+    expect(code).not.toMatch(/innerHTML|insertAdjacentHTML|eval|fetch/);
+    expect(code).toContain("pointerEvents = 'none'");
+    expect(code).toContain('n.remove()');
   });
 });
