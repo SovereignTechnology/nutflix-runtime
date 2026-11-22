@@ -27,6 +27,7 @@
     "@electron/fuses": "2.1.3",
     "@nutflix-runtime/renderer": "0.0.0",
     "electron": "45.2.1",
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "hyperdht": "6.36.0"
   }
 }

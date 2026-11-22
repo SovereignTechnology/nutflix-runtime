@@ -20,7 +20,7 @@ import { MakerMSIX } from '@electron-forge/maker-msix';
 import type { ForgeConfig, ForgeConfigMaker } from '@electron-forge/shared-types';
 
 import { assertAppFuses, flipAppFuses, packagedBinary, type TargetPlatform } from './fuses.ts';
-import { APP } from './identity.ts';
+import { APP, MSIX } from './identity.ts';
 import { assertLayout } from './layout.ts';
 import { MakerAppImage } from './maker-appimage.ts';
 import { windowsKitVersion } from './windows-kit.ts';
@@ -38,6 +38,8 @@ export interface ForgeConfigOptions {
   readonly electronChecksums: Readonly<Record<string, string>>;
   /** Where the pinned AppImage runtime file(s) are. */
   readonly appImageRuntimeDir: string;
+  /** The `.msix` manifest to pack (`msix-manifest.ts`; Windows runs only). */
+  readonly msixManifest?: string;
 }
 
 /** The packaged copy's package.json: the staging-only `devDependencies` (Forge reads it) goes. */
@@ -65,18 +67,21 @@ export function makers(o: ForgeConfigOptions): ForgeConfigMaker[] {
       // A TEST build: unsigned. (The maker's default would make a throwaway certificate and sign.)
       sign: false,
       ...(kit === undefined ? {} : { windowsKitVersion: kit }),
+      // The template's manifest plus the execution alias (`msix-manifest.ts`). With it the maker
+      // ignores `manifestVariables`, which stay for the runs that have no manifest file.
+      ...(o.msixManifest === undefined ? {} : { appManifest: o.msixManifest }),
       manifestVariables: {
-        packageIdentity: 'SovereignTechnology.Nutflix',
+        packageIdentity: MSIX.identity,
         // Must equal the signing certificate's subject once there is one, and then never change
         // (Windows rejects an update from another publisher). A maintainer's decision.
-        publisher: 'CN=Sovereign Technology (TEST)',
-        publisherDisplayName: 'Sovereign Technology',
+        publisher: MSIX.publisher,
+        publisherDisplayName: MSIX.publisherDisplayName,
         packageDisplayName: APP.productName,
         appDisplayName: APP.productName,
         packageDescription: APP.description,
         appExecutable: `${APP.productName}.exe`,
-        packageMinOSVersion: '10.0.19045.0',
-        packageMaxOSVersionTested: '10.0.19045.0',
+        packageMinOSVersion: MSIX.minOsVersion,
+        packageMaxOSVersionTested: MSIX.minOsVersion,
       },
     }),
   ] as ForgeConfigMaker[];

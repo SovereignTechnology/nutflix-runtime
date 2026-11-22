@@ -25,6 +25,7 @@ import type { ForgeArch, ForgePlatform } from '@electron-forge/shared-types';
 import { forgeConfig } from '../packaging/forge-config.ts';
 import { APP } from '../packaging/identity.ts';
 import { pinnedRuntime } from '../packaging/maker-appimage.ts';
+import { writeAppxManifest } from '../packaging/msix-manifest.ts';
 import { PKG_DIR, REPO_ROOT } from '../packaging/paths.ts';
 import { stageApp } from '../packaging/stage.ts';
 import { parseCli, type CliOptions } from './cli-options.ts';
@@ -49,7 +50,19 @@ export async function run(o: CliOptions): Promise<Artifact[]> {
   ) as Record<string, string>;
   utils.registerForgeConfigForDirectory(
     stageDir,
-    forgeConfig({ electronChecksums: checksums, appImageRuntimeDir: o.appImageRuntimeDir }),
+    forgeConfig({
+      electronChecksums: checksums,
+      appImageRuntimeDir: o.appImageRuntimeDir,
+      ...(o.platform === 'win32'
+        ? {
+            msixManifest: writeAppxManifest(
+              join(o.out, `AppxManifest-${o.arch}.xml`),
+              staged.version,
+              o.arch === 'arm64' ? 'arm64' : 'x64',
+            ),
+          }
+        : {}),
+    }),
   );
   const common = {
     dir: stageDir,

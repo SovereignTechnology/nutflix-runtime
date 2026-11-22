@@ -20,6 +20,25 @@ export const APP = {
   license: 'AGPL-3.0-or-later',
 } as const;
 
+/**
+ * The Windows package's identity (`forge-config.ts` gives it to the MSIX maker, `msix-manifest.ts`
+ * writes it). `publisher` must equal the signing certificate's subject, and then never change:
+ * Windows refuses an update signed by another publisher.
+ */
+export const MSIX = {
+  identity: 'SovereignTechnology.Nutflix',
+  publisher: 'CN=Sovereign Technology (TEST)',
+  publisherDisplayName: 'Sovereign Technology',
+  minOsVersion: '10.0.19045.0',
+  /**
+   * The execution alias the manifest declares: the packaged app can be started by this name from a
+   * terminal (`%LOCALAPPDATA%\\Microsoft\\WindowsApps\\Nutflix.exe`), with the caller's standard
+   * handles, so that its `NUTFLIX_SHELL` lines reach whoever started it. Without an alias a
+   * packaged desktop app has no output a script can read.
+   */
+  alias: `${APP.productName}.exe`,
+} as const;
+
 export const TARGETS = [
   { platform: 'linux', arch: 'x64' },
   { platform: 'linux', arch: 'arm64' },
