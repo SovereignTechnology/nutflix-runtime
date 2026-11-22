@@ -207,11 +207,16 @@ export class Pear {
   }
 
   /** `pear --dht-bootstrap <private> <args>`, output to its own log file, to the end or the timeout. */
-  async run(name: string, args: readonly string[], timeoutS: number): Promise<RunResult> {
+  async run(
+    name: string,
+    args: readonly string[],
+    timeoutS: number,
+    env: NodeJS.ProcessEnv = this.env,
+  ): Promise<RunResult> {
     const { logFile, fd } = this.open(name);
     const started = Date.now();
     const child = spawn(this.bin, ['--dht-bootstrap', this.bootstrap, ...args], {
-      env: this.env,
+      env,
       stdio: ['ignore', fd, fd],
       windowsHide: true,
     });

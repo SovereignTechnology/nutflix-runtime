@@ -20,8 +20,9 @@ if (-not $pkg) { Write-Output 'PACKAGE=NONE' } else {
   Write-Output ('PACKAGE=' + ($o | ConvertTo-Json -Compress))
 }
 if ($ProcessId -gt 0) {
+  # GetPackageFullName writes UTF-16: the marshalling must be Unicode, or the buffer overruns.
   Add-Type -Namespace Nutflix -Name Appmodel -MemberDefinition @'
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetPackageFullName(System.IntPtr hProcess, ref int length, System.Text.StringBuilder name);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern System.IntPtr OpenProcess(int access, bool inherit, int pid);

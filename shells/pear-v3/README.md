@@ -222,26 +222,37 @@ signs. No secret is used.
 ### What is, and is not, proved per platform
 
 - **Linux:** the AppImage is launched as `pear install` placed it (`~/.local/bin/Nutflix.AppImage`),
-  with FUSE. The job also checks the launcher entry `pear install` writes
-  (`~/.local/share/applications/Nutflix.desktop` runs that file). The folders `~/.local/bin` and
-  `~/.local/share/applications` are made before the install, as on a machine that has Pear:
-  `pear install` moves the app into a folder and does not make it (pear-install 1.5.0 and 1.6.0).
+  with FUSE, and its sha256 equals the staged file's. The job also checks the launcher entry
+  `pear install` writes (`~/.local/share/applications/Nutflix.desktop` runs that file). The folders
+  `~/.local/bin` and `~/.local/share/applications` are made before the install, as on a machine that
+  has Pear: `pear install` moves the app into a folder and does not make it (read in pear-install
+  1.5.0 and 1.6.0; the job also installs once into a home without the folder and logs what
+  happens). **No icons are installed:** `pear install` copies `usr/share/icons/hicolor` out of the
+  AppImage, and ours has only `Nutflix.png` at its root (`maker-appimage.ts`), so the launcher
+  entry names an icon the system does not have. The job notes it; it does not fail on it.
 - **macOS:** the bundle is ad-hoc signed (no certificate), as before. After the round trip through
-  `pear build`, `stage` and `install`, `codesign --verify --deep --strict` must pass: **that proves
+  `pear build`, `stage` and `install`, every file, symlink and executable bit of the installed
+  bundle must equal the input's, and `codesign --verify --deep --strict` must pass: **that proves
   every file and symlink of the bundle survived, because the signature seals them.** It does not
-  prove who built the app (nobody signed it), notarization, or that Gatekeeper accepts it: the job
-  prints what `spctl --assess` says and does not require it. `~/Applications` is made first for the
-  same reason as above.
+  prove who built the app (nobody signed it), notarization, or that Gatekeeper accepts it:
+  `spctl --assess` says "rejected" (exit 3), and the job prints that and does not require it.
+  `~/Applications` is made first, as above.
 - **Windows:** the job makes a self-signed code-signing certificate whose subject is the manifest's
   publisher, `CN=Sovereign Technology (TEST)`, in the job. Its key is not exportable and is in no
-  file; it is trusted in the runner's Trusted People store only, and removed at the end. The job
-  signs its copy of the `.msix` with it, and `pear install` really installs the package
-  (`Add-AppxPackage`, through `msix-manager`). The app is then launched by its execution alias, so
-  that the packaged app, with its package identity, gets the job's pipes and its ready line can be
-  read, and the job asks Windows which package the running process belongs to. A Windows file system
-  cannot hold a macOS bundle's symlinks, so the macOS entries of the Windows runner's deployment
-  are stand-ins; the other four legs unpack them exactly. The other four legs' deployments hold the
-  unsigned `.msix`.
+  file; it is trusted in the runner's Trusted People store only, and removed at the end. A Windows
+  Server image has sideloading off (`AllowAllTrustedApps` unset), so the job switches that on, on
+  its throwaway runner. It signs its copy of the `.msix` with the certificate, and `pear install`
+  really installs the package (`Add-AppxPackage`, through `msix-manager`); the job reads back its
+  publisher, signature kind and status, and compares every file under `app\` with the `.msix`'s.
+  The app is then launched by its execution alias, so that the packaged app gets the job's pipes and
+  its ready line can be read, and the job asks Windows (`GetPackageFullName`) which package the
+  running process belongs to. A Windows file system cannot keep a macOS bundle's symlinks, so on the
+  Windows runner the macOS entries of the deployment are stand-ins (compared by their files only);
+  the other four legs unpack them exactly. Those four legs' deployments hold the unsigned `.msix`.
+- **The app's own DHT node.** The worker starts a HyperDHT node on the public bootstrap when the app
+  starts (`packages/worker/src/host.ts`, `init` takes no bootstrap from main). In the install job
+  that node's packets are dropped and counted (a few datagrams per launch); in the `shell` job,
+  which has no tripwire, they are sent. Neither job seeds, serves or announces anything with it.
 
 ### The AppImage runtime (for amendment, item 3)
 

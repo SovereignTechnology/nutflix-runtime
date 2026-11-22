@@ -229,6 +229,8 @@ export async function run(o: Options): Promise<number> {
   let cert: TestCert | undefined;
   let armed = false;
   let sidecarUp = false;
+  let privateBootstrap = '';
+  const bootstrapOf = (): string => privateBootstrap;
 
   const phase = async <T>(title: string, fn: () => Promise<T> | T): Promise<T> => {
     say(`::group::${title}`);
@@ -256,6 +258,38 @@ export async function run(o: Options): Promise<number> {
     if (r.code !== 0 || r.timedOut || !succeeded(r.records)) {
       const why = failureMessage(r.records) ?? tail(r.out, 6);
       throw new Error(`pear ${what} failed: ${why}`);
+    }
+  };
+
+  /**
+   * `pear install` moves the app into a folder and does not make it (read in pear-install 1.5.0 and
+   * 1.6.0). One more install, into a home that has no such folder, says what really happens; it
+   * only adds a note, whatever the answer.
+   */
+  const probeBareHome = async (link: string): Promise<void> => {
+    if (process.platform !== 'linux' && process.platform !== 'darwin') return;
+    const folder = process.platform === 'linux' ? '~/.local/bin' : '~/Applications';
+    try {
+      const bare = join(work, 'bare-home');
+      mkdirSync(bare, { recursive: true });
+      const r = await pear?.run(
+        'install-bare-home',
+        ['install', '--dht-bootstrap', bootstrapOf(), '--json', '--timeout', '60', link],
+        300,
+        isolatedEnv(bare),
+      );
+      const said =
+        r === undefined
+          ? 'no result'
+          : r.code === 0 && succeeded(r.records)
+            ? 'it installed'
+            : (failureMessage(r.records) ?? tail(r.out, 2)).split('\n')[0];
+      report.notes.push(
+        `pear install into a home with no ${folder}: exit ${String(r?.code)}; ${String(said)}`,
+      );
+      say(report.notes[report.notes.length - 1] ?? '');
+    } catch (e) {
+      say(`probe: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -318,6 +352,7 @@ export async function run(o: Options): Promise<number> {
       },
     );
     report.dht = { bootstrap };
+    privateBootstrap = bootstrap;
     pear = new Pear({ bin: fetched.bin, home, bootstrap, logDir: logs });
 
     // ---- the artifacts of the shell job ------------------------------------------------------
@@ -524,6 +559,7 @@ export async function run(o: Options): Promise<number> {
           if (process.platform === 'win32') say(`Windows says:\n${appxLog()}`);
           throw e;
         }
+        await probeBareHome(link);
         const final = lastRecord(last.records, 'final');
         const app = lastRecord(last.records, 'app');
         if (final?.data['installed'] !== 1)
