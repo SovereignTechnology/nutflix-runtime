@@ -12,7 +12,19 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./main": "./dist/main.js"
+    "./main": "./dist/main.js",
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./rpc": {
+      "types": "./dist/rpc.d.ts",
+      "default": "./dist/rpc.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    }
   },
   "files": [
     "dist"

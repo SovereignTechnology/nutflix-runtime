@@ -1,9 +1,23 @@
 {
   "files": [],
   "references": [
-    { "path": "vendor/nutflix-pear/packages/core" },
-    { "path": "vendor/nutflix-pear/packages/seeder" },
-    { "path": "packages/worker/tsconfig.build.json" },
-    { "path": "packages/worker" }
+    {
+      "path": "vendor/nutflix-pear/packages/core"
+    },
+    {
+      "path": "vendor/nutflix-pear/packages/seeder"
+    },
+    {
+      "path": "vendor/nutflix-pear/packages/ui"
+    },
+    {
+      "path": "packages/worker/tsconfig.build.json"
+    },
+    {
+      "path": "packages/worker"
+    },
+    {
+      "path": "packages/renderer"
+    }
   ]
 }

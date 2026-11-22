@@ -38,6 +38,10 @@ which both `pear-runtime`'s `run()` and `bare-sidecar` provide.
 | `src/adapters/bare.ts`, `src/runtime.ts` | bare-fs, bare-path and bare-http1, loaded lazily | `worker/adapters/bare.ts` and `worker/runtime.ts`, cut down |
 | `src/log.ts`, `src/crypto.ts`, `src/bare-globals.ts` | A redacting logger as events; libsodium sha256 and randomness; `TextEncoder` and `TextDecoder` for Bare | `worker/log.ts`, `worker/crypto.ts`, `worker/bare-globals.ts` |
 
+The package exports its host-side modules for the shells and the tests: `.` (the protocol, framing
+and `WorkerClient`, which a renderer can import), `./host`, `./rpc` and `./runtime`, and `./main` (the
+Bare entry).
+
 Its tests (`src/__tests__/`) run under Node with injected dependencies: node:http, `nodeFs`,
 and a hyperdht testnet on loopback. They include the ported nutflix-pear tests:
 - `framing.test.ts` and `codec.test.ts`;
