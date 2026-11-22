@@ -36,6 +36,8 @@ export interface Tripwire {
   read(): Hits;
   /** Removes the rules. */
   disarm(): void;
+  /** The raw state of the mechanism, for the log when it does not count. */
+  describe(): string;
 }
 
 export const COMMENT = 'nutflix-ci-tripwire';
@@ -72,8 +74,11 @@ export function parsePfCounters(text: string, ips: readonly string[] = TRIPWIRE_
   let current: string | null = null;
   for (const line of text.split(/\r?\n/)) {
     if (/^@\d+\s/.test(line)) {
-      const m = /^@\d+\s+block\b.*\bto\s+(\d+\.\d+\.\d+\.\d+)/.exec(line);
-      current = m?.[1] !== undefined && m[1] in hits ? m[1] : null;
+      // A rule line: ours when it blocks and names one of the watched addresses.
+      const ip = /\bblock\b/.test(line)
+        ? ips.find((a) => new RegExp(`\\b${a.replaceAll('.', '\\.')}\\b`).test(line))
+        : undefined;
+      current = ip ?? null;
       continue;
     }
     const p = /\bPackets:\s*(\d+)/.exec(line);
@@ -149,6 +154,9 @@ function iptables(): Tripwire {
       for (const ip of TRIPWIRE_IPS)
         ipt('-D', 'OUTPUT', '-d', ip, '-m', 'comment', '--comment', COMMENT, '-j', 'DROP');
     },
+    describe() {
+      return ipt('-L', 'OUTPUT', '-v', '-n', '-x').stdout;
+    },
   };
 }
 
@@ -156,6 +164,17 @@ function pf(work: string): Tripwire {
   const rules = join(work, 'tripwire-pf.conf');
   const pfctl = (...args: string[]): Ran => run('sudo', ['-n', 'pfctl', ...args]);
   let token: string | null = null;
+  const describe = (): string => {
+    const shown = ['-s info', '-vsr', '-s Anchors'].map((a) => {
+      const r = pfctl(...a.split(' '));
+      return `$ pfctl ${a}: exit ${String(r.status)}\n${(r.stdout + r.stderr).trim().split('\n').slice(0, 24).join('\n')}`;
+    });
+    const route = run('route', ['-n', 'get', CANARY_IP]);
+    shown.push(
+      `$ route -n get ${CANARY_IP}: exit ${String(route.status)}\n${(route.stdout + route.stderr).trim()}`,
+    );
+    return shown.join('\n');
+  };
   return {
     kind: 'pf',
     arm() {
@@ -164,10 +183,12 @@ function pf(work: string): Tripwire {
         `# ${COMMENT}: drop and count; the addresses are HyperDHT's public bootstrap and one canary\n` +
           TRIPWIRE_IPS.map((ip) => `block drop out quick inet from any to ${ip}\n`).join(''),
       );
-      must('pfctl -f', pfctl('-f', rules));
       // -E takes a reference ("Token : n") and enables pf when it was off; -X n drops it again.
+      // Enable first, then load: what is loaded last is what runs.
       const e = must('pfctl -E', pfctl('-E'));
       token = /Token\s*:\s*(\d+)/.exec(e.stdout + e.stderr)?.[1] ?? null;
+      must('pfctl -f', pfctl('-f', rules));
+      process.stdout.write(`${describe()}\n`);
     },
     read() {
       return parsePfCounters(must('pfctl -vsr', pfctl('-vsr')).stdout);
@@ -176,6 +197,7 @@ function pf(work: string): Tripwire {
       pfctl('-F', 'rules');
       if (token !== null) pfctl('-X', token);
     },
+    describe,
   };
 }
 
@@ -214,6 +236,9 @@ function windowsFirewall(scriptsDir: string): Tripwire {
     },
     disarm() {
       ps('-Action', 'disarm');
+    },
+    describe() {
+      return `firewall log ${log} from offset ${offset}`;
     },
   };
 }
@@ -263,7 +288,27 @@ export async function proveTripwire(tw: Tripwire, waitMs: number): Promise<Hits>
     if ((now[CANARY_IP] ?? 0) >= 1) return now;
     if (Date.now() > until)
       throw new Error(
-        `the tripwire (${tw.kind}) did not count the canary datagram in ${String(waitMs)} ms: it counts nothing, so it proves nothing`,
+        `the tripwire (${tw.kind}) did not count the canary datagram in ${String(waitMs)} ms: it counts nothing, so it proves nothing\n${tw.describe()}`,
+      );
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+/**
+ * A reading that is complete: sends the canary datagram again and waits until the tripwire counts
+ * it, so that everything the tripwire was going to count before that moment has been counted
+ * (Windows writes its firewall log some seconds late, and in order). Returns that reading.
+ */
+export async function barrier(tw: Tripwire, waitMs: number): Promise<Hits> {
+  const before = tw.read()[CANARY_IP] ?? 0;
+  await sendCanary();
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const now = tw.read();
+    if ((now[CANARY_IP] ?? 0) > before) return now;
+    if (Date.now() > until)
+      throw new Error(
+        `the tripwire (${tw.kind}) did not count the barrier datagram in ${String(waitMs)} ms`,
       );
     await new Promise((r) => setTimeout(r, 1000));
   }

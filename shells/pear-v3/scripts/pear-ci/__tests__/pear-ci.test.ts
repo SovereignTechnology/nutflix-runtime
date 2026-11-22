@@ -189,16 +189,10 @@ describe('the deployment', () => {
     ]);
   });
 
-  it('has a package.json that matches the app, with the throwaway link as its upgrade', () => {
-    const pj = JSON.parse(
-      deploymentPackageJson({ version: '0.1.0', link: 'pear://abc' }),
-    ) as Record<string, unknown>;
-    expect(pj).toMatchObject({
-      name: APP.name,
-      productName: 'Nutflix',
-      version: '0.1.0',
-      upgrade: 'pear://abc',
-    });
+  it('has a package.json that matches the app and points nowhere', () => {
+    const pj = JSON.parse(deploymentPackageJson({ version: '0.1.0' })) as Record<string, unknown>;
+    expect(pj).toMatchObject({ name: APP.name, productName: 'Nutflix', version: '0.1.0' });
+    expect(pj['upgrade']).toBeUndefined();
   });
 
   it('compares trees by bytes, executable bit and symlink target', async () => {

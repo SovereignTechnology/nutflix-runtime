@@ -175,3 +175,20 @@ export function windowsFacts(): string {
   );
   return r.status === 0 ? r.stdout.trim() : `unknown (exit ${String(r.status)})`;
 }
+
+/** The package deployment log's last entries: why Windows refused a package. */
+export function appxLog(): string {
+  const r = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Get-AppxLog -All | Select-Object -Last 12 | ForEach-Object { $_.TimeCreated.ToString("s") + " " + $_.Id + " " + ($_.Message -replace "\\s+", " ") }',
+    ],
+    { encoding: 'utf8', timeout: 120_000 },
+  );
+  return r.status === 0
+    ? r.stdout.trim().slice(-3000)
+    : `Get-AppxLog: exit ${String(r.status)} ${r.stderr}`;
+}

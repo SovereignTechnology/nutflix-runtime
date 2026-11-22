@@ -59,9 +59,10 @@ import {
   succeeded,
   type PearRecord,
 } from './records.ts';
-import { createTripwire, proveTripwire, publicBootstrapHits } from './tripwire.ts';
+import { barrier, createTripwire, proveTripwire, publicBootstrapHits } from './tripwire.ts';
 import {
   aliasPath,
+  appxLog,
   ensureSideloading,
   newTestCert,
   packageInfo,
@@ -175,15 +176,26 @@ function unzipApp(zip: string, dir: string): void {
     const r = spawnSync('ditto', ['-x', '-k', zip, dir], { encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`ditto -x -k: exit ${String(r.status)} ${r.stderr}`);
   } else if (process.platform === 'win32') {
-    // A Windows file system holds no symlinks a bundle can use; 7-Zip writes them as small files.
-    // This deployment's macOS payload is a stand-in on this runner (the report says so).
+    // A Windows file system holds no symlinks a bundle can use, and 7-Zip may refuse some of them
+    // (it exits 2 and lists them). This runner's macOS payload is a stand-in either way (the
+    // report says so), so what must be there is the bundle's executable.
     const sevenZip = ['C:\\Program Files\\7-Zip\\7z.exe', '7z'].find(
       (c) => spawnSync(c, ['i'], { stdio: 'ignore' }).status === 0,
     );
     if (sevenZip === undefined) unzip(zip, dir);
     else {
-      const r = spawnSync(sevenZip, ['x', '-y', `-o${dir}`, zip], { encoding: 'utf8' });
-      if (r.status !== 0) throw new Error(`7z x: exit ${String(r.status)} ${r.stdout.slice(-400)}`);
+      const r = spawnSync(sevenZip, ['x', '-y', `-o${dir}`, zip], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      if (r.status !== 0) {
+        const lines = r.stdout
+          .split(/\r?\n/)
+          .filter((l) => /error|cannot|can not|denied|privilege|symbolic|link/i.test(l));
+        say(`7z x ${zip}: exit ${String(r.status)}; ${lines.slice(0, 12).join(' | ')}`);
+        if (!existsSync(join(dir, `${APP.productName}.app`, 'Contents', 'MacOS', APP.productName)))
+          throw new Error(`7z x: exit ${String(r.status)} and no bundle executable`);
+      }
     }
   } else unzip(zip, dir);
 }
@@ -390,7 +402,7 @@ export async function run(o: Options): Promise<number> {
       const projectDir = join(work, 'project');
       mkdirSync(projectDir, { recursive: true });
       const pkg = join(projectDir, 'package.json');
-      writeFileSync(pkg, deploymentPackageJson({ version, link }));
+      writeFileSync(pkg, deploymentPackageJson({ version }));
       const args = ['build', '--package', pkg, '--target', deploy, '--json'];
       for (const t of TARGET_NAMES) args.push(`--${t.name}-app`, prepared.get(t.name)?.path ?? '');
       const r = await pear?.run('build', args, 900);
@@ -498,7 +510,12 @@ export async function run(o: Options): Promise<number> {
           say(`attempt ${String(attempt)}: network timeout on the private DHT, again`);
         }
         if (last === undefined) throw new Error('no pear');
-        pearOk('install', last);
+        try {
+          pearOk('install', last);
+        } catch (e) {
+          if (process.platform === 'win32') say(`Windows says:\n${appxLog()}`);
+          throw e;
+        }
         const final = lastRecord(last.records, 'final');
         const app = lastRecord(last.records, 'app');
         if (final?.data['installed'] !== 1)
@@ -526,14 +543,15 @@ export async function run(o: Options): Promise<number> {
           killTree(dht.pid);
           dht = undefined;
         }
-        const hits = tw.read();
+        // A complete reading: the barrier datagram is counted after everything before it.
+        const hits = await barrier(tw, process.platform === 'win32' ? 120_000 : 15_000);
         say(`tripwire: ${JSON.stringify(hits)}`);
         const n = publicBootstrapHits(hits);
         if (n !== 0)
           throw new Error(`${String(n)} packets went to the public bootstrap while Pear ran`);
-        if ((hits[CANARY_IP] ?? 0) !== canary)
+        if ((hits[CANARY_IP] ?? 0) !== canary + 1)
           throw new Error(
-            'the canary count moved: something else sent to the documentation address',
+            `the canary count is ${String(hits[CANARY_IP])}, not ${String(canary + 1)}: something else sent to the documentation address`,
           );
         report.tripwire = {
           kind: tw.kind,
@@ -571,8 +589,8 @@ export async function run(o: Options): Promise<number> {
     });
     report.launched = `${installedPath.launch}: ${launched.reason}`;
 
-    await phase('read the tripwire again (the app has its own DHT node)', () => {
-      const hits = tw.read();
+    await phase('read the tripwire again (the app has its own DHT node)', async () => {
+      const hits = await barrier(tw, process.platform === 'win32' ? 120_000 : 15_000);
       const total = publicBootstrapHits(hits);
       const fromApp = total - publicBootstrapHits(duringPear);
       say(`tripwire: ${JSON.stringify(hits)}`);

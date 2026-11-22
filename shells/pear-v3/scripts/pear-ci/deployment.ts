@@ -13,11 +13,11 @@ import { appFileName } from './pins.ts';
 
 /**
  * The project's `package.json` for `pear build` and `pear stage`: the packaged app's own fields
- * (`packaging/stage.ts`) plus `upgrade`, the link builds follow (S2). The link is a throwaway made
- * on the job's private DHT, so nothing here names a real link, and nothing reads it: the app has
- * no updater in this slice.
+ * (`packaging/stage.ts`) and nothing that points anywhere. It has no update link, as the app's own
+ * `package.json` has none: the app has no updater in this slice, and the repository's tests refuse
+ * a link in anything the shell ships or stages.
  */
-export function deploymentPackageJson(o: { version: string; link: string }): string {
+export function deploymentPackageJson(o: { version: string }): string {
   return `${JSON.stringify(
     {
       name: APP.name,
@@ -26,7 +26,6 @@ export function deploymentPackageJson(o: { version: string; link: string }): str
       description: APP.description,
       license: APP.license,
       author: APP.author,
-      upgrade: o.link,
     },
     null,
     2,
