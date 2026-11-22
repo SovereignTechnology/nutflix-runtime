@@ -64,18 +64,18 @@ export function parseIptablesCounters(text: string, ips: readonly string[] = TRI
 }
 
 /**
- * `pfctl -vsr`:
+ * `pfctl -vsr` (macOS 15 prints no `@n` before a rule; other pfctl builds do):
  *
- *     @0 block drop out quick inet from any to 88.99.3.86
+ *     block drop out quick inet from any to 88.99.3.86
  *       [ Evaluations: 5  Packets: 0  Bytes: 0  States: 0  ]
  */
 export function parsePfCounters(text: string, ips: readonly string[] = TRIPWIRE_IPS): Hits {
   const hits = Object.fromEntries(ips.map((ip) => [ip, 0]));
   let current: string | null = null;
   for (const line of text.split(/\r?\n/)) {
-    if (/^@\d+\s/.test(line)) {
-      // A rule line: ours when it blocks and names one of the watched addresses.
-      const ip = /\bblock\b/.test(line)
+    // A rule line starts with `block` (macOS) or `@<n> block` (pfctl elsewhere); its counters follow.
+    if (/^\s*(@\d+\s+)?(block|pass|match|anchor)\b/.test(line)) {
+      const ip = /^\s*(@\d+\s+)?block\b/.test(line)
         ? ips.find((a) => new RegExp(`\\b${a.replaceAll('.', '\\.')}\\b`).test(line))
         : undefined;
       current = ip ?? null;

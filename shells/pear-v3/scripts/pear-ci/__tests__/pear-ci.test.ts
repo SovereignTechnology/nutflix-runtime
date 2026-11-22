@@ -94,19 +94,26 @@ describe('the tripwire watches the public bootstrap and a canary', () => {
     expect(publicBootstrapHits(h)).toBe(3);
   });
 
-  it('reads a pf rule counter', () => {
-    const text = `@0 block drop out quick inet from any to 88.99.3.86
+  it('reads a pf rule counter, with and without the @n prefix', () => {
+    const macos = `block drop out quick inet from any to 88.99.3.86
   [ Evaluations: 10  Packets: 0  Bytes: 0  States: 0     ]
-  [ Inserted: uid 0 pid 123 State Creations: 0   ]
-@1 block drop out quick inet from any to 203.0.113.7
-  [ Evaluations: 9  Packets: 2  Bytes: 112  States: 0     ]
-@2 pass in all
-  [ Evaluations: 9  Packets: 99  Bytes: 1  States: 0     ]
+  [ Inserted: uid 0 pid 2616 ]
+block drop out quick inet from any to 203.0.113.7
+  [ Evaluations: 281       Packets: 1         Bytes: 47          States: 0     ]
+  [ Inserted: uid 0 pid 2616 ]
+No ALTQ support in kernel
+ALTQ related functions disabled
 `;
-    const h = parsePfCounters(text);
-    expect(h[CANARY_IP]).toBe(2);
+    const h = parsePfCounters(macos);
+    expect(h[CANARY_IP]).toBe(1);
     expect(h['88.99.3.86']).toBe(0);
     expect(publicBootstrapHits(h)).toBe(0);
+    const bsd = `@0 block drop out quick inet from any to 88.99.3.86
+  [ Evaluations: 10  Packets: 4  Bytes: 0  States: 0     ]
+@1 pass in all
+  [ Evaluations: 9  Packets: 99  Bytes: 1  States: 0     ]
+`;
+    expect(publicBootstrapHits(parsePfCounters(bsd))).toBe(4);
   });
 
   it('counts dropped packets in the Windows Firewall log', () => {

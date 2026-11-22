@@ -40,6 +40,7 @@ import { launch, readyProblems, type LaunchResult, type ReadyFields } from '../s
 import {
   deploymentPackageJson,
   expectedDeploymentEntries,
+  filesOnly,
   listFiles,
   manifestProblems,
   manifestSummary,
@@ -420,7 +421,14 @@ export async function run(o: Options): Promise<number> {
         const given = prepared.get(t.name);
         if (given === undefined || !existsSync(made)) continue;
         if (t.platform === 'darwin') {
-          const diff = manifestProblems(given.manifest ?? new Map(), await treeManifest(made), 5);
+          // Windows makes of a bundle's symlinks what it can (links with other targets, files):
+          // there only the files are compared.
+          const a = given.manifest ?? new Map();
+          const b = await treeManifest(made);
+          const diff =
+            process.platform === 'win32'
+              ? manifestProblems(filesOnly(a), filesOnly(b), 5)
+              : manifestProblems(a, b, 5);
           for (const d of diff) problems.push(`${t.name}: ${d}`);
         } else if ((await sha256File(made)) !== given.sha256)
           problems.push(`${t.name}: the bytes differ`);
@@ -799,30 +807,34 @@ async function launchInstalled(
       };
     if (result.ok && processPackage !== undefined)
       report.notes.push(`Windows: the launched process runs in package ${processPackage}.`);
-    if (!result.ok) diagnoseAlias();
+    if (!result.ok) await diagnoseAlias();
   }
   return result;
 }
 
-/** What is at the alias, for a launch that failed (Windows). */
-function diagnoseAlias(): void {
+/** What is at the alias, and whether the installed file runs by its own path (Windows; a failed launch). */
+async function diagnoseAlias(): Promise<void> {
   const alias = aliasPath();
-  const dir = dirname(alias);
   say(`alias ${alias}`);
   try {
-    say(
-      `lstat: ${JSON.stringify({ size: lstatSync(alias).size, symlink: lstatSync(alias).isSymbolicLink() })}`,
-    );
+    const st = lstatSync(alias);
+    say(`lstat: ${JSON.stringify({ size: st.size, symlink: st.isSymbolicLink() })}`);
   } catch (e) {
     say(`lstat: ${e instanceof Error ? e.message : String(e)}`);
   }
   try {
-    say(`WindowsApps: ${readdirSync(dir).join(', ')}`);
+    say(`WindowsApps: ${readdirSync(dirname(alias)).join(', ')}`);
   } catch (e) {
     say(`WindowsApps: ${e instanceof Error ? e.message : String(e)}`);
   }
   const where = spawnSync('where.exe', ['Nutflix.exe'], { encoding: 'utf8' });
   say(`where Nutflix.exe: exit ${String(where.status)} ${where.stdout.trim()}`);
+  const place = packageInfo(SCRIPTS_DIR).package?.InstallLocation;
+  if (place !== undefined) {
+    const direct = join(place, 'app', `${APP.productName}.exe`);
+    const r = await launch(direct, [], 'ready', 60);
+    say(`by its own path ${direct}: ${r.ok ? 'PASS' : 'FAIL'} ${r.reason}`);
+  }
 }
 
 function writeSummary(work: string, r: Report): void {

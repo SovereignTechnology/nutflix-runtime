@@ -88,6 +88,11 @@ export async function treeManifest(root: string): Promise<TreeManifest> {
   return out;
 }
 
+/** The files of a manifest, without its symlinks (a Windows file system cannot keep a bundle's). */
+export function filesOnly(m: TreeManifest): TreeManifest {
+  return new Map([...m].filter(([, e]) => e.kind === 'file'));
+}
+
 /** What differs between a tree before Pear and after (empty = the same). At most `limit` lines. */
 export function manifestProblems(before: TreeManifest, after: TreeManifest, limit = 20): string[] {
   const problems: string[] = [];
