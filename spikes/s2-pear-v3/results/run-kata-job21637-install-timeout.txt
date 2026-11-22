@@ -1,0 +1,354 @@
+[kata-run] snapshot of the spike worktree
+[kata-run] command: 'env' 'S2_ENV=kata-ci' 'S2_PHASES=env deps bootstrap template link make1 build1 stage1 install launch-checks run1 update2 hold restart-held wrong-notice update3 stale-notice apply restart-applied provision multisig-demo sandbox-nonroot' 'bash' 'spikes/s2-pear-v3/run.sh'
+[kata-run] ci job 21637 (pipeline 6732)
+[kata-run] waiting for a CI runner
+[kata-run] running on a private CI runner
+== kata-run setup
+== kata-run command
+======== [S2 11:41:53] env: kata-ci (S2_ENV) ========
+$ node --check /builds/repo/spikes/s2-pear-v3/worker-instrumented.js
+[exit 0]
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+VERSION_ID="12"
+ID=debian
+Linux 2282b95a70a4 6.18.63 #1 SMP Mon Nov 16 23:11:55 UTC 2026 x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+CapEff:	00000000a80425fb
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+nproc=12
+               total        used        free      shared  buff/cache   available
+Mem:            7960         215        7637           8         199        7745
+Swap:              0           0           0
+Filesystem     Type      Size  Used Avail Use% Mounted on
+none           virtiofs  717G  209G  478G  31% /
+none           virtiofs  717G  209G  478G  31% /
+none           virtiofs  717G  209G  478G  31% /
+none           virtiofs  717G  209G  478G  31% /
+--- FUSE
+ls: cannot access '/dev/fuse': No such file or directory
+no fusermount
+	libatomic.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libatomic.so.1
+--- user namespaces
+/proc/sys/kernel/unprivileged_userns_clone=cat: /proc/sys/kernel/unprivileged_userns_clone: No such file or directory
+/proc/sys/user/max_user_namespaces=31831
+/proc/sys/kernel/apparmor_restrict_unprivileged_userns=cat: /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
+$ unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+$ setpriv --reuid=65534 --regid=65534 --clear-groups unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+--- tools
+xvfb-run=missing
+Xvfb=missing
+apt-get=/usr/bin/apt-get
+node=/usr/local/bin/node
+npm=/usr/local/bin/npm
+npx=/usr/local/bin/npx
+git=/usr/bin/git
+python3=/usr/bin/python3
+curl=/usr/bin/curl
+v24.21.0
+11.19.0
+git version 2.39.5
+--- network
+88.99.3.86      node1.hyperdht.org
+142.93.90.113   node2.hyperdht.org
+138.68.147.8    node3.hyperdht.org
+104.16.6.34     registry.npmjs.org
+104.16.2.34     registry.npmjs.org
+104.16.9.34     registry.npmjs.org
+104.16.4.34     registry.npmjs.org
+104.16.8.34     registry.npmjs.org
+104.16.11.34    registry.npmjs.org
+104.16.3.34     registry.npmjs.org
+104.16.5.34     registry.npmjs.org
+104.16.7.34     registry.npmjs.org
+104.16.1.34     registry.npmjs.org
+104.16.10.34    registry.npmjs.org
+104.16.0.34     registry.npmjs.org
+udp/123 to pool.ntp.org: reply 48 bytes from 144.202.62.209
+https://registry.npmjs.org/ -> 200
+https://github.com/ -> 200
+PHASE OK: env
+======== [S2 11:41:55] deps: xvfb and Electron's libraries ========
+$ bash -c apt-get update -qq 2>&1 | tail -3
+[exit 0]
+$ bash -c apt-get install -y -qq --no-install-recommends  xvfb xauth libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libxtst6 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libatomic1 libsecret-1-0 libnotify4 dbus-x11 file squashfs-tools procps 2>&1 | tail -3
+Setting up xserver-common (2:21.1.7-3+deb12u13) ...
+Setting up xvfb (2:21.1.7-3+deb12u13) ...
+Processing triggers for libc-bin (2.36-9+deb12u14) ...
+[exit 0]
+xvfb-run=/usr/bin/xvfb-run
+Xvfb=/usr/bin/Xvfb
+unsquashfs=/usr/bin/unsquashfs
+PHASE OK: deps
+======== [S2 11:42:54] bootstrap: npx pear@3.0.0 (HOME=/var/tmp/s2/home) ========
+registry dist.integrity: sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+integrity matches the pin
+$ timeout 1500 npx --yes pear@3.0.0
+Installing Pear (Please stand by, this might take a bit...)
+Bootstrapping: pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+Pear installed!
+Please open a new terminal (or restart your current one) for the updated PATH to take effect.
+[exit 0]
+bootstrap: attempt 1 installed /var/tmp/s2/home/.local/bin/pear
+--- what npx installed (registry integrity of each)
+node_modules/corestore 7.16.1 sha512-Zk2lirmXxNKxdKp7aqObnPxQKUzc+DmAfzff45EZDxSeW2k8UbXlEEPrg35Xme5OC6E/ZkZgSZaAe3Ki9NI44w==
+node_modules/hyperdrive 13.3.4 sha512-cbh4Zoov2l6GMn6NCYs8VNBzPU3C2M5/otOjIR1qagsrLbKZsfSC4Q7ryTbnDrj8FK32Jkdo0jLU1NeRmTkj3Q==
+node_modules/hyperswarm 4.17.2 sha512-yKTNgHjijwrmSj5neC2Lu5JyKDvj9gZK/zkVLySP6J2M7nF+uvFMoxzRlWKKjdySfZVHZXPLfhk4xAnpqibm5A==
+node_modules/pear 3.0.0 sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+node_modules/pear-install 1.6.0 sha512-aMTWX6TaUgbzo0MtQfPrRH8bDFH/LDAvGZ8LPw/ql2iPyTMIxKhisLjYsaA+VOJEd+fr0o7VoxozT6Nu/Ptwyg==
+total 97352
+drwxr-xr-x 2 root root     4096 Nov 19 11:43 .
+drwxr-xr-x 3 root root     4096 Nov 19 11:43 ..
+-rwxr-xr-x 1 root root 99679496 Nov 19 11:43 pear
+/var/tmp/s2/home/.local/bin/pear: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, not stripped
+PHASE OK: bootstrap
+======== [S2 11:43:22] template: https://github.com/holepunchto/hello-pear-electron.git @ ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2 ========
+$ git clone -q https://github.com/holepunchto/hello-pear-electron.git /var/tmp/s2/dl-template/app
+[exit 0]
+$ git -C /var/tmp/s2/dl-template/app checkout -q ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2
+[exit 0]
+ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2 2026-11-17 22:45:23 +0100 update electron-forge dependencies (#99)
+$ bash -o pipefail -c npm ci --ignore-scripts --no-audit --no-fund --loglevel=error 2>&1 | tail -5
+added 530 packages in 29s
+[exit 0]
+$ node node_modules/electron/install.js
+[exit 0]
+hello-pear-electron@1.0.0 /var/tmp/s2/dl-template/app
++-- @electron-forge/cli@8.0.1
++-- electron@42.11.18
++-- hello-pear-worker@1.2.0
+| +-- hyperswarm@4.17.2 deduped
+| `-- pear-runtime@1.3.1 deduped
++-- hyperswarm@4.17.2
++-- pear-electron-forge-maker-appimage@3.0.1
++-- pear-mobile@4.3.0
+| +-- hyperswarm@4.17.2 deduped
+| `-- pear-runtime-updater@3.4.0
+|   `-- hyperdrive@13.3.4
+`-- pear-runtime@1.3.1
+  +-- bare-sidecar@0.5.16
+  +-- hyperswarm@4.17.2 deduped
+  `-- pear-runtime-updater@3.4.0 deduped
+{
+  "multisig": {
+    "publicKeys": ["<PUBKEY_HERE>", "<PUBKEY_HERE>", "<PUBKEY_HERE>"],
+    "namespace": "holepunchto/hello-pear-electron",
+    "quorum": 2
+  }
+}
+PHASE OK: template
+======== [S2 11:44:02] link: pear touch, a background seeder, package.json#upgrade, the instrumented worker ========
+$ bash -o pipefail -c timeout 120 '/var/tmp/s2/home/.local/bin/pear' touch --json </dev/null | tee '/var/tmp/s2/logs/touch.ndjson'
+{"cmd":"touch","tag":"final","data":{"success":true,"key":"ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y"}}
+[exit 0]
+STATE LINK=pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+STATE SEED_PID=2267
+{
+  "name": "hello-pear-electron",
+  "productName": "HelloPear",
+  "version": "1.0.0",
+  "upgrade": "pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y",
+  "main": "electron/main.js"
+}
+ package.json    |   2 +-
+ workers/main.js | 384 +++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 371 insertions(+), 15 deletions(-)
+PHASE OK: link
+======== [S2 11:44:04] make 1.0.0 (full) ========
+$ bash -o pipefail -c timeout 1500 npm run make 2>&1 | tail -40
+> hello-pear-electron@1.0.0 make
+> electron-forge make
+❯ Checking your system
+❯ Checking package manager version
+✔ Found npm@11.19.0
+✔ Checking your system
+❯ Loading configuration
+✔ Loading configuration
+❯ Resolving make targets
+✖ Resolving make targets [FAILED: Cannot make for snap, the following external binaries need to be installed: snapcraft, lxd]
+An unhandled rejection has occurred inside Forge:
+Error: Cannot make for snap, the following external binaries need to be installed: snapcraft, lxd
+at MakerSnap.ensureExternalBinariesExist (file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/maker-base/src/Maker.ts:167:13)
+    at file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/core/src/api/make.ts:249:21
+    at Task.taskFn (file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/tracer/src/index.ts:60:14)
+    at Task.run (file:///var/tmp/s2/dl-template/app/node_modules/listr2/dist/index.mjs:1965:5)
+[exit 1]
+$ bash -o pipefail -c timeout 1500 npx electron-forge make --targets pear-electron-forge-maker-appimage 2>&1 | tail -30
+› Determining targets...
+❯ Packaging for x64 on linux
+❯ Copying files
+✔ Copying files
+❯ Preparing native dependencies
+✔ Preparing native dependencies
+❯ Finalizing package
+✔ Finalizing package
+✔ Packaging for x64 on linux
+✔ Packaging application
+❯ Running postPackage hook
+✔ Running postPackage hook
+✔ Running package command
+❯ Running preMake hook
+❯ Running preMake hook from forgeConfig
+✔ Running preMake hook from forgeConfig
+✔ Running preMake hook
+❯ Making distributables
+❯ Making a appImage distributable for linux/x64
+  • downloaded      label=appimage-12.0.1.7z progress=100%
+  • downloaded      label=7zip-linux-x64.tar.gz progress=100%
+  • building embedded block map  file=out/make/HelloPear-1.0.0-x64.AppImage
+✔ Making a appImage distributable for linux/x64
+✔ Making distributables
+❯ Running postMake hook
+› Artifacts available at: /var/tmp/s2/dl-template/app/out/make
+✔ Running postMake hook
+❯ Saving make results
+› Make results saved to: /var/tmp/s2/dl-template/app/out/make-results
+✔ Saving make results
+[exit 0]
+--- out/ (depth 2)
+d         4096 .
+d         4096 ./HelloPear-linux-x64
+f    220253400 ./HelloPear-linux-x64/HelloPear
+f         1096 ./HelloPear-linux-x64/LICENSE
+f     20008860 ./HelloPear-linux-x64/LICENSES.chromium.html
+f        15232 ./HelloPear-linux-x64/chrome-sandbox
+f       120284 ./HelloPear-linux-x64/chrome_100_percent.pak
+f       198601 ./HelloPear-linux-x64/chrome_200_percent.pak
+f      1906240 ./HelloPear-linux-x64/chrome_crashpad_handler
+f     10876560 ./HelloPear-linux-x64/icudtl.dat
+f       256744 ./HelloPear-linux-x64/libEGL.so
+f      6460064 ./HelloPear-linux-x64/libGLESv2.so
+f      2714344 ./HelloPear-linux-x64/libffmpeg.so
+f      4636360 ./HelloPear-linux-x64/libvk_swiftshader.so
+f      2450616 ./HelloPear-linux-x64/libvulkan.so.1
+d         4096 ./HelloPear-linux-x64/locales
+d         4096 ./HelloPear-linux-x64/resources
+f      7058669 ./HelloPear-linux-x64/resources.pak
+f       346664 ./HelloPear-linux-x64/snapshot_blob.bin
+f       721416 ./HelloPear-linux-x64/v8_context_snapshot.bin
+f            8 ./HelloPear-linux-x64/version
+f          107 ./HelloPear-linux-x64/vk_swiftshader_icd.json
+d         4096 ./make
+d         4096 ./make-results
+f         2922 ./make-results/e6996f1d3ca061ba21aa9f5da7951f5aa3246aa7ecaa8624168b3d0e4b46124e.forge-make.json
+f    154159474 ./make/HelloPear-1.0.0-x64.AppImage
+forge AppImage: /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage sha256=97ae4c3d8727e170ba053cce39c6768bd43eba2556e8aa99a9b6e849af5995c4
+STATE FORGE_AIMG_1_0_0=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage
+STATE SHA_1_0_0=97ae4c3d8727e170ba053cce39c6768bd43eba2556e8aa99a9b6e849af5995c4
+PHASE OK: make1
+======== [S2 11:44:54] pear build with Forge's own file name (expected to be refused) ========
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage --target /var/tmp/s2/builds/refused-1.0.0 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.0","target":"/var/tmp/s2/builds/refused-1.0.0"}}
+{"cmd":"build","tag":"error","data":{"success":false,"code":"ERR_INVALID_APP_NAME","message":"expected HelloPear but got HelloPear-1.0.0-x64.AppImage for linux-x64"}}
+[exit 1]
+
+======== [S2 11:44:54] pear build 1.0.0 ========
+$ timeout 300 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dist/1.0.0/HelloPear.AppImage --target /var/tmp/s2/builds/hello-pear-electron-1.0.0 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.0","target":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"build","tag":"executable","data":{"file":"/var/tmp/s2/builds/hello-pear-electron-1.0.0/by-arch/linux-x64/app/HelloPear.AppImage","origin":"/var/tmp/s2/dist/1.0.0/HelloPear.AppImage"}}
+{"cmd":"build","tag":"final","data":{"success":true}}
+[exit 0]
+--- deployment folder /var/tmp/s2/builds/hello-pear-electron-1.0.0
+d         4096 755 .
+d         4096 755 ./by-arch
+d         4096 755 ./by-arch/linux-x64
+d         4096 755 ./by-arch/linux-x64/app
+f    154159474 755 ./by-arch/linux-x64/app/HelloPear.AppImage
+f         2470 644 ./package.json
+14582b552e27e2b105481658c2f85419309e7a32e8aea4125dcd3fb08a661523  package.json
+97ae4c3d8727e170ba053cce39c6768bd43eba2556e8aa99a9b6e849af5995c4  by-arch/linux-x64/app/HelloPear.AppImage
+{'name': 'hello-pear-electron', 'productName': 'HelloPear', 'version': '1.0.0', 'upgrade': 'pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y', 'main': 'electron/main.js'}
+PHASE OK: build1
+======== [S2 11:44:56] pear stage --dry-run 1.0.0 ========
+$ bash -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' stage --dry-run --json 'pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y' '/var/tmp/s2/builds/hello-pear-electron-1.0.0' </dev/null > '/var/tmp/s2/logs/stage-dry-1.0.0.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","verlink":"pear://0.0.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","current":1,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"stage","tag":"dry"}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[154159474],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":2,"remove":0,"change":0,"length":0,"byteLength":0,"blobs":{"length":0,"fork":0,"byteLength":0}}}
+{"cmd":"stage","tag":"skipping","data":{"reason":"dry-run","success":true}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":true}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+======== [S2 11:44:56] pear stage 1.0.0 ========
+$ bash -c timeout 900 '/var/tmp/s2/home/.local/bin/pear' stage --json 'pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y' '/var/tmp/s2/builds/hello-pear-electron-1.0.0' </dev/null > '/var/tmp/s2/logs/stage-1.0.0.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","verlink":"pear://0.0.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","current":1,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[154159474],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":2,"remove":0,"change":0,"length":3,"byteLength":397,"blobs":{"length":114,"fork":0,"byteLength":154162618}}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":false}}
+{"cmd":"stage","tag":"addendum","data":{"version":3,"key":"ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","verlink":"pear://0.3.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y"}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+STATE VERLINK_1_0_0=pear://0.3.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear info pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+  Info:          pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+  Verlink:       pear://0.3.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+  App:           hello-pear-electron@1.0.0
+  Product Name:  HelloPear
+  Writable:      true
+  Targets:
+    linux-x64 (154.2MB)
+  Drive Key:     ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+  Drive Fork:    0
+  Drive Length:  3
+  Drive Size:    397B
+  Blobs Key:     xhzg9kkxtat6sod11qjjzzstezjkdreynxci9x9nc7uurrq9r9po
+  Blobs Fork:    0
+  Blobs Length:  114
+  Blobs Size:    154.2MB
+  Discovery Key: h98spdoiwmg3qy3ah3oetnwn7q6ufc5etde9npxtpn7wtzt1yfzy
+  Upgrade:       pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+✔ Success
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear dump --list pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+🍐 Output pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+/by-arch/linux-x64/app/HelloPear.AppImage
+/package.json
+✔ Success
+[exit 0]
+PHASE OK: stage1
+======== [S2 11:45:09] pear install pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y ========
+$ bash -o pipefail -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' install 'pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y' --json --timeout 300 </dev/null | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","host":"linux-x64"}}
+{"cmd":"install","tag":"error","data":{"stack":"ERR_NETWORK_TIMEOUT: Network Timeout 300s\n    at bare:/app.bundle/node_modules/pear-install/index.js:117:16\n    at Scheduler._ontimeout (bare:/bare.js:3507:17)","code":"ERR_NETWORK_TIMEOUT","message":"Network Timeout 300s","success":false,"info":null}}
+{"cmd":"install","tag":"final","data":{"success":false}}
+[exit 1]
+install: attempt 1 failed
+$ bash -o pipefail -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' install 'pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y' --json --timeout 300 </dev/null | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","host":"linux-x64"}}
+{"cmd":"install","tag":"error","data":{"stack":"ERR_NETWORK_TIMEOUT: Network Timeout 300s\n    at bare:/app.bundle/node_modules/pear-install/index.js:117:16\n    at Scheduler._ontimeout (bare:/bare.js:3507:17)","code":"ERR_NETWORK_TIMEOUT","message":"Network Timeout 300s","success":false,"info":null}}
+{"cmd":"install","tag":"final","data":{"success":false}}
+[exit 1]
+install: attempt 2 failed
+$ bash -o pipefail -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' install 'pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y' --json --timeout 300 </dev/null | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","host":"linux-x64"}}
+{"cmd":"install","tag":"error","data":{"stack":"ERR_NETWORK_TIMEOUT: Network Timeout 300s\n    at bare:/app.bundle/node_modules/pear-install/index.js:117:16\n    at Scheduler._ontimeout (bare:/bare.js:3507:17)","code":"ERR_NETWORK_TIMEOUT","message":"Network Timeout 300s","success":false,"info":null}}
+{"cmd":"install","tag":"final","data":{"success":false}}
+[exit 1]
+install: attempt 3 failed
+PHASE FAILED: install
+======== [S2 12:01:11] cleanup ========
+--- seeder log (tail)
+,"connections":4,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+{"cmd":"seed","tag":"stats","data":{"firewalled":true,"peers":0,"driveKey":"ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","driveFork":0,"driveSynced":3,"driveLength":3,"blobsSynced":114,"blobsLength":114,"blobsByteLength":154162618,"name":"hello-pear-electron","semver":"1.0.0","discoveryKey":"h98spdoiwmg3qy3ah3oetnwn7q6ufc5etde9npxtpn7wtzt1yfzy","contentKey":"xhzg9kkxtat6sod11qjjzzstezjkdreynxci9x9nc7uurrq9r9po","whoami":"kc68d85htrngxtfr514uow91uccf4o87kdohgmnyzpa3s9zirwhy","uptime":1022338,"upload":{"totalBytes":0,"totalBlocks":0,"speed":0},"download":{"totalBytes":0,"totalBlocks":0,"speed":0},"natType":"Consistent","connections":4,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+{"cmd":"seed","tag":"stats","data":{"firewalled":true,"peers":0,"driveKey":"ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y","driveFork":0,"driveSynced":3,"driveLength":3,"blobsSynced":114,"blobsLength":114,"blobsByteLength":154162618,"name":"hello-pear-electron","semver":"1.0.0","discoveryKey":"h98spdoiwmg3qy3ah3oetnwn7q6ufc5etde9npxtpn7wtzt1yfzy","contentKey":"xhzg9kkxtat6sod11qjjzzstezjkdreynxci9x9nc7uurrq9r9po","whoami":"kc68d85htrngxtfr514uow91uccf4o87kdohgmnyzpa3s9zirwhy","uptime":1025338,"upload":{"totalBytes":0,"totalBlocks":0,"speed":0},"download":{"totalBytes":0,"totalBlocks":0,"speed":0},"natType":"Consistent","connections":4,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+- Closing any current Sidecar clients...
+- Shutting down current Sidecar...
+✔ Sidecar has shutdown
+--- state
+LINK=pear://ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+SEED_PID=2267
+FORGE_AIMG_1_0_0=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage
+SHA_1_0_0=97ae4c3d8727e170ba053cce39c6768bd43eba2556e8aa99a9b6e849af5995c4
+VERLINK_1_0_0=pear://0.3.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
+KATA_RUN_RC=1
+ERROR: Job failed: exit status 1
+[kata-run] job failed, exit 1
+[kata-run] timing (ci): sync 3.1 s, queue 1847.0 s, setup 0.0 s, command 1158.7 s, job 1163.1 s, total 3023.5 s
+kata-run exit 1
