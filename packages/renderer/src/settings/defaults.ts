@@ -1,12 +1,13 @@
 /**
  * The renderer's first-run settings. Adapted from nutflix-pear's `packages/app-web/src/settings/
  * defaults.ts` and the desktop app's `DEFAULT_SETTINGS` / `DEFAULT_NFX` (`app-desktop/src/host/
- * settings/settings.ts`), at the submodule's pinned commit; the values are those two apps' own, so
- * a viewer sees the same catalogue in each.
+ * settings/settings.ts`), at the submodule's pinned commit, except the general relays below.
  *
  * - **Relays:** the network's scoped relay `wss://relay.nutflix.xyz` first (manifests and beacons,
- *   NFX-04), then the four public read relays of ADR 0009 with its 2026-11-07 amendment
- *   (`relay.ditto.pub` answers NIP-50 search).
+ *   NFX-04), then `relay.primal.net` and `relay.ditto.pub` (which answers NIP-50 search). The
+ *   maintainer took `relay.damus.io` and `nos.lol` out of the client defaults on 2026-11-18: the
+ *   first refuses this project's address and the second has rate-limited it. nutflix-pear makes
+ *   the same change in its PR #120.
  * - **NFX, always on**, on `nfx:testnet:1`. No iroh relay (no iroh here), and no mesh or STUN
  *   setting yet: the WebRTC player is slice B.
  * - **No wallet, no seeding, no unsigned images:** those fields are fixed, never stored.
@@ -31,8 +32,6 @@ const relay = (url: string): Settings['relays'][number] =>
 
 export const DEFAULT_SETTINGS: Settings = Object.freeze({
   relays: Object.freeze([
-    relay('wss://relay.damus.io'),
-    relay('wss://nos.lol'),
     relay('wss://relay.primal.net'),
     relay('wss://relay.ditto.pub'),
   ]),

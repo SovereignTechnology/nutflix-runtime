@@ -36,8 +36,6 @@ describe('the defaults', () => {
     });
     expect(NFX_NETWORK).toBe('nfx:testnet:1');
     expect(DEFAULT_SETTINGS.relays.map((r) => r.url)).toEqual([
-      'wss://relay.damus.io',
-      'wss://nos.lol',
       'wss://relay.primal.net',
       'wss://relay.ditto.pub',
     ]);
