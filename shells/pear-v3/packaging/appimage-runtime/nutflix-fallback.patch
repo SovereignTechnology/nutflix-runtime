@@ -9,7 +9,18 @@
  
  const char* fusermountPath = NULL;
  
-@@ -1463,6 +1465,129 @@
+@@ -970,7 +972,9 @@
+     // FTW_MOUNT: prevent deletion of files on other mounted filesystems
+     // FTW_PHYS: do not follow symlinks, but report symlinks as such; this way, the symlink targets, which might point
+     //           to locations outside path will not be deleted accidentally (attackers might abuse this)
+-    int rv = nftw(path, &rm_recursive_callback, 0, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
++    // nutflix-runtime: musl's nftw returns 0 at once for a limit of 0, and does not descend past
++    // the limit, so upstream's call removes nothing in this static build.
++    int rv = nftw(path, &rm_recursive_callback, 128, FTW_DEPTH | FTW_MOUNT | FTW_PHYS);
+ 
+     return rv == 0;
+ }
+@@ -1463,6 +1467,129 @@
      }
  }
  
@@ -139,7 +150,7 @@
  int main(int argc, char* argv[]) {
      const bool verbose = (getenv("VERBOSE") != NULL);
      if (verbose) {
-@@ -1577,7 +1702,16 @@
+@@ -1577,7 +1704,16 @@
          free(abspath);
      }
  
@@ -157,7 +168,7 @@
          char* hexlified_digest = NULL;
  
          // calculate MD5 hash of file, and use it to make extracted directory name "content-aware"
-@@ -1604,13 +1738,10 @@
+@@ -1604,13 +1740,10 @@
              hexlified_digest = appimage_hexlify((const char*)digest.bytes, sizeof(digest.bytes));
          }
  
@@ -174,7 +185,7 @@
              fprintf(stderr, "Failed to extract AppImage\n");
              exit(EXIT_EXECERROR);
          }
-@@ -1658,7 +1789,7 @@
+@@ -1658,7 +1791,7 @@
          int rv = waitpid(pid, &status, 0);
          status = rv > 0 && WIFEXITED (status) ? WEXITSTATUS (status) : EXIT_EXECERROR;
  

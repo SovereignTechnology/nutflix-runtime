@@ -33,6 +33,14 @@ for a in "$@"; do printf 'ARG=%s\n' "$a"; done
 exit "${TEST_EXIT:-0}"
 APPRUN
 chmod 755 "$T/AppDir/AppRun"
+# A deep tree, and a symlink out of it: removing an extraction must empty the first and must not
+# follow the second.
+deep="$T/AppDir/deep"
+for _ in $(seq 1 40); do deep="$deep/d"; done
+mkdir -p "$deep"
+printf 'x' >"$deep/file"
+printf 'keep' >"$T/keep-me"
+ln -s "$T/keep-me" "$T/AppDir/outside"
 mksquashfs "$T/AppDir" "$T/image" -root-owned -noappend -no-xattrs -comp gzip -quiet -no-progress
 img="$T/Test.AppImage"
 cat "$runtime" "$T/image" >"$img"
@@ -105,8 +113,9 @@ for args in "" "--appimage-extract-and-run"; do
   case "$d" in /tmp/nutflix-appimage.*) ;; *) fail "no cache: APPDIR is $d" ;; esac
   [ ! -e "$marker" ] || fail "the planted file ran"
   [ ! -e "$d" ] || fail "no cache: the one-run directory was left behind"
+  [ "$(cat "$T/keep-me")" = keep ] || fail "removing the extraction followed a symlink"
 done
-pass "a planted extraction in /tmp is never used; a one-run directory is removed"
+pass "a planted extraction in /tmp is never used; a one-run directory is removed, deep tree included"
 
 c="$T/c4"
 b="$c/nutflix-runtime"
