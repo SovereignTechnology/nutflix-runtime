@@ -92,6 +92,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Every target the app ships to (ADR 0001, amendment item 5). Each builds from source and runs
+  # every test, including the built worker under the real Bare runtime with that platform's
+  # prebuilt addons. One platform failing never hides the others.
+  platforms:
+    name: platform (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm }
+          - { target: darwin-arm64, os: macos-15 }
+          - { target: darwin-x64, os: macos-15-intel }
+          - { target: win32-x64, os: windows-2025 }
+    steps:
+      # Windows runners would otherwise check text files out with CRLF.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: this runner is the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node -e "const t = process.platform + '-' + process.arch; console.log(t); if (t !== process.env.TARGET) process.exit(1)"
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm test
+
   # The renderer in a real browser: headless Chromium plays a VP9 video that the real worker fetches
   # over HyperDHT from nutflix-pear's own seeder code, on a loopback testnet, with a local relay.
   # Everything runs on this machine; nothing leaves loopback. ffmpeg makes the clip (VP9, because
