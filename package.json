@@ -21,7 +21,8 @@
     "vendor/nutflix-pear/packages/core",
     "vendor/nutflix-pear/packages/seeder",
     "vendor/nutflix-pear/packages/ui",
-    "packages/*"
+    "packages/*",
+    "shells/*"
   ],
   "scripts": {
     "build": "tsc -b",

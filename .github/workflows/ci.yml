@@ -156,3 +156,126 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: e2e (packages/renderer/e2e)
         run: npm run test:e2e -w packages/renderer
+
+  # The app itself, on every target (ADR 0001 amendment, item 5; shells/pear-v3). Each target builds
+  # from source on its own OS, makes its package (a TEST build: nothing is signed, no secret is
+  # used), launches the PACKAGED app, and waits for the one line the app prints once the window has
+  # loaded the renderer and the worker has answered `status`. The app takes no test switch: this
+  # runs the same binary a user would. Updates are off in this slice; `pear build`, `stage` and
+  # `seed` are the next one. What each target proves is in shells/pear-v3/README.md.
+  shell:
+    name: shell (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # One shell for every step, Windows included (the steps below use bash's `$VAR`).
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+          - { target: darwin-arm64, os: macos-15, platform: darwin, arch: arm64 }
+          - { target: darwin-x64, os: macos-15-intel, platform: darwin, arch: x64 }
+          - { target: win32-x64, os: windows-2025, platform: win32, arch: x64 }
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      ARCH: ${{ matrix.arch }}
+      SHELL_OUT: shells/pear-v3/out
+      SMOKE: shells/pear-v3/scripts/smoke.ts
+    steps:
+      # Windows runners would otherwise check text files out with CRLF.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: this runner is the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node -e "const t = process.platform + '-' + process.arch; console.log(t); if (t !== process.env.TARGET) process.exit(1)"
+      - name: Electron's system libraries, Xvfb, and the AppImage tools
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb squashfs-tools fuse3 \
+            libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      # The type-2 runtime goes in front of the squashfs. The release is a dated tag, and the maker
+      # refuses a file whose sha256 is not its pin (packaging/maker-appimage.ts): nothing here is trusted.
+      - name: the AppImage runtime (release 20251108; the maker checks its sha256)
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          case "$ARCH" in x64) asset=runtime-x86_64 ;; arm64) asset=runtime-aarch64 ;; esac
+          mkdir -p "$SHELL_OUT/appimage-runtime"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$SHELL_OUT/appimage-runtime/$asset" \
+            "https://github.com/AppImage/type2-runtime/releases/download/20251108/$asset"
+      - name: package (stage, Forge, fuses, layout)
+        run: node shells/pear-v3/scripts/package.ts build --platform "$PLATFORM" --arch "$ARCH"
+      # Chromium's sandbox stays on: Ubuntu 24.04 restricts the unprivileged user namespaces it
+      # uses, so lift that on this throwaway runner (the AppImage's chrome-sandbox is not setuid).
+      - name: allow Chromium's user-namespace sandbox on this runner
+        if: matrix.platform == 'linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: the shipped Bare runtime is the version the worker needs
+        run: |
+          case "$PLATFORM" in
+            linux) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
+            darwin) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/Resources/app" ;;
+            win32) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
+          esac
+          node "$SMOKE" bare --app "$app" --platform "$PLATFORM" --arch "$ARCH"
+      - name: launch the packaged AppImage; the window loads and the worker answers (Xvfb)
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a node "$SMOKE" appimage --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage"
+      # Information for ADR 0001 amendment, item 3 (not a gate; that item is a later slice): what the
+      # stock type-2 runtime does with no FUSE helper on PATH. It prints and exits; nothing starts.
+      - name: the AppImage runtime without FUSE tools (information only)
+        if: matrix.platform == 'linux'
+        continue-on-error: true
+        run: |
+          f="$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage"
+          echo "runtime: $("$f" --appimage-version 2>&1 | head -1)"
+          empty="$RUNNER_TEMP/no-fuse-tools"
+          mkdir -p "$empty"
+          code=0
+          out=$(timeout 30 /usr/bin/env PATH="$empty" "$f" --appimage-mount 2>&1 | head -3) || code=$?
+          echo "without fusermount on PATH: exit $code, first lines: $out"
+          echo "libfuse.so.2 present: $(ldconfig -p | grep -c 'libfuse\.so\.2' || true)"
+      - name: launch the packaged .app; the window loads and the worker answers
+        if: matrix.platform == 'darwin'
+        run: node "$SMOKE" ready --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix"
+      - name: unpack the .msix, launch its app; the window loads and the worker answers
+        if: matrix.platform == 'win32'
+        run: node "$SMOKE" msix --file "$SHELL_OUT/make/msix/$ARCH/Nutflix.msix"
+      # ADR 0001 amendment, item 2: with --no-sandbox the app warns before any window and does not
+      # open one. (Nothing answers the box: the run proves the warning comes first.)
+      - name: --no-sandbox shows the warning and opens no window (Linux, Xvfb)
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a node "$SMOKE" warning --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix" --timeout 90
+      - name: --no-sandbox shows the warning and opens no window (macOS)
+        if: matrix.platform == 'darwin'
+        run: node "$SMOKE" warning --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix" --timeout 90
+      - name: --no-sandbox shows the warning and opens no window (Windows)
+        if: matrix.platform == 'win32'
+        run: node "$SMOKE" warning --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.exe" --timeout 90
+      - name: zip the .app (symlinks and modes survive a zip made by ditto)
+        if: matrix.platform == 'darwin'
+        run: ditto -c -k --keepParent "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app" "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH.app.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shell-${{ matrix.target }}
+          path: |
+            shells/pear-v3/out/make/appimage/*/Nutflix.AppImage
+            shells/pear-v3/out/make/msix/*/Nutflix.msix
+            shells/pear-v3/out/Nutflix-*.app.zip
+          if-no-files-found: error
+          retention-days: 3

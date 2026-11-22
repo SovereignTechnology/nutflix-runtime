@@ -87,6 +87,7 @@ export default tseslint.config(
             'vitest.config.ts',
             'packages/*/vitest.config.ts',
             'packages/*/vitest.e2e.config.ts',
+            'shells/*/vitest.config.ts',
           ],
         },
         tsconfigRootDir: import.meta.dirname,
@@ -129,7 +130,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['eslint.config.js', 'vitest.config.ts'],
+    files: ['eslint.config.js', 'vitest.config.ts', 'shells/*/vitest.config.ts'],
     ...tseslint.configs.disableTypeChecked,
   },
 );

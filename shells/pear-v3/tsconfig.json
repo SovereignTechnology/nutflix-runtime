@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src",
+    "scripts",
+    "packaging",
+    "../../packages/worker/src/types",
+    "../../packages/renderer/src/links.ts",
+    "../../packages/renderer/src/net/hosts.ts",
+    "../../packages/renderer/scripts/build.ts",
+    "../../packages/renderer/scripts/csp-sri.d.ts",
+    "../../packages/renderer/scripts/policy.ts",
+    "../../vendor/nutflix-pear/packages/app-desktop/packaging/closure.ts",
+    "../../vendor/nutflix-pear/packages/app-web/scripts/site.ts"
+  ],
+  "references": [
+    { "path": "../../vendor/nutflix-pear/packages/core" },
+    { "path": "../../vendor/nutflix-pear/packages/seeder" },
+    { "path": "../../vendor/nutflix-pear/packages/ui" },
+    { "path": "../../packages/worker/tsconfig.build.json" }
+  ]
+}
