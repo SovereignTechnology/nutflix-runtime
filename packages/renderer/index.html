@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src http://127.0.0.1:*; font-src 'self'; connect-src 'self' wss: ws://127.0.0.1:* http://127.0.0.1:* https:; worker-src 'none'; manifest-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- scripts/build.ts: every script and stylesheet below gets its SRI hash, and anything inline
+         is refused. This policy is the first element of <head> and is tested (src/__tests__/csp.test.ts). -->
+    <title>Nutflix</title>
+    <link rel="stylesheet" href="ui.css" />
+    <link rel="stylesheet" href="shell.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Nutflix needs JavaScript.</noscript>
+  </body>
+</html>

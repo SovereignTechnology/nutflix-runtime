@@ -1,0 +1,170 @@
+/**
+ * The renderer's side of the worker wire (ADR 0001 decision 3). A shell owns the worker and the
+ * means of reaching it; the renderer sees only a `WorkerPipe`: a framed byte duplex, the same
+ * 4-byte-length frames the worker's `WorkerClient` writes and reads (packages/worker/README.md).
+ * The two shells each supply one (a preload bridge, a Bare pipe over the runtime's IPC); the tests
+ * supply an in-memory one, and the end-to-end test a Playwright bridge.
+ *
+ * `WorkerLink` is the one consumer: the worker's `WorkerClient` over a pipe, narrowed to what
+ * playing needs. The shell sends `init` (it knows the storage directory and the bootstrap) before
+ * it hands the pipe over: a renderer never names a path for the worker to write.
+ */
+import {
+  WorkerClient,
+  WorkerError,
+  type ArgsOf,
+  type ErrorCode,
+  type NfxPlayOpenArgs,
+  type ResultOf,
+  type WorkerEvent,
+} from '@nutflix-runtime/worker';
+
+/** A framed byte duplex to the worker. Bytes are whole frames or any chunking of them. */
+export interface WorkerPipe {
+  /** Bytes to the worker. Throws when the pipe is closed. */
+  write(bytes: Uint8Array): void;
+  /** Bytes from the worker. Returns the unsubscribe. */
+  onData(cb: (bytes: Uint8Array) => void): () => void;
+  /** The worker went away, or the shell closed the pipe. Returns the unsubscribe. */
+  onClose(cb: () => void): () => void;
+  /** The renderer is done with the pipe. */
+  close(): void;
+}
+
+/** `x` as a `WorkerPipe`, when it has the four methods. The shell's bridge is not trusted to be typed. */
+export function asWorkerPipe(x: unknown): WorkerPipe | null {
+  if (typeof x !== 'object' || x === null) return null;
+  const p = x as Record<string, unknown>;
+  for (const k of ['write', 'onData', 'onClose', 'close']) {
+    if (typeof p[k] !== 'function') return null;
+  }
+  return x as WorkerPipe;
+}
+
+/** What the adapter needs of the worker; `WorkerLink` is the real one, the tests fake it. */
+export interface PlayWorker {
+  /** Resolves once the worker has been `init`ed, rejects `worker-down` when it never is. */
+  ready(): Promise<void>;
+  open(args: NfxPlayOpenArgs): Promise<ResultOf<'nfx.play.open'>>;
+  close(sid: string): Promise<void>;
+  /** The worker's pipe ended or went corrupt. */
+  onDown(cb: () => void): () => void;
+}
+
+/** How long `ready` waits for a worker that is still starting, ms. */
+export const READY_WAIT_MS = 20_000;
+/** How often `ready` asks `status` while it waits, ms. */
+export const READY_POLL_MS = 250;
+/** A play's open fetches the init and the first segment over HyperDHT before it answers, ms. */
+export const OPEN_TIMEOUT_MS = 60_000;
+
+export interface WorkerLinkOptions {
+  readonly pipe: WorkerPipe;
+  readonly readyWaitMs?: number;
+  readonly readyPollMs?: number;
+  readonly openTimeoutMs?: number;
+  /** Worker events (`status`, `nfx.seed`, `log`); none are needed to play. */
+  readonly onEvent?: ((ev: WorkerEvent) => void) | undefined;
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+export class WorkerLink implements PlayWorker {
+  readonly #o: WorkerLinkOptions;
+  readonly #client: WorkerClient;
+  readonly #down = new Set<() => void>();
+  readonly #offs: (() => void)[] = [];
+  #isDown = false;
+  #ready: Promise<void> | null = null;
+
+  constructor(o: WorkerLinkOptions) {
+    this.#o = o;
+    this.#client = new WorkerClient({
+      write: (bytes) => {
+        o.pipe.write(bytes);
+      },
+      ...(o.onEvent === undefined ? {} : { onEvent: o.onEvent }),
+      onFatal: () => {
+        this.#goDown();
+      },
+      timeoutMs: o.openTimeoutMs ?? OPEN_TIMEOUT_MS,
+    });
+    this.#offs.push(
+      o.pipe.onData((bytes) => {
+        this.#client.push(bytes);
+      }),
+      o.pipe.onClose(() => {
+        this.#client.end();
+        this.#goDown();
+      }),
+    );
+  }
+
+  #goDown(): void {
+    if (this.#isDown) return;
+    this.#isDown = true;
+    for (const cb of [...this.#down]) {
+      try {
+        cb();
+      } catch {
+        // A listener's failure is its own.
+      }
+    }
+  }
+
+  onDown(cb: () => void): () => void {
+    if (this.#isDown) {
+      cb();
+      return () => undefined;
+    }
+    this.#down.add(cb);
+    return () => {
+      this.#down.delete(cb);
+    };
+  }
+
+  /** The first `status` the worker answers (it answers `not-ready` until `init`). Memoised. */
+  ready(): Promise<void> {
+    this.#ready ??= this.#waitReady().catch((e: unknown) => {
+      this.#ready = null;
+      throw e;
+    });
+    return this.#ready;
+  }
+
+  async #waitReady(): Promise<void> {
+    const end = Date.now() + (this.#o.readyWaitMs ?? READY_WAIT_MS);
+    for (;;) {
+      try {
+        await this.#client.request('status', {}, { timeoutMs: 5_000 });
+        return;
+      } catch (e) {
+        if (!(e instanceof WorkerError) || e.code !== 'not-ready' || Date.now() >= end) throw e;
+      }
+      await sleep(this.#o.readyPollMs ?? READY_POLL_MS);
+    }
+  }
+
+  open(args: ArgsOf<'nfx.play.open'>): Promise<ResultOf<'nfx.play.open'>> {
+    return this.#client.request('nfx.play.open', args);
+  }
+
+  async close(sid: string): Promise<void> {
+    await this.#client.request('nfx.play.close', { sid }, { timeoutMs: 10_000 });
+  }
+
+  /** Detaches from the pipe (the shell owns it and the worker; nothing here stops either). */
+  dispose(): void {
+    for (const off of this.#offs.splice(0)) off();
+    this.#client.end();
+    this.#goDown();
+  }
+}
+
+/** The adapter-facing code of a worker error. */
+export function codeOf(e: unknown): ErrorCode | null {
+  return e instanceof WorkerError ? e.code : null;
+}

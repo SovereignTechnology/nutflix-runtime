@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src",
+    "scripts",
+    "e2e",
+    "../worker/src/types",
+    "../../vendor/nutflix-pear/packages/app-web/scripts/site.ts"
+  ],
+  "references": [
+    { "path": "../../vendor/nutflix-pear/packages/core" },
+    { "path": "../../vendor/nutflix-pear/packages/seeder" },
+    { "path": "../../vendor/nutflix-pear/packages/ui" },
+    { "path": "../worker/tsconfig.build.json" }
+  ]
+}
