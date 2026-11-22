@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -84,18 +84,21 @@ describe('resolveAppPath', () => {
 });
 
 describe('the app: handler', () => {
+  // Paths as this platform writes them: the handler joins with `path.join`.
+  const R = resolve('/r');
+  const OUT = resolve('/outside');
   const files = new Map<string, string>([
-    ['/r/index.html', '<html></html>'],
-    ['/r/app.js', 'x'],
-    ['/r/ui.css', 'x'],
-    ['/r/shell.css', 'x'],
-    ['/r/secret.js', 'nope'],
-    ['/outside/app.js', 'planted'],
+    [join(R, 'index.html'), '<html></html>'],
+    [join(R, 'app.js'), 'x'],
+    [join(R, 'ui.css'), 'x'],
+    [join(R, 'shell.css'), 'x'],
+    [join(R, 'secret.js'), 'nope'],
+    [join(OUT, 'app.js'), 'planted'],
   ]);
-  const links = new Map<string, string>([['/r/app.js', '/outside/app.js']]);
+  const links = new Map<string, string>([[join(R, 'app.js'), join(OUT, 'app.js')]]);
   const mk = (linked = false) =>
     createAppProtocolHandler({
-      root: '/r',
+      root: R,
       csp: "default-src 'none'",
       readFile: (p) => {
         const t = files.get(p);
@@ -105,7 +108,7 @@ describe('the app: handler', () => {
       },
       realpath: (p) => {
         const to = linked ? links.get(p) : undefined;
-        return files.has(to ?? p) || p === '/r'
+        return files.has(to ?? p) || p === R
           ? Promise.resolve(to ?? p)
           : Promise.reject(new Error('ENOENT'));
       },

@@ -135,24 +135,50 @@ than 1.29.4 (`smoke.ts bare`).
 
 ## What CI proves
 
-`.github/workflows/ci.yml`, job `shell`, per target (details of the last run are in the PR):
+`.github/workflows/ci.yml`, job `shell`, once per target (the PR lists the run):
 
 1. the package is made, its fuses read back right and its layout is as `layout.ts` says;
-2. the packaged `bare` is Bare 1.29.4 or later;
+2. the packaged Bare is 1.29.4 or later (`smoke.ts bare` asks the shipped `bare-sidecar` runtime
+   for `Bare.version`; it is a launcher with no `--version`, so it runs a one-line script);
 3. the packaged app is launched with no switch, and prints `NUTFLIX_SHELL_READY {…}`: **the window
    loaded `app://nutflix`, the renderer mounted in it, and the worker answered `status`** (main's
    own request, after `init`), with the sandbox on. Every build prints this line; no switch makes it
-   print;
+   print. The line also says what the packaged engine can do: whether the renderer's WebRTC player
+   probe passed, and whether `MediaSource` takes VP9 or H.264 in MP4;
 4. with `--no-sandbox`, the warning comes first and no window opens.
 
-It does **not** prove playback: playing a video needs a relay and a seeder, and the app takes no
-switch to name them. That is covered, on Linux, by the renderer's own end-to-end job.
+What is launched: Linux, the `.AppImage` itself (native FUSE first, then
+`--appimage-extract-and-run`); macOS, the `.app`'s executable; Windows, the executable inside the
+unpacked `.msix` (`makeappx unpack`). The `.msix` is **not installed**: it is unsigned, and
+installing is the next slice's test.
+
+It does **not** prove playback. Playing a video needs a relay and a seeder, and the app takes no
+switch to name them (a release build would accept it); a seeder on the public DHT would be a server
+waiting for outside traffic, which CI must not be. Playing is covered, on Linux only and outside the
+packaged app, by the renderer's own end-to-end job.
+
+### The AppImage runtime (for amendment, item 3)
+
+Seen on GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` runners, with the type-2 runtime of release
+`20251108` and the `fuse3` package installed, `libfuse.so.2` absent:
+
+- The AppImage mounts and starts natively. This runtime is static; it does not load `libfuse.so.2`
+  (S2's stock runtime did), but it still needs a FUSE helper binary.
+- With no `fusermount` or `fusermount3` on `PATH` it prints `Error: No suitable fusermount binary
+  found on the $PATH` and exits 127, before any app code, with no fallback of its own.
+  `--appimage-extract-and-run` is the manual way round it.
+- So the FUSE fallback of item 3 cannot live in `AppRun` or in the app: the runtime is the first
+  thing that runs. It needs a custom runtime or a stub in front of it, pinned by sha256 like this
+  one.
+- `AppRun` here is the Electron binary, so nothing adds `--no-sandbox`. The sandbox then needs
+  unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not setuid (CI lifts
+  Ubuntu 24.04's AppArmor restriction on its throwaway runner).
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
-| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `app-protocol.ts`, `rpc-gate.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `external-links.ts`, `log.ts` |
+| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `app-protocol.ts`, `rpc-gate.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
 | `src/preload/preload.ts` | the preload |
 | `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check |
 | `scripts/package.ts`, `scripts/smoke.ts` | the packaging driver; the launcher CI runs |

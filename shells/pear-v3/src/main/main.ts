@@ -36,6 +36,7 @@ import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
 import { event, readyLine } from './log.ts';
+import { PROBE_CODE, parseProbe, type Probe } from './page-probe.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
   BANNER_TEXT,
@@ -227,9 +228,15 @@ async function main(): Promise<void> {
   }
   unsandboxed = !outcome.sandboxed;
 
-  const state = { window: false, renderer: false, worker: false, printed: false };
+  const state: {
+    window: boolean;
+    renderer: Probe | null;
+    worker: boolean;
+    printed: boolean;
+  } = { window: false, renderer: null, worker: false, printed: false };
   const maybeReady = (): void => {
-    if (state.printed || !state.window || !state.renderer || !state.worker) return;
+    const probe = state.renderer;
+    if (state.printed || !state.window || probe === null || !state.worker) return;
     state.printed = true;
     readyLine({
       shell: 'pear-v3',
@@ -238,6 +245,9 @@ async function main(): Promise<void> {
       renderer: 'mounted',
       worker: 'status-ok',
       sandbox: unsandboxed ? 'off' : 'on',
+      player: probe.player,
+      vp9: probe.vp9,
+      h264: probe.h264,
     });
   };
 
@@ -291,9 +301,9 @@ async function main(): Promise<void> {
     if (!isAppUrl(win.webContents.getURL())) return;
     state.window = true;
     if (unsandboxed) void injectBanner(win.webContents);
-    void untilMounted(win.webContents).then((mounted) => {
-      if (mounted) {
-        state.renderer = true;
+    void untilMounted(win.webContents).then((probe) => {
+      if (probe !== null) {
+        state.renderer = probe;
         maybeReady();
       } else {
         event('renderer-not-mounted');
@@ -309,26 +319,24 @@ async function main(): Promise<void> {
 const ISOLATED_WORLD = 2000;
 
 /**
- * True once the renderer has mounted: `startRenderer` sets `data-webrtc-player` on `#root` before
- * it renders, and `#root` has children; the entry's own failure text ("could not start") is not
- * there. Polled, read only: nothing from the page is trusted beyond this boolean.
+ * The page's probe once the renderer has mounted (`page-probe.ts`), or null after 60 s. Polled,
+ * read only.
  */
-async function untilMounted(wc: WebContents): Promise<boolean> {
-  const code =
-    "(() => { const r = document.getElementById('root'); return r !== null &&" +
-    ' r.dataset.webrtcPlayer !== undefined && r.childElementCount > 0 &&' +
-    " !(r.textContent ?? '').startsWith('Nutflix could not start'); })()";
+async function untilMounted(wc: WebContents): Promise<Probe | null> {
   for (let i = 0; i < 240; i++) {
-    if (wc.isDestroyed()) return false;
+    if (wc.isDestroyed()) return null;
     try {
-      const r: unknown = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }]);
-      if (r === true) return true;
+      const r: unknown = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [
+        { code: PROBE_CODE },
+      ]);
+      const probe = parseProbe(r);
+      if (probe !== null) return probe;
     } catch {
       // The page is between documents; try again.
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  return false;
+  return null;
 }
 
 /** The banner while the sandbox is off: set through the CSSOM (the page's policy has no inline style). */

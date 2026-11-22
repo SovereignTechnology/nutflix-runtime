@@ -12,6 +12,7 @@ import {
   type PolicySession,
 } from '../main/security.ts';
 import { APP_ORIGIN, APP_URL, isAppOrigin, isAppUrl, privilegedSchemes } from '../main/schemes.ts';
+import { PROBE_CODE, parseProbe } from '../main/page-probe.ts';
 import { WEBRTC_IP_POLICY, createMainWindow, type BrowserWindowCtor } from '../main/window.ts';
 
 const cl = (switches: Record<string, string> = {}) => ({
@@ -208,5 +209,33 @@ describe('web contents and the session', () => {
     expect(privilegedSchemes()).toEqual([
       { scheme: 'app', privileges: { standard: true, secure: true, stream: true } },
     ]);
+  });
+});
+
+describe('what main reads from the page', () => {
+  it('accepts only the three facts, and nothing else the page might put in the object', () => {
+    expect(parseProbe({ player: 'available', vp9: true, h264: false, x: '<script>' })).toEqual({
+      player: 'available',
+      vp9: true,
+      h264: false,
+    });
+    expect(parseProbe({ player: 'unavailable', vp9: 'yes', h264: 1 })).toEqual({
+      player: 'unavailable',
+      vp9: false,
+      h264: false,
+    });
+  });
+
+  it.each([null, undefined, true, 'x', [], { player: 'maybe' }, { vp9: true }])(
+    'is not mounted for %j',
+    (x) => {
+      expect(parseProbe(x)).toBeNull();
+    },
+  );
+
+  it('is a read-only expression: no eval, no HTML, no network, no navigation', () => {
+    expect(PROBE_CODE).not.toMatch(
+      /\b(eval|Function|innerHTML|fetch|XMLHttpRequest|location|open)\b/,
+    );
   });
 });
