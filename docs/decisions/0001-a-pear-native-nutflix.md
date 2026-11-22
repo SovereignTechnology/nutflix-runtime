@@ -116,9 +116,10 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    in Settings, and a banner stays visible while the sandbox is off. The main process never adds
    the switch itself.
 3. **Without FUSE, the app still starts, and tells the user how to start faster.** It falls back to
-   extract-and-run and shows a notice to install FUSE 2. S2 found that the stock AppImage runtime
-   exits before any app code when `libfuse.so.2` is missing, so this fallback has to live in the
-   AppImage's runtime or launcher. The shell step must prove a pinned way to do that before release.
+   extract-and-run and shows a notice to install FUSE. S2 found that the stock AppImage runtime
+   exits before any app code when FUSE is missing, so this fallback lives in a patched runtime,
+   pinned by sha256 (`shells/pear-v3/packaging/appimage-runtime/`). That runtime needs only a
+   `fusermount` helper, so the notice names `fuse3` rather than FUSE 2.
 4. **The update gate follows S2.** It judges only the newest build on the link. A newer build with
    no notice holds back an older announced one: this fails safe, and publishing a notice clears it.
    S2's record has the exact API sequence. Still untested: Chromium's sandbox on a real Debian

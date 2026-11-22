@@ -8,7 +8,8 @@
  *
  *   node scripts/smoke.ts ready    --exe <file> [--timeout s]
  *   node scripts/smoke.ts warning  --exe <file> [--timeout s]    adds --no-sandbox: expects the warning, no window
- *   node scripts/smoke.ts appimage --file <file>                 native FUSE first, then --appimage-extract-and-run
+ *   node scripts/smoke.ts appimage --file <file>                 mounted with FUSE: ready, and no no-FUSE notice
+ *   node scripts/smoke.ts no-fuse  --file <file>                 no fusermount: private extraction, the notice once
  *   node scripts/smoke.ts stock-warning   --file <file>          restricted kernel, no stored choice: the warning
  *   node scripts/smoke.ts stock-consented --file <file>          restricted kernel, "Run anyway" stored: runs, sandbox off
  *   node scripts/smoke.ts msix     --file <file>                 `makeappx unpack`, then `ready` on app/Nutflix.exe
@@ -18,7 +19,17 @@
  * a name match. Output is the verdict plus, on a failure, the tail of what the app printed.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,6 +140,8 @@ export interface LaunchResult {
   readonly tail: string[];
   readonly ms: number;
   readonly ready: ReadyFields | null;
+  /** The names of the events main printed. */
+  readonly events: readonly string[];
 }
 
 export type Expect = 'ready' | 'warning';
@@ -137,6 +150,10 @@ export interface LaunchOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** What the ready line must say about the sandbox. */
   readonly sandbox?: 'on' | 'off';
+  /** An event that must also be printed before the launch counts. */
+  readonly waitFor?: string;
+  /** How long to keep watching after the verdict, for an event that must not come. */
+  readonly settleMs?: number;
 }
 
 export async function launch(
@@ -173,7 +190,15 @@ export async function launch(
     warned: boolean;
     exited: boolean;
     exitCode: number | null;
-  } = { verdict: null, ready: null, warned: false, exited: false, exitCode: null };
+    events: Set<string>;
+  } = {
+    verdict: null,
+    ready: null,
+    warned: false,
+    exited: false,
+    exitCode: null,
+    events: new Set(),
+  };
   void exited.then((c) => {
     st.exited = true;
     st.exitCode = c;
@@ -203,6 +228,7 @@ export async function launch(
         continue;
       }
       const name = eventName(line);
+      if (name !== null) st.events.add(name);
       if (name === 'sandbox-warning') st.warned = true;
       if (
         name !== null &&
@@ -215,7 +241,8 @@ export async function launch(
 
   const deadline = started + timeoutS * 1000;
   let warnedAt = 0;
-  while (st.verdict === null && Date.now() < deadline) {
+  const missing = (): boolean => opts.waitFor !== undefined && !st.events.has(opts.waitFor);
+  while ((st.verdict === null || (st.verdict.ok && missing())) && Date.now() < deadline) {
     if (st.exited) {
       st.verdict = {
         ok: false,
@@ -230,10 +257,13 @@ export async function launch(
     }
     await sleep(250);
   }
+  if (st.verdict?.ok === true && missing())
+    st.verdict = { ok: false, reason: `no ${String(opts.waitFor)} in ${String(timeoutS)} s` };
   const verdict = st.verdict ?? {
     ok: false,
     reason: `no ${expect === 'warning' ? 'warning' : 'ready line'} in ${String(timeoutS)} s`,
   };
+  if (verdict.ok && opts.settleMs !== undefined) await sleep(opts.settleMs);
   await stop(child, exited);
   return {
     ok: verdict.ok,
@@ -241,6 +271,7 @@ export async function launch(
     tail,
     ms: Date.now() - started,
     ready: st.ready,
+    events: [...st.events],
   };
 }
 
@@ -349,6 +380,56 @@ async function stockLaunch(
   }
 }
 
+const NOTICE_EVENT = 'fuse-notice-shown';
+
+/**
+ * The real AppImage with no `fusermount` on PATH (AppRun's three tools only), twice, in its own
+ * config and cache: the first start extracts privately and shows the notice; the second reuses the
+ * extraction and does not show it again.
+ */
+async function noFuse(file: string, timeout: number): Promise<number> {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-v3-nofuse-'));
+  try {
+    const tools = join(dir, 'tools');
+    mkdirSync(tools);
+    for (const t of ['dirname', 'readlink', 'cat']) symlinkSync(`/usr/bin/${t}`, join(tools, t));
+    const cache = join(dir, 'cache');
+    const env = {
+      ...process.env,
+      PATH: tools,
+      XDG_CONFIG_HOME: join(dir, 'config'),
+      XDG_CACHE_HOME: cache,
+    };
+    const first = await launch(file, [], 'ready', timeout, { env, waitFor: NOTICE_EVENT });
+    report('no FUSE, first start', first);
+    if (!first.ok) return 1;
+    const base = join(cache, 'nutflix-runtime');
+    const found = readdirSync(base);
+    const [only] = found;
+    if (found.length !== 1 || only === undefined || !/^appimage-[0-9a-f]{32}$/.test(only)) {
+      process.stdout.write(`SMOKE FAIL no FUSE: the cache holds ${String(found.length)} entries\n`);
+      return 1;
+    }
+    const modes = [base, join(base, only)].map((p) => statSync(p).mode & 0o777);
+    if (modes.some((m) => m !== 0o700)) {
+      process.stdout.write('SMOKE FAIL no FUSE: the extraction is not private\n');
+      return 1;
+    }
+    process.stdout.write('SMOKE   proved: extracted to a private cache, notice shown\n');
+    const second = await launch(file, [], 'ready', timeout, { env, settleMs: 3000 });
+    report('no FUSE, second start', second);
+    if (!second.ok) return 1;
+    if (second.events.includes(NOTICE_EVENT)) {
+      process.stdout.write('SMOKE FAIL no FUSE: the notice came twice\n');
+      return 1;
+    }
+    process.stdout.write('SMOKE   proved: the second start reuses it, with no second notice\n');
+    return 0;
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   const timeout = Number(arg(rest, '--timeout') ?? '120');
@@ -365,15 +446,16 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     case 'appimage': {
       const file = resolve(need(rest, '--file'));
-      const fuse = await launch(file, [], 'ready', timeout);
+      const fuse = await launch(file, [], 'ready', timeout, { settleMs: 3000 });
       report('appimage (FUSE)', fuse);
-      if (fuse.ok) return 0;
-      const first = fuse.tail.find((l) => l.startsWith('err '))?.slice(0, 200) ?? '(no stderr)';
-      process.stdout.write(`SMOKE appimage-fuse-failure: ${first}\n`);
-      const extract = await launch(file, ['--appimage-extract-and-run'], 'ready', timeout);
-      report('appimage (--appimage-extract-and-run)', extract);
-      return extract.ok ? 0 : 1;
+      if (fuse.events.includes(NOTICE_EVENT)) {
+        process.stdout.write('SMOKE FAIL appimage: FUSE is here, but it extracted\n');
+        return 1;
+      }
+      return fuse.ok ? 0 : 1;
     }
+    case 'no-fuse':
+      return noFuse(resolve(need(rest, '--file')), timeout);
     case 'stock-warning': {
       const r = await stockLaunch(resolve(need(rest, '--file')), false, timeout);
       report('stock kernel: the warning', r);

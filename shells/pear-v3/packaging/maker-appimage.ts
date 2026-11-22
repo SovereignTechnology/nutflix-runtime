@@ -46,23 +46,23 @@ export interface RuntimePin {
 }
 
 /**
- * AppImage/type2-runtime release `20251108` (an immutable dated tag, not `continuous`):
- * https://github.com/AppImage/type2-runtime/releases/tag/20251108. The same two digests as
- * nutflix-pear's maker (read from GitHub's release asset listing on 2026-09-25). A wrong pin
- * fails the build closed, never open.
+ * AppImage/type2-runtime release `20251108` with `appimage-runtime/nutflix-fallback.patch`, built
+ * by this repository's `appimage-runtime` workflow on `main`, with build provenance. It starts
+ * the app on a machine with no usable FUSE (ADR 0001 amendment, item 3). A wrong pin fails the
+ * build closed, never open.
  */
 export const APPIMAGE_RUNTIME_RELEASE =
-  'https://github.com/AppImage/type2-runtime/releases/tag/20251108';
+  'https://github.com/SovereignTechnology/nutflix-runtime/releases/tag/appimage-runtime-20251108-nutflix.1';
 export const APPIMAGE_RUNTIME_DOWNLOAD =
-  'https://github.com/AppImage/type2-runtime/releases/download/20251108';
+  'https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1';
 export const APPIMAGE_RUNTIMES: Readonly<Record<string, RuntimePin>> = {
   x64: {
     asset: 'runtime-x86_64',
-    sha256: '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d',
+    sha256: '677b21d04b9e93546c3e46c987786b380045254946aa50c296c77c0cc6b31ae7',
   },
   arm64: {
     asset: 'runtime-aarch64',
-    sha256: '00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444',
+    sha256: '8abc1189793f09720c2befe9edae7a73d00aa448300a99cb052c16d91c0bb8cd',
   },
 };
 

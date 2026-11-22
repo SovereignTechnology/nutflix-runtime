@@ -23,5 +23,7 @@ at release `20251108` (commit `dd6cebe`) in two ways:
 behavior above on a real machine, including that a planted extraction never runs. The
 `appimage-runtime` workflow runs both on x86-64 and arm64.
 
-The app does not use this runtime yet: `maker-appimage.ts` still pins the upstream one. The next step
-publishes the built runtime with build provenance and pins it there by sha256.
+The app uses the build published as the prerelease `appimage-runtime-20251108-nutflix.1`, pinned by
+sha256 in `maker-appimage.ts`. To change the runtime: bump `VERSION` in `build.sh`, run the workflow on
+`main` so it records provenance, publish a new prerelease, and update the pins. The build is not
+bit-for-bit reproducible, so a published file is verified by its attestation.

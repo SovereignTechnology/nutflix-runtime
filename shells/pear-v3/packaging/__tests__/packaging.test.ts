@@ -26,6 +26,7 @@ import { APP, MIN_BARE, STAGED, TARGETS, bareBinary } from '../identity.ts';
 import { layoutProblems } from '../layout.ts';
 import {
   APPIMAGE_RUNTIMES,
+  APPIMAGE_RUNTIME_DOWNLOAD,
   AppImageError,
   desktopEntry,
   mksquashfsArgs,
@@ -104,16 +105,20 @@ describe('fuses', () => {
 });
 
 describe('the AppImage maker', () => {
-  it("pins the same two runtime digests as nutflix-pear's maker, release 20251108", () => {
-    const theirs = readFileSync(
+  it("pins this repository's patched runtime, not the upstream one", () => {
+    const upstream = readFileSync(
       join(REPO_ROOT, 'vendor/nutflix-pear/packages/app-desktop/packaging/maker-appimage.ts'),
       'utf8',
     );
+    expect(APPIMAGE_RUNTIME_DOWNLOAD).toContain(
+      'SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1',
+    );
+    expect(Object.keys(APPIMAGE_RUNTIMES).sort()).toEqual(['arm64', 'x64']);
     for (const pin of Object.values(APPIMAGE_RUNTIMES)) {
-      expect(theirs).toContain(pin.sha256);
-      expect(theirs).toContain(pin.asset);
+      expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(upstream).not.toContain(pin.sha256);
+      expect(upstream).toContain(pin.asset);
     }
-    expect(theirs).toContain('20251108');
   });
 
   it('refuses a runtime that is missing or does not match its pin, and returns one that does', () => {

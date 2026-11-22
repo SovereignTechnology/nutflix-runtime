@@ -150,8 +150,8 @@ than 1.29.4 (`smoke.ts bare`).
    probe passed, and whether `MediaSource` takes VP9 or H.264 in MP4;
 4. with `--no-sandbox`, the warning comes first and no window opens.
 
-What is launched: Linux, the `.AppImage` itself (native FUSE first, then
-`--appimage-extract-and-run`); macOS, the `.app`'s executable; Windows, the executable inside the
+What is launched: Linux, the `.AppImage` itself, once mounted with FUSE and once with no FUSE tools;
+macOS, the `.app`'s executable; Windows, the executable inside the
 unpacked `.msix` (`makeappx unpack`). The `.msix` is **not installed**: it is unsigned, and
 installing is the next slice's test.
 
@@ -162,17 +162,13 @@ packaged app, by the renderer's own end-to-end job.
 
 ### The AppImage runtime (for amendment, item 3)
 
-Seen on GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` runners, with the type-2 runtime of release
-`20251108` and the `fuse3` package installed, `libfuse.so.2` absent:
+The AppImage carries this repository's patched type-2 runtime
+([`packaging/appimage-runtime/`](packaging/appimage-runtime/README.md)), pinned by sha256:
 
-- The AppImage mounts and starts natively. This runtime is static; it does not load `libfuse.so.2`
-  (S2's stock runtime did), but it still needs a FUSE helper binary.
-- With no `fusermount` or `fusermount3` on `PATH` it prints `Error: No suitable fusermount binary
-  found on the $PATH` and exits 127, before any app code, with no fallback of its own.
-  `--appimage-extract-and-run` is the manual way round it.
-- So the FUSE fallback of item 3 cannot live in `AppRun` or in the app: the runtime is the first
-  thing that runs. It needs a custom runtime or a stub in front of it, pinned by sha256 like this
-  one.
+- With FUSE usable, it mounts as usual. It is static, so it needs a `fusermount` helper (the `fuse3`
+  package gives one) and not `libfuse.so.2`.
+- With no usable FUSE, it extracts to a private per-user cache and runs from there. The first start
+  is slower; the app then shows a notice, once per version, to install `fuse3`.
 - The sandbox needs unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not
   setuid. CI runs the AppImage twice with Ubuntu 24.04's restriction still on (it must reach the
   warning, and after "Run anyway" it must run with the sandbox off), then lifts the restriction on
