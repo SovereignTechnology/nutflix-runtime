@@ -119,8 +119,11 @@ Forge, flips the fuses, and checks the result (`packaging/layout.ts`). Everythin
   refuses unless it equals its sha256 pin (the same two pins as nutflix-pear's).
 - **macOS:** Forge's package step; the `.app` gets an ad-hoc signature (`codesign -s -`: no
   certificate) because an Apple-silicon Mac refuses a bundle that does not match its signature.
-- **Windows:** `@electron-forge/maker-msix`, `sign: false`, with a generated manifest. The package is
-  not installable until it is signed.
+- **Windows:** `@electron-forge/maker-msix`, `sign: false`. The manifest is the maker's own template
+  filled in as before plus one **execution alias**, `Nutflix.exe` (`packaging/msix-manifest.ts`): the
+  installed package can be started by that name from a terminal, with the caller's pipes, so that
+  its `NUTFLIX_SHELL` lines can be read (see "The install job"). The package is not installable
+  until it is signed; the install job signs its own copy with a certificate it makes for the run.
 - **Electron** (45.2.1, exact) is downloaded by Forge and checked against the sha256 list of the
   `electron` npm package, which the lockfile pins. No other tool is downloaded.
 - **Test builds only.** Nothing is signed or notarized, and CI holds no certificate or secret.
@@ -152,13 +155,93 @@ than 1.29.4 (`smoke.ts bare`).
 
 What is launched: Linux, the `.AppImage` itself, once mounted with FUSE and once with no FUSE tools;
 macOS, the `.app`'s executable; Windows, the executable inside the
-unpacked `.msix` (`makeappx unpack`). The `.msix` is **not installed**: it is unsigned, and
-installing is the next slice's test.
+unpacked `.msix` (`makeappx unpack`). The `shell` job does not install the `.msix` (it is unsigned);
+the `install` job below does.
 
 It does **not** prove playback. Playing a video needs a relay and a seeder, and the app takes no
 switch to name them (a release build would accept it); a seeder on the public DHT would be a server
 waiting for outside traffic, which CI must not be. Playing is covered, on Linux only and outside the
 packaged app, by the renderer's own end-to-end job.
+
+## The install job: `pear build`, `stage`, `seed` and `install`, on five targets
+
+ADR 0001's amendment (item 5) wants each target to pass a real `pear install` and launch before a
+release. Job `install` of `.github/workflows/ci.yml` does that, once per target, on that target's
+runner. It downloads the five packages the `shell` job uploaded and then, with
+`scripts/pear-install.ts` (`scripts/pear-ci/run.ts` has the steps):
+
+| Step | What it does |
+| --- | --- |
+| merged | `pear build` merges the five packages into one deployment folder (`by-arch/<target>/app/Nutflix.<ext>`); each entry is compared with its input |
+| staged | `pear stage` puts the folder on a throwaway link; `pear dump --list` lists every file back |
+| seeded | `pear seed` announces it, on the private DHT below, until the install is done |
+| installed | `pear install pear://<link>`, on the private DHT; the installed bytes are compared with the staged ones (a file's sha256; a macOS bundle's every file, symlink and executable bit) |
+| launched | the INSTALLED app is started as installed, and must print its ready line: `pipe` `round-trip`, `rendererSandbox` `enforced`, and the rest of what the `shell` job requires |
+
+### No peer on the public network
+
+GitHub disabled Actions on another repository of this account for hosting a peer, so **no runner may
+seed, serve, announce or wait for outside traffic**. This job runs the whole of Pear against a
+private network, and measures that it never touched the public one.
+
+- **A private DHT.** `scripts/pear-ci/dht-node.ts` starts a HyperDHT testnet, ten nodes bound to
+  `127.0.0.1` and given no other bootstrap (Pear's own test runner makes its network the same way).
+- **Every Pear process is told.** `pear --dht-bootstrap 127.0.0.1:<port> <command>` is the way to
+  point the sidecar at a DHT: the CLI starts the sidecar when none runs and forwards the flag
+  (`cli.js`, `tryboot`); a sidecar that is already up keeps the DHT it started with, and a bare
+  `pear` call starts one on the public bootstrap. So every call carries the flag, the first call
+  (`pear touch`) is the one that starts the sidecar, in a home directory that never held one, and
+  `pear install` also gets the flag as its own option (it opens its own swarm in the CLI process and
+  takes its bootstrap from that option alone). Pear 3.7.0 lists the flag in `pear install -h` only;
+  the rest is read from its source (`cli.js`, `sidecar.js`, `lib/cmd.js`, `subsystems/sidecar/index.js`, and pear-install's
+  `cmd.js`), which is also how its own tests start a sidecar.
+- **The sidecar says so.** Its `pear.log` has the line `DHT bootstrap set` with the private node,
+  and not the line `DHT known-nodes read from database` that a sidecar without the flag writes.
+- **A tripwire counts.** Before anything starts, a firewall rule drops every packet to HyperDHT's
+  three public bootstrap addresses and counts the packets it drops (iptables on Linux, pf on macOS,
+  Windows Defender Firewall with its blocked-packet log on Windows). The job proves the instrument
+  first: it sends one datagram to a documentation address (RFC 5737) that the same rule watches, and
+  fails unless the rule counted it. After Pear has run, the count for the public bootstrap must be
+  **zero**. It is read again after the app's launch: the app's own worker starts a HyperDHT node on
+  the public bootstrap at startup (`packages/worker/src/host.ts`), so those packets are expected
+  there, and they are dropped and counted, not sent.
+- **The Pear CLI is not fetched from the DHT.** `npx pear` bootstraps by downloading the platform
+  drive over the public HyperDHT. This job downloads the platform's GitHub release asset instead
+  (`https://github.com/holepunchto/pear/releases/download/v3.7.0/pear-<target>.zip`, an ordinary
+  HTTPS download that listens and seeds nothing) and refuses it unless its sha256 equals the pin in
+  `scripts/pear-ci/pins.ts`, before it unpacks or runs it. GitHub's own digest for each asset
+  agreed with the pins when they were written, and the linux-x64 binary has the byte length of the
+  one `npx pear@3.0.0` installed in S2.
+- **The link exists only on that DHT.** It is made by `pear touch` on the private DHT and printed in
+  the log: a public key that no one outside the runner can fetch, and whose write key never leaves
+  the runner's throwaway home directory.
+
+Updates stay off: nothing here constructs a `PearRuntime`, calls `applyUpdate()`, provisions or
+signs. No secret is used.
+
+### What is, and is not, proved per platform
+
+- **Linux:** the AppImage is launched as `pear install` placed it (`~/.local/bin/Nutflix.AppImage`),
+  with FUSE. The job also checks the launcher entry `pear install` writes
+  (`~/.local/share/applications/Nutflix.desktop` runs that file). The folders `~/.local/bin` and
+  `~/.local/share/applications` are made before the install, as on a machine that has Pear:
+  `pear install` moves the app into a folder and does not make it (pear-install 1.5.0 and 1.6.0).
+- **macOS:** the bundle is ad-hoc signed (no certificate), as before. After the round trip through
+  `pear build`, `stage` and `install`, `codesign --verify --deep --strict` must pass: **that proves
+  every file and symlink of the bundle survived, because the signature seals them.** It does not
+  prove who built the app (nobody signed it), notarization, or that Gatekeeper accepts it: the job
+  prints what `spctl --assess` says and does not require it. `~/Applications` is made first for the
+  same reason as above.
+- **Windows:** the job makes a self-signed code-signing certificate whose subject is the manifest's
+  publisher, `CN=Sovereign Technology (TEST)`, in the job. Its key is not exportable and is in no
+  file; it is trusted in the runner's Trusted People store only, and removed at the end. The job
+  signs its copy of the `.msix` with it, and `pear install` really installs the package
+  (`Add-AppxPackage`, through `msix-manager`). The app is then launched by its execution alias, so
+  that the packaged app, with its package identity, gets the job's pipes and its ready line can be
+  read, and the job asks Windows which package the running process belongs to. A Windows file system
+  cannot hold a macOS bundle's symlinks, so the macOS entries of the Windows runner's deployment
+  are stand-ins; the other four legs unpack them exactly. The other four legs' deployments hold the
+  unsigned `.msix`.
 
 ### The AppImage runtime (for amendment, item 3)
 
@@ -198,6 +281,8 @@ is imported from there unchanged. The MSIX settings and the Windows SDK lookup a
 - **Bundle id** `xyz.sovit.nutflix.runtime`, **MSIX identity** `SovereignTechnology.Nutflix` and
   **publisher** `CN=Sovereign Technology (TEST)`: the publisher must equal the signing certificate's
   subject and then never change.
-- The generated MSIX manifest has none of the template's `packageManagement`, `unvirtualizedResources`
-  or write-virtualization-off settings, which the update slice will need.
+- The MSIX manifest has none of the template's `packageManagement`, `unvirtualizedResources` or
+  write-virtualization-off settings, which the update slice will need. It does have the `Nutflix.exe`
+  execution alias, which the install job needs and which also lets a person run the packaged app
+  from a terminal and read its output (the app has no switch of its own for that).
 - The worker is not restarted if it exits; the window's pipe closes and playing fails.

@@ -114,7 +114,7 @@ export function compareVersions(a: string, b: string): number {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Ends the app and what it started: its process group, or its tree on Windows. Recorded pids only. */
-async function stop(child: ChildProcess, exited: Promise<unknown>): Promise<void> {
+export async function stop(child: ChildProcess, exited: Promise<unknown>): Promise<void> {
   const pid = child.pid;
   if (pid === undefined) return;
   const signal = (sig: 'SIGTERM' | 'SIGKILL'): void => {
@@ -154,6 +154,8 @@ export interface LaunchOptions {
   readonly waitFor?: string;
   /** How long to keep watching after the verdict, for an event that must not come. */
   readonly settleMs?: number;
+  /** Called with the app's pid once it is ready and still running (the install job asks Windows whose it is). */
+  readonly onReady?: (pid: number) => Promise<void> | void;
 }
 
 export async function launch(
@@ -264,6 +266,13 @@ export async function launch(
     reason: `no ${expect === 'warning' ? 'warning' : 'ready line'} in ${String(timeoutS)} s`,
   };
   if (verdict.ok && opts.settleMs !== undefined) await sleep(opts.settleMs);
+  if (verdict.ok && opts.onReady !== undefined && child.pid !== undefined && !st.exited) {
+    try {
+      await opts.onReady(child.pid);
+    } catch (e) {
+      keep('onReady', e instanceof Error ? e.message : String(e));
+    }
+  }
   await stop(child, exited);
   return {
     ok: verdict.ok,

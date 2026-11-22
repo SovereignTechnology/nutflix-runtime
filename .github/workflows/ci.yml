@@ -161,8 +161,9 @@ jobs:
   # from source on its own OS, makes its package (a TEST build: nothing is signed, no secret is
   # used), launches the PACKAGED app, and waits for the one line the app prints once the window has
   # loaded the renderer and the worker has answered `status`. The app takes no test switch: this
-  # runs the same binary a user would. Updates are off in this slice; `pear build`, `stage` and
-  # `seed` are the next one. What each target proves is in shells/pear-v3/README.md.
+  # runs the same binary a user would. Updates are off in this slice. `install`, below, takes the
+  # packages this job uploads through `pear build`, `stage`, `seed` and `install`. What each target
+  # proves is in shells/pear-v3/README.md.
   shell:
     name: shell (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -286,4 +287,89 @@ jobs:
             shells/pear-v3/out/make/msix/*/Nutflix.msix
             shells/pear-v3/out/Nutflix-*.app.zip
           if-no-files-found: error
+          retention-days: 3
+
+  # ADR 0001 amendment, item 5: each target must pass a real `pear install` and launch. Each leg
+  # downloads the five packages of the `shell` job, merges them with `pear build`, stages the
+  # deployment onto a THROWAWAY link, seeds it and installs it again, all on this one runner, then
+  # launches the INSTALLED app and reads its ready line.
+  #
+  # HARD CONSTRAINT: no runner is a peer of the public network (GitHub disabled Actions on another
+  # repository of this account for hosting one). Everything here runs on a private HyperDHT on
+  # 127.0.0.1 in this job, every Pear process is told so, and a firewall rule drops and COUNTS any
+  # packet to HyperDHT's public bootstrap, so that the log says how many there were (zero). The Pear
+  # CLI is an HTTPS download of its GitHub release, pinned by sha256, not a DHT fetch. Updates stay
+  # off; no real or production link exists; no secret is used. The Windows leg signs its copy of the
+  # TEST .msix with a certificate made in the job and trusted on this runner only.
+  # shells/pear-v3/scripts/pear-ci/run.ts says what each step does; the README says what it proves.
+  install:
+    name: install (${{ matrix.target }})
+    needs: shell
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04, platform: linux }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, platform: linux }
+          - { target: darwin-arm64, os: macos-15, platform: darwin }
+          - { target: darwin-x64, os: macos-15-intel, platform: darwin }
+          - { target: win32-x64, os: windows-2025, platform: win32 }
+    steps:
+      # Windows runners would otherwise check text files out with CRLF.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: this runner is the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node -e "const t = process.platform + '-' + process.arch; console.log(t); if (t !== process.env.TARGET) process.exit(1)"
+      - name: Electron's system libraries, Xvfb, FUSE, iptables
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb fuse3 unzip iptables libatomic1 \
+            libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shell-*
+          path: ${{ runner.temp }}/artifacts
+      # Chromium's sandbox stays on: lift Ubuntu 24.04's restriction on this throwaway runner, as the
+      # `shell` job does (the AppImage's chrome-sandbox is not setuid).
+      - name: allow Chromium's user-namespace sandbox on this runner
+        if: matrix.platform == 'linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: pear build, stage, seed and install on a private DHT; launch the installed app (Xvfb)
+        if: matrix.platform == 'linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          xvfb-run -a node shells/pear-v3/scripts/pear-install.ts --target "$TARGET" \
+            --artifacts "$RUNNER_TEMP/artifacts" --work "$RUNNER_TEMP/pear-install"
+      - name: pear build, stage, seed and install on a private DHT; launch the installed app
+        if: matrix.platform != 'linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          node shells/pear-v3/scripts/pear-install.ts --target "$TARGET" \
+            --artifacts "$RUNNER_TEMP/artifacts" --work "$RUNNER_TEMP/pear-install"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: install-${{ matrix.target }}-logs
+          path: |
+            ${{ runner.temp }}/pear-install/logs
+            ${{ runner.temp }}/pear-install/result.json
+          if-no-files-found: ignore
           retention-days: 3
