@@ -123,3 +123,15 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    no notice holds back an older announced one: this fails safe, and publishing a notice clears it.
    S2's record has the exact API sequence. Still untested: Chromium's sandbox on a real Debian
    desktop, a signed multisig quorum, and a real signed notice.
+5. **Shape (a) ships on five targets from the start:** `darwin-arm64`, `darwin-x64`, `linux-arm64`,
+   `linux-x64` and `win32-x64`, all on one `pear://` link. CI builds each on its own OS, `pear build`
+   merges them, and each target must pass a real `pear install` and launch before a release. On
+   other people's machines, macOS needs Apple code signing and notarization, and Windows needs a
+   real code-signing certificate. Until those exist, those three targets are test builds.
+6. **Shape (a) does not depend on shape (b).** They share the worker and renderer source but are
+   separate builds on separate links. Pear v3 lives on its own platform key, and it has no
+   `pear run`; installing v3 also takes the v2 `pear` off `PATH`, so shape (b) needs its own
+   launch instructions. Shape (b) cannot use shape (a)'s dependency set as it stands: Pear v2.6.5
+   runs Bare 1.24.3, and the locked `bare-fs` needs Bare 1.28 or later. It needs its own pins, and
+   its renderer must work on Chromium 130. It follows on a target only after passing the same
+   install-and-launch test there.
