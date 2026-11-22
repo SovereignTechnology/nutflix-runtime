@@ -1,0 +1,136 @@
+# GitHub Actions run 45021145956, job 137204115361 (ubuntu-24.04, non-root), run.sh gui, 2026-11-22 12:14Z. Result lines only.
+# rendererArgvSandboxFlags is dropped: that argv entry carries the app's whole environment and DHT node addresses.
+# Each gui-renderer line was cut at 16,000 characters by the harness, so its last fields (fetch, wss, MSE append) are missing.
+S1: == env
+S1: os: Ubuntu 24.04.5 LTS
+S1: kernel: 7.0.0-1017-azure arch: x86_64
+S1: id: uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),117(docker),999(systemd-journal)
+S1: nproc: 4 mem: 16367524 kB
+S1: status: NoNewPrivs: 0 Seccomp: 0 
+S1: node: v24.22.3 npm: 11.19.1
+S1: disk: 85G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U works
+S1: sysctl: unprivileged_userns_clone=1 apparmor_restrict_unprivileged_userns=1 max_user_namespaces=58121
+S1: runner: github-actions ubuntu-24.04
+S1: == install: pinned bootstrap length=3243 fork=0
+S1 {"tag":"pin-peers","t":1,"peers":3,"remoteLength":3243,"fork":0,"pin":3243,"pinFork":0}
+S1 {"tag":"pin-updating","t":1,"length":3243,"fork":0}
+S1 {"tag":"pin-installed","t":6,"swapEntries":["boot.bundle","by-arch","checkout","prebuilds"],"applied":{"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","length":3243,"fork":0},"current":"/tmp/s1/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1","runtimeSha256":"17a24785a94a8439617eecdb8844d3dc73c5a5d170e9666bae2cb17bfdf61636","packageVersion":"2.6.5","downloadedBytes":111496154,"seconds":6}
+S1: pin-bootstrap exit: 0
+S1: current -> /tmp/s1/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1
+S1: runtime sha256: 17a24785a94a8439617eecdb8844d3dc73c5a5d170e9666bae2cb17bfdf61636
+S1: installing xvfb, Electron's shared libraries and ffmpeg
+S1: apt install try 1 exit: 0 (xvfb xauth libnss3 libgbm1 libxss1 libxtst6 libdrm2 libxkbcommon0 libatk-bridge2.0-0 libxshmfence1 ffmpeg libgtk-3-0t64 libasound2t64 libcups2t64)
+S1: fixture: 77077 bytes, sha256 04ed81c280a043cf…, streams: h264,High,31 aac,LC 
+S1: gui npm ci exit: 0
+S1:   Pear ~ Welcome to the Internet of Peers
+S1:   🍐 v0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o
+S1:   
+S1:   pear: 2.6.5 | bare: 1.24.3 | uv: 1.51.0 | v8: 14.2.231.14
+S1:   
+S1:   link: pear://0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o
+S1:   
+S1:   Use --modules|-m flag for module versions
+S1:   
+S1: versions-gui exit: 0
+S1: == Q3b: preflight (syncs the pear-electron UI asset)
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   ✔ Pre-run [pear-electron/pre]: configure
+S1: gui-preflight exit: 0
+S1: ui asset electron binary: pear/assets/1f7ea1b1aced86b29791e588e6e579a9/by-arch/linux-x64/bin/pear-runtime-app/pear-runtime sha256 20828dd41e2247931844e04fc4af25b1ca0bca8469c4536e2cd2a8f9e115ac35
+S1: == Q3b/Q4/Q5: GUI app from a local dir (default flags: pear-electron adds --no-sandbox), as user
+S1: gui [dir] exit: 124; output lines: 52
+S1: gui [dir] full output (first 120 lines):
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   ✔ Pre-run [pear-electron/pre]: configure
+S1:   S1 {"tag":"gui-bare","stage":"bridge-ready","bridgeAddr":"http://localhost:34989","noHeader":{"status":400,"bytes":11,"contentType":"text/plain","head":"Bad Request"},"withHeader":{"status":200,"bytes":1244,"contentType":"text/html","head":"<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>s1-gui</title>\n    <script>\n      // S1: report page errors to the Bare side's loopback be"},"configIdShape":"x@xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+S1:   S1 {"tag":"gui-bare","stage":"started","bridgeAddr":"http://localhost:34989","videoPort":33355,"fixtureBytes":77077}
+S1:   [4126:1122/121429.518705:WARNING:sandbox_linux.cc(430)] InitializeSandbox() called with multiple threads in process gpu-process.
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"inline-script\",\"typeofRequire\":\"undefined\",\"typeofPear\":\"object\",\"typeofModule\":\"undefined\",\"href\":\"http://localhost/\"}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"module-start\",\"t\":0}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"runtime-info\",\"t\":1,\"uaElectron\":\"33.2.1\",\"uaChrome\":\"130.0.6723.137\",\"typeofRequire\":\"function\",\"typeofPear\":\"object\"}"}
+S1:   S1 {"tag":"gui-beacon","path":"/config"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"config\",\"t\":13,\"port\":33355}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe csp\",\"t\":14}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe wasm\",\"t\":91}"}
+S1:   [4099:1122/121429.784218:INFO:peer_connection_dependency_factory.cc(750)] Running WebRTC with a combined Network and Worker thread.
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe mse\",\"t\":93}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe webrtc\",\"t\":93}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe permission\",\"t\":113}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe injection\",\"t\":158}"}
+S1:   [4025:1122/121430.872881:INFO:CONSOLE(1)] "Refused to load the image 'data:image/png;base64,AA==' because it violates the following Content Security Policy directive: "default-src 'none'". Note that 'img-src' was not explicitly set, so 'default-src' is used as a fallback.
+S1:   ", source: about:srcdoc (1)
+S1:   [4025:1122/121430.872921:INFO:CONSOLE(1)] "Refused to execute inline script because it violates the following Content Security Policy directive: "default-src 'none'". Either the 'unsafe-inline' keyword, a hash ('sha256-PuCz1G/LolazLQLzjN9r2ElMPcnJWZleaiU+kl6M4P8='), or a nonce ('nonce-...') is required to enable inline execution. Note also that 'script-src' was not explicitly set, so 'default-src' is used as a fallback.
+S1:   ", source: about:srcdoc (1)
+S1:   [4025:1122/121430.873634:INFO:CONSOLE(1)] "Refused to execute inline event handler because it violates the following Content Security Policy directive: "default-src 'none'". Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. Note also that 'script-src' was not explicitly set, so 'default-src' is used as a fallback.
+S1:   ", source: about:srcdoc (1)
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe video\",\"t\":4169}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe fetch\",\"t\":5681}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe mseAppend\",\"t\":5933}"}
+S1:   S1 {"tag":"gui-renderer","via":"beacon","started":1795349669689,"userAgent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) pear-runtime/3.2.0 Chrome/130.0.6723.137 Electron/33.2.1 Safari/537.36","uaChrome":"130.0.6723.137","uaElectron":"33.2.1","typeofRequire":"function","typeofProcess":"object","processVersions":{"electron":"33.2.1","chrome":"130.0.6723.137","node":"20.18.1","v8":"13.0.245.19-electron.0"},"processType":"renderer","processContextIsolated":false,"rendererArgvHasNoSandbox":true,"rendererArgvSandboxFlags":"<dropped>","location":"http://localhost:(port)/","isSecureContext":true,"crossOriginIsolated":false,"typeofPear":"object","configVia":"beacon","cspMeta":null,"selfStatus":200,"selfHeaders":["content-length","content-type"],"cspHeader":null,"evalWorks":true,"newFunctionWorks":true,"inlineScriptRuns":true,"typeofWebAssembly":"object","wasmValidateEmpty":true,"wasmValidateF42":true,"wasmInstantiateF42":42,"typeofMediaSource":"function","typeofManagedMediaSource":"undefined","mseSupported":{"video/mp4; codecs=\"avc1.64001f,mp4a.40.2\"":true,"video/mp4; codecs=\"avc1.42E01E\"":true,"audio/mp4; codecs=\"mp4a.40.2\"":true,"video/webm; codecs=\"vp9,opus\"":true,"video/mp4; codecs=\"hvc1.1.6.L93.B0\"":false},"typeofRTCPeerConnection":"function","webrtcOfferHasSdp":true,"webrtcLocalDataChannel":"ping","webrtcCandidateKinds":["udp/host/ipv4","udp/host/ipv4"],"notificationRequest":"granted","permissionsQueryNotifications":"granted","getUserMediaAudio":"NotFoundError: Requested device not found","clipboardReadText":"NotAllowedError: Failed to execute 'readText' on 'Clipboard': Document is not focused.","injectionInnerHtmlImgOnerror":"module runtime: uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),117(docker),999(systemd-journal)","injectionIframes":{"srcdoc-same-origin":{"ownRequire":"undefined","result":"parent module runtime: uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),117(docker),999(systemd-journal)","origin":"null"},"srcdoc-sandbox-allow-scripts":{"ownRequire":"undefined","result":"no module runtime on parent","origin":"null"},"meta-csp-onerror":"no message in 3 s","meta-csp-script":"no message in 3 s"},"video127":{"event":"loadedmetadata","readyState":4,"duration":4.08,"width":640,"height":360,"playedTo":1.454988},"videoLocalhostOtherPort":{"event":"error","code":4,"message":"MEDIA_ELEMENT_ERROR: Format <cut>
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"pipe-try\",\"t\":5944}"}
+S1:   S1 {"tag":"gui-bare","stage":"finish","ok":true,"via":"beacon","pipeChunks":[],"serverRequests":[{"method":"GET","url":"/x.mp4","range":"bytes=0-"},{"method":"GET","url":"/x.mp4","range":"bytes=0-15"},{"method":"GET","url":"/x.mp4","range":null}],"serverRequestCount":3,"bridgeRequests":[{"url":"/","xPear":"absent","status":400},{"url":"/index.html","xPear":"present","status":200},{"url":"/index.html","xPear":"present","status":200},{"url":"/app.js","xPear":"present","status":200},{"url":"/app.js","xPear":"present","status":200},{"url":"/index.html","xPear":"present","status":200}]}
+S1: gui [dir] Electron processes seen (sampled every 2 s), by type and sandbox flags:
+S1:       148 gpu-process: --no-sandbox
+S1:       148 main: --no-sandbox
+S1:       147 renderer: --no-sandbox
+S1:       297 renderer: --no-sandbox --no-zygote --no-sandbox
+S1:       295 utility: --service-sandbox-type=none --no-sandbox
+S1:       296 zygote: --no-sandbox
+S1: == Q5: ask for the sandbox (pear run --sandbox), as user
+S1: gui [sandbox-user] exit: 1; output lines: 7
+S1: gui [sandbox-user] full output (first 120 lines):
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   ✔ Pre-run [pear-electron/pre]: configure
+S1:   S1 {"tag":"gui-bare","stage":"bridge-ready","bridgeAddr":"http://localhost:34989","noHeader":{"status":400,"bytes":11,"contentType":"text/plain","head":"Bad Request"},"withHeader":{"status":200,"bytes":1244,"contentType":"text/html","head":"<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>s1-gui</title>\n    <script>\n      // S1: report page errors to the Bare side's loopback be"},"configIdShape":"x@xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+S1:   S1 {"tag":"gui-bare","stage":"started","bridgeAddr":"http://localhost:34989","videoPort":34087,"fixtureBytes":77077}
+S1:   [5043:1122/121928.909973:FATAL:setuid_sandbox_host.cc(163)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /tmp/s1/pear/assets/1f7ea1b1aced86b29791e588e6e579a9/by-arch/linux-x64/bin/pear-runtime-app/chrome-sandbox is owned by root and has mode 4755.
+S1:   S1 {"tag":"gui-bare","stage":"finish","ok":false,"reason":"pipe closed before results","pipeChunks":[],"serverRequests":[],"serverRequestCount":0,"bridgeRequests":[{"url":"/","xPear":"absent","status":400},{"url":"/index.html","xPear":"present","status":200}]}
+S1: gui [sandbox-user] Electron processes seen (sampled every 2 s), by type and sandbox flags:
+S1:         3 renderer: --no-sandbox --no-zygote --no-sandbox
+S1: == Q5: --sandbox again with unprivileged user namespaces allowed (userns: works)
+S1: gui [sandbox-user-userns] exit: 124; output lines: 50
+S1: gui [sandbox-user-userns] full output (first 120 lines):
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   ✔ Pre-run [pear-electron/pre]: configure
+S1:   S1 {"tag":"gui-bare","stage":"bridge-ready","bridgeAddr":"http://localhost:34989","noHeader":{"status":400,"bytes":11,"contentType":"text/plain","head":"Bad Request"},"withHeader":{"status":200,"bytes":1244,"contentType":"text/html","head":"<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>s1-gui</title>\n    <script>\n      // S1: report page errors to the Bare side's loopback be"},"configIdShape":"x@xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+S1:   S1 {"tag":"gui-bare","stage":"started","bridgeAddr":"http://localhost:34989","videoPort":37317,"fixtureBytes":77077}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"inline-script\",\"typeofRequire\":\"undefined\",\"typeofPear\":\"object\",\"typeofModule\":\"undefined\",\"href\":\"http://localhost/\"}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"module-start\",\"t\":0}"}
+S1:   S1 {"tag":"gui-beacon","path":"/config"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"runtime-info\",\"t\":1,\"uaElectron\":\"33.2.1\",\"uaChrome\":\"130.0.6723.137\",\"typeofRequire\":\"function\",\"typeofPear\":\"object\"}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"config\",\"t\":10,\"port\":37317}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe csp\",\"t\":11}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe wasm\",\"t\":55}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe mse\",\"t\":55}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe webrtc\",\"t\":92}"}
+S1:   [5469:1122/121934.698377:WARNING:sandbox_linux.cc(430)] InitializeSandbox() called with multiple threads in process gpu-process.
+S1:   [5401:1122/121934.703068:INFO:peer_connection_dependency_factory.cc(750)] Running WebRTC with a combined Network and Worker thread.
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe permission\",\"t\":178}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe injection\",\"t\":274}"}
+S1:   [5233:1122/121935.842987:INFO:CONSOLE(1)] "Refused to load the image 'data:image/png;base64,AA==' because it violates the following Content Security Policy directive: "default-src 'none'". Note that 'img-src' was not explicitly set, so 'default-src' is used as a fallback.
+S1:   ", source: about:srcdoc (1)
+S1:   [5233:1122/121935.843021:INFO:CONSOLE(1)] "Refused to execute inline script because it violates the following Content Security Policy directive: "default-src 'none'". Either the 'unsafe-inline' keyword, a hash ('sha256-PuCz1G/LolazLQLzjN9r2ElMPcnJWZleaiU+kl6M4P8='), or a nonce ('nonce-...') is required to enable inline execution. Note also that 'script-src' was not explicitly set, so 'default-src' is used as a fallback.
+S1:   ", source: about:srcdoc (1)
+S1:   [5233:1122/121935.843059:INFO:CONSOLE(1)] "Refused to execute inline event handler because it violates the following Content Security Policy directive: "default-src 'none'". Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. Note also that 'script-src' was not explicitly set, so 'default-src' is used as a fallback.
+S1:   ", source: about:srcdoc (1)
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe video\",\"t\":4284}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe fetch\",\"t\":5797}"}
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"probe mseAppend\",\"t\":6054}"}
+S1:   S1 {"tag":"gui-renderer","via":"beacon","started":1795349974541,"userAgent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) pear-runtime/3.2.0 Chrome/130.0.6723.137 Electron/33.2.1 Safari/537.36","uaChrome":"130.0.6723.137","uaElectron":"33.2.1","typeofRequire":"function","typeofProcess":"object","processVersions":{"electron":"33.2.1","chrome":"130.0.6723.137","node":"20.18.1","v8":"13.0.245.19-electron.0"},"processType":"renderer","processContextIsolated":false,"rendererArgvHasNoSandbox":true,"rendererArgvSandboxFlags":"<dropped>","location":"http://localhost:(port)/","isSecureContext":true,"crossOriginIsolated":false,"typeofPear":"object","configVia":"beacon","cspMeta":null,"selfStatus":200,"selfHeaders":["content-length","content-type"],"cspHeader":null,"evalWorks":true,"newFunctionWorks":true,"inlineScriptRuns":true,"typeofWebAssembly":"object","wasmValidateEmpty":true,"wasmValidateF42":true,"wasmInstantiateF42":42,"typeofMediaSource":"function","typeofManagedMediaSource":"undefined","mseSupported":{"video/mp4; codecs=\"avc1.64001f,mp4a.40.2\"":true,"video/mp4; codecs=\"avc1.42E01E\"":true,"audio/mp4; codecs=\"mp4a.40.2\"":true,"video/webm; codecs=\"vp9,opus\"":true,"video/mp4; codecs=\"hvc1.1.6.L93.B0\"":false},"typeofRTCPeerConnection":"function","webrtcOfferHasSdp":true,"webrtcLocalDataChannel":"ping","webrtcCandidateKinds":["udp/host/ipv4","udp/host/ipv4"],"notificationRequest":"granted","permissionsQueryNotifications":"granted","getUserMediaAudio":"NotFoundError: Requested device not found","clipboardReadText":"NotAllowedError: Failed to execute 'readText' on 'Clipboard': Document is not focused.","injectionInnerHtmlImgOnerror":"module runtime: uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),117(docker),999(systemd-journal)","injectionIframes":{"srcdoc-same-origin":{"ownRequire":"undefined","result":"parent module runtime: uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),117(docker),999(systemd-journal)","origin":"null"},"srcdoc-sandbox-allow-scripts":{"ownRequire":"undefined","result":"no module runtime on parent","origin":"null"},"meta-csp-onerror":"no message in 3 s","meta-csp-script":"no message in 3 s"},"video127":{"event":"loadedmetadata","readyState":4,"duration":4.08,"width":640,"height":360,"playedTo":1.455766},"videoLocalhostOtherPort":{"event":"error","code":4,"message":"MEDIA_ELEMENT_ERROR: Forma <cut>
+S1:   S1 {"tag":"gui-beacon","msg":"{\"stage\":\"pipe-try\",\"t\":6065}"}
+S1:   S1 {"tag":"gui-bare","stage":"finish","ok":true,"via":"beacon","pipeChunks":[],"serverRequests":[{"method":"GET","url":"/x.mp4","range":"bytes=0-"},{"method":"GET","url":"/x.mp4","range":"bytes=0-15"},{"method":"GET","url":"/x.mp4","range":null}],"serverRequestCount":3,"bridgeRequests":[{"url":"/","xPear":"absent","status":400},{"url":"/index.html","xPear":"present","status":200},{"url":"/index.html","xPear":"present","status":200},{"url":"/app.js","xPear":"present","status":200},{"url":"/app.js","xPear":"present","status":200},{"url":"/index.html","xPear":"present","status":200}]}
+S1: gui [sandbox-user-userns] Electron processes seen (sampled every 2 s), by type and sandbox flags:
+S1:       119 gpu-process:
+S1:       119 main:
+S1:       118 renderer:
+S1:       238 renderer: --no-sandbox --no-zygote
+S1:         2 renderer: --no-sandbox --no-zygote --no-sandbox
+S1:       237 utility: --service-sandbox-type=none
+S1:       357 zygote:
+S1: state[end of gui]: current -> /tmp/s1/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1; swaps: 1 
