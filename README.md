@@ -40,6 +40,8 @@ with deployed seeders.
   `seeder` packages are npm workspaces here, built from source.
 - `packages/worker`: the Bare worker, the data plane. Its protocol is in
   [its README](packages/worker/README.md).
+- `packages/renderer`: the Chromium renderer, nutflix-pear's UI over a worker pipe. See
+  [its README](packages/renderer/README.md).
 
 Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain
 clone. `npm ci`, `npm run build`, `npm run lint` and `npm test` work as in nutflix-pear. The tests

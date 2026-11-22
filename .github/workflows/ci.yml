@@ -91,3 +91,33 @@ jobs:
             coverage/lcov.info
           if-no-files-found: ignore
           retention-days: 14
+
+  # The renderer in a real browser: headless Chromium plays a VP9 video that the real worker fetches
+  # over HyperDHT from nutflix-pear's own seeder code, on a loopback testnet, with a local relay.
+  # Everything runs on this machine; nothing leaves loopback. ffmpeg makes the clip (VP9, because
+  # the Chromium Playwright installs has no H.264). Its own job, so a browser problem never hides
+  # the unit tests, and the unit tests never wait for a browser download.
+  renderer-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: ffmpeg, for the clip
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: playwright-core's Chromium
+        run: npx --no-install playwright-core install --with-deps chromium
+      # Chromium's sandbox stays on: Ubuntu 24.04 restricts the unprivileged user namespaces it
+      # uses, so lift that on this throwaway runner, as nutflix-pear's web-site.yml does.
+      - name: allow Chromium's user-namespace sandbox on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: e2e (packages/renderer/e2e)
+        run: npm run test:e2e -w packages/renderer
