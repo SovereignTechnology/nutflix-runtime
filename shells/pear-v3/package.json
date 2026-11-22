@@ -1,0 +1,32 @@
+{
+  "name": "@nutflix-runtime/shell-pear-v3",
+  "version": "0.1.0",
+  "private": true,
+  "productName": "Nutflix",
+  "description": "The Pear v3 desktop shell: a hardened Electron main, one narrow preload, the Bare worker started through pear-runtime",
+  "license": "AGPL-3.0-or-later",
+  "author": "Sovereign Technology",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "stage": "node scripts/package.ts stage",
+    "package": "node scripts/package.ts package",
+    "make": "node scripts/package.ts make",
+    "test": "vitest run",
+    "lint": "eslint src scripts packaging"
+  },
+  "dependencies": {
+    "@nutflix-runtime/worker": "0.0.0",
+    "pear-runtime": "1.3.1"
+  },
+  "devDependencies": {
+    "@electron-forge/core": "8.0.1",
+    "@electron-forge/maker-base": "8.0.1",
+    "@electron-forge/maker-msix": "8.0.1",
+    "@electron-forge/shared-types": "8.0.1",
+    "@electron/fuses": "2.1.3",
+    "@nutflix-runtime/renderer": "0.0.0",
+    "electron": "45.2.1",
+    "esbuild": "0.28.2"
+  }
+}

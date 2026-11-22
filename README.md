@@ -42,6 +42,9 @@ with deployed seeders.
   [its README](packages/worker/README.md).
 - `packages/renderer`: the Chromium renderer, nutflix-pear's UI over a worker pipe. See
   [its README](packages/renderer/README.md).
+- `shells/pear-v3`: the Pear v3 desktop shell: a hardened Electron main, the worker started through
+  `pear-runtime`, packaged on five targets (updates off). See
+  [its README](shells/pear-v3/README.md).
 
 Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain
 clone. `npm ci`, `npm run build`, `npm run lint` and `npm test` work as in nutflix-pear. The tests

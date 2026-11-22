@@ -45,6 +45,8 @@ export interface RendererClient {
   readonly settings: SettingsStore;
   /** What the probe found. In this version it only reports: every video plays over HyperDHT. */
   readonly capabilities: CapabilityReport;
+  /** Resolves on the worker's first answer through this page's pipe. Asks only when called. */
+  workerReady(): Promise<void>;
   /** Unmounts the shell, closes every play and subscription, and stops following the URL. */
   stop(): Promise<void>;
 }
@@ -107,6 +109,7 @@ export function startRenderer(o: RendererOptions): RendererClient {
     adapter,
     settings,
     capabilities,
+    workerReady: () => link.ready(),
     stop: () => {
       stopped ??= (async (): Promise<void> => {
         win.removeEventListener('hashchange', onHash);

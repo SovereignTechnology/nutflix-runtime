@@ -76,6 +76,8 @@ storybook-static/
 .worktrees/
 # Electron Forge output: staged app, packaged builds, installers, release manifests (issue #6)
 packages/app-desktop/out/
+# The Pear v3 shell's staged app, packaged builds and the AppImage runtime (shells/pear-v3)
+shells/pear-v3/out/
 
 # --- Media (large binaries do not belong in git) ----------------------------
 *.mp4
