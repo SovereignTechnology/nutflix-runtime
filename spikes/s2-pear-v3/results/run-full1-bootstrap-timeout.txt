@@ -20,5 +20,5 @@ PHASE FAILED: bootstrap
 KATA_RUN_RC=1
 ERROR: Job failed: exit status 1
 [kata-run] job failed, exit 1
-[kata-run] timing (agentrun): sync 2.8 s, queue 3158.3 s, setup 0.0 s, command 156.7 s, job 165.7 s, total 3394.8 s
+[kata-run] timing (ci): sync 2.8 s, queue 3158.3 s, setup 0.0 s, command 156.7 s, job 165.7 s, total 3394.8 s
 kata-run exit 1

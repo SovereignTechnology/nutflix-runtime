@@ -1,12 +1,12 @@
 [kata-run] snapshot of the spike worktree
 [kata-run] command: bash spikes/s2-pear-v3/run.sh
-[kata-run] agentrun job 21606 (pipeline 6705)
-[kata-run] waiting for an agentrun runner (ubuntu-server, booty overflow)
-[kata-run] running on ci-agentrun@ubuntu-server
+[kata-run] ci job 21606 (pipeline 6705)
+[kata-run] waiting for a CI runner
+[kata-run] running on a private CI runner
 == kata-run setup
 == kata-run command
 ======== [S2 08:36:47] env: the VM ========
-$ node --check /builds/gitlab/sovtech/agent-run/spikes/s2-pear-v3/worker-instrumented.js
+$ node --check /builds/repo/spikes/s2-pear-v3/worker-instrumented.js
 [exit 0]
 PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
 VERSION_ID="12"

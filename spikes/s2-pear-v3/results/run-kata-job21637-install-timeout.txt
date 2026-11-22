@@ -1,12 +1,12 @@
 [kata-run] snapshot of the spike worktree
-[kata-run] command: 'env' 'S2_ENV=kata-agentrun' 'S2_PHASES=env deps bootstrap template link make1 build1 stage1 install launch-checks run1 update2 hold restart-held wrong-notice update3 stale-notice apply restart-applied provision multisig-demo sandbox-nonroot' 'bash' 'spikes/s2-pear-v3/run.sh'
-[kata-run] agentrun job 21637 (pipeline 6732)
-[kata-run] waiting for an agentrun runner (ubuntu-server, booty overflow)
-[kata-run] running on ci-agentrun@ubuntu-server
+[kata-run] command: 'env' 'S2_ENV=kata-ci' 'S2_PHASES=env deps bootstrap template link make1 build1 stage1 install launch-checks run1 update2 hold restart-held wrong-notice update3 stale-notice apply restart-applied provision multisig-demo sandbox-nonroot' 'bash' 'spikes/s2-pear-v3/run.sh'
+[kata-run] ci job 21637 (pipeline 6732)
+[kata-run] waiting for a CI runner
+[kata-run] running on a private CI runner
 == kata-run setup
 == kata-run command
-======== [S2 11:41:53] env: kata-agentrun (S2_ENV) ========
-$ node --check /builds/gitlab/sovtech/agent-run/spikes/s2-pear-v3/worker-instrumented.js
+======== [S2 11:41:53] env: kata-ci (S2_ENV) ========
+$ node --check /builds/repo/spikes/s2-pear-v3/worker-instrumented.js
 [exit 0]
 PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
 VERSION_ID="12"
@@ -350,5 +350,5 @@ VERLINK_1_0_0=pear://0.3.ewt6dyxqi49ezah9pa9m36trdw9jtgtwtexqxnsmbk7iuwna934y
 KATA_RUN_RC=1
 ERROR: Job failed: exit status 1
 [kata-run] job failed, exit 1
-[kata-run] timing (agentrun): sync 3.1 s, queue 1847.0 s, setup 0.0 s, command 1158.7 s, job 1163.1 s, total 3023.5 s
+[kata-run] timing (ci): sync 3.1 s, queue 1847.0 s, setup 0.0 s, command 1158.7 s, job 1163.1 s, total 3023.5 s
 kata-run exit 1

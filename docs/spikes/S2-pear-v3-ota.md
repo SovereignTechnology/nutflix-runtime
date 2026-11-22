@@ -27,7 +27,9 @@ part of the S2 question stays open. One finding changes ADR 0001: the AppImage's
 
 ## What ran, and where
 
-- **Where:** a throwaway Kata VM (`kata-run --net`, the `agentrun` runner on ubuntu-server). The
+Host names and CI paths are redacted from the logs in `results/`; nothing else in them was changed.
+
+- **Where:** a throwaway Kata VM (`kata-run --net`, a private CI runner). The
   guest is Debian 12 (bookworm), kernel 6.18.63, 12 vCPU, 8 GiB. The harness runs as root with
   `NoNewPrivs: 1` and `Seccomp: 2`, on a virtiofs root. There is no `/dev/fuse`, and
   `unshare -U` fails with `EPERM` for root and for `nobody` alike.

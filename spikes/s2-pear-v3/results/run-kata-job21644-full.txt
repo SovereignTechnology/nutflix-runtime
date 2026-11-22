@@ -1,12 +1,12 @@
 [kata-run] snapshot of the spike worktree
-[kata-run] command: 'env' 'S2_ENV=kata-agentrun' 'S2_PHASES=env deps bootstrap template link make1 build1 stage1 install launch-checks run1 update2 hold restart-held wrong-notice update3 stale-notice apply restart-applied provision multisig-demo sandbox-nonroot' 'bash' 'spikes/s2-pear-v3/run.sh'
-[kata-run] agentrun job 21644 (pipeline 6739)
-[kata-run] waiting for an agentrun runner (ubuntu-server, booty overflow)
-[kata-run] running on ci-agentrun@ubuntu-server
+[kata-run] command: 'env' 'S2_ENV=kata-ci' 'S2_PHASES=env deps bootstrap template link make1 build1 stage1 install launch-checks run1 update2 hold restart-held wrong-notice update3 stale-notice apply restart-applied provision multisig-demo sandbox-nonroot' 'bash' 'spikes/s2-pear-v3/run.sh'
+[kata-run] ci job 21644 (pipeline 6739)
+[kata-run] waiting for a CI runner
+[kata-run] running on a private CI runner
 == kata-run setup
 == kata-run command
-======== [S2 12:25:55] env: kata-agentrun (S2_ENV) ========
-$ node --check /builds/gitlab/sovtech/agent-run/spikes/s2-pear-v3/worker-instrumented.js
+======== [S2 12:25:55] env: kata-ci (S2_ENV) ========
+$ node --check /builds/repo/spikes/s2-pear-v3/worker-instrumented.js
 [exit 0]
 PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
 VERSION_ID="12"
@@ -1078,7 +1078,7 @@ Verifying the db core is requestable...
 ✖ SOURCE_CORE_INSUFFICIENT_PEERS: Source core is not well seeded (1/2 peers)
 [exit 1]
 PHASE OK: multisig-demo
-======== [S2 12:37:54] Chromium's sandbox as a non-root user (no --no-sandbox), env=kata-agentrun ========
+======== [S2 12:37:54] Chromium's sandbox as a non-root user (no --no-sandbox), env=kata-ci ========
 /proc/sys/kernel/unprivileged_userns_clone=cat: /proc/sys/kernel/unprivileged_userns_clone: No such file or directory
 /proc/sys/user/max_user_namespaces=31831
 /proc/sys/kernel/apparmor_restrict_unprivileged_userns=cat: /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
@@ -1154,5 +1154,5 @@ VERLINK_1_0_2=pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
 KATA_RUN_RC=0
 Job succeeded
 [kata-run] job success, exit 0
-[kata-run] timing (agentrun): sync 3.0 s, queue 1360.5 s, setup 0.0 s, command 726.6 s, job 731.1 s, total 2108.9 s
+[kata-run] timing (ci): sync 3.0 s, queue 1360.5 s, setup 0.0 s, command 726.6 s, job 731.1 s, total 2108.9 s
 kata-run exit 0

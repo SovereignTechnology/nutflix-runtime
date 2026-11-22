@@ -1,8 +1,8 @@
 [kata-run] snapshot of the spike worktree
 [kata-run] command: S2_PHASES='env deps bootstrap cli' bash spikes/s2-pear-v3/run.sh
-[kata-run] agentrun job 21567 (pipeline 6680)
-[kata-run] waiting for an agentrun runner (ubuntu-server, booty overflow)
-[kata-run] running on ci-agentrun@ubuntu-server
+[kata-run] ci job 21567 (pipeline 6680)
+[kata-run] waiting for a CI runner
+[kata-run] running on a private CI runner
 == kata-run setup
 == kata-run command
 ======== [S2 07:39:24] env: the VM ========
@@ -896,5 +896,5 @@ PHASE OK: cli
 KATA_RUN_RC=0
 Job succeeded
 [kata-run] job success, exit 0
-[kata-run] timing (agentrun): sync 3.7 s, queue 3686.3 s, setup 0.0 s, command 133.7 s, job 142.4 s, total 3922.9 s
+[kata-run] timing (ci): sync 3.7 s, queue 3686.3 s, setup 0.0 s, command 133.7 s, job 142.4 s, total 3922.9 s
 kata-run exit 0
