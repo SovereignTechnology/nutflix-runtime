@@ -17,11 +17,21 @@ if (root !== null) {
     root.textContent = 'Nutflix could not start: no worker is connected to this window.';
   } else {
     try {
-      startRenderer({
+      const client = startRenderer({
         container: root,
         pipe,
         openLink: typeof open === 'function' ? (open as (url: string) => void) : undefined,
       });
+      // The page's own round trip to the worker, through the pipe the shell gave it. A shell's
+      // launch check reads this: the worker answering the SHELL says nothing about this path.
+      void client.workerReady().then(
+        () => {
+          root.dataset['workerLink'] = 'up';
+        },
+        () => {
+          root.dataset['workerLink'] = 'down';
+        },
+      );
     } catch (e) {
       root.textContent = `Nutflix could not start: ${e instanceof Error ? e.message : 'unknown error'}`;
     }
