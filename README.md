@@ -24,8 +24,9 @@ Paid videos (Cashu, `pay/1`) are not in scope for the first version.
 - **Pear v3:** `pear install pear://<key>`. Updates come over the Pear network from the same link.
   Each release needs a `pear multisig` quorum, and the app applies an update only when a
   SovTech-signed Nostr release notice names it.
-- **Pre-v3 Pear (`pear run pear://…`):** only if spike S1 shows that a pre-v3 runtime can still be
-  pinned safely. Holepunch removed `pear run` in Pear v3.
+- **Pre-v3 Pear (`pear run pear://…`):** planned as unsandboxed legacy software, under the
+  conditions in [ADR 0001's amendment](docs/decisions/0001-a-pear-native-nutflix.md#amendment-2026-11-22).
+  Holepunch removed `pear run` in Pear v3. Prefer `pear install`.
 
 ## Relationship to nutflix-pear
 

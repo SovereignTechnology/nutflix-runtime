@@ -6,7 +6,7 @@ a developer's machine.
 
 | Spike | Question | Gates |
 |---|---|---|
-| [S1](S1-pear-v2-pin.md): PARTIAL, do not ship (b) | Can a pre-v3 Pear platform still be bootstrapped from a versioned link and kept from updating itself to v3? Does `pear run` then start a `pear-electron` GUI with a Bare worker, and what does its Chromium offer (`RTCPeerConnection`, WebAssembly, MSE, `<video>` on a loopback URL)? | Shape (b) |
+| [S1](S1-pear-v2-pin.md): PARTIAL; (b) kept as an accepted risk ([ADR 0001 amendment](../decisions/0001-a-pear-native-nutflix.md#amendment-2026-11-22)) | Can a pre-v3 Pear platform still be bootstrapped from a versioned link and kept from updating itself to v3? Does `pear run` then start a `pear-electron` GUI with a Bare worker, and what does its Chromium offer (`RTCPeerConnection`, WebAssembly, MSE, `<video>` on a loopback URL)? | Shape (b) |
 | [S2](S2-pear-v3-ota.md): PASS | With Pear v3, from Holepunch's current Electron template: what do `pear build`, `stage` and `install` produce on a throwaway link, what does the updater's `updated` event expose, and can the new build's versioned link and file hashes be read before `applyUpdate()`? Does an installed AppImage keep Chromium's sandbox on Debian? | The update gate, shape (a) |
 | S3: answered below | Can nfx's web player use the worker's `http://127.0.0.1:<port>` origin beside a WebRTC mesh, and filter remote SDP candidates? | Decisions 4 and 5 |
 

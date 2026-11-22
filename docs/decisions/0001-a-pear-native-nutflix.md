@@ -4,8 +4,8 @@ Date: 2026-11-19
 
 ## Status
 
-Accepted by the maintainer, 2026-11-19. The spikes in [`docs/spikes/`](../spikes/) gate the parts
-marked "if S1" or "per S2".
+Accepted by the maintainer, 2026-11-19. Amended 2026-11-22 after spikes S1 and S2: see
+[the amendment](#amendment-2026-11-22), which takes precedence over the text above it.
 
 ## Context
 
@@ -33,8 +33,8 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
    - (b) A `pear-electron` app for a pinned pre-v3 runtime, so that `pear run pear://…` still
      works.
 
-   (b) is built only if spike S1 shows that such a runtime can still be bootstrapped and held at
-   that version. It is labelled legacy and unsupported if kept.
+   (b) is kept as an accepted risk, under the conditions in
+   [the amendment](#amendment-2026-11-22), and is labelled as unsandboxed legacy software.
 2. **Updates need two keys of different kinds.** A release reaches the production link only
    through a `pear multisig` quorum. The running v3 app calls `applyUpdate()` only when a kind-30071
    notice signed by the SovTech key (`d = nutflix-runtime`) names the new build: its versioned link
@@ -80,8 +80,46 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
 
 - nfxd meets this app over WebRTC only, and only where the runtime has it. A native nfxd HyperDHT
   endpoint is proposed upstream as [nfx #106](https://github.com/SovereignTechnology/nfx/issues/106).
-- On Ubuntu 24.04 and later, `pear install` installs an AppImage, which cannot start Chromium's
-  sandbox there (nutflix-pear ADR 0017 §7). The app refuses to run without the sandbox, so those
-  systems are not supported until Pear offers another Linux format.
-- Every security rule that nutflix-pear's own Electron main enforces (fuses, a header CSP,
-  refusing `--no-sandbox`) holds in shape (a) only. Shape (b) runs on Holepunch's Electron.
+- On Ubuntu 24.04 and later, the AppImage cannot start Chromium's sandbox (nutflix-pear ADR 0017
+  §7). The app runs there only if the user chooses to, after a warning (amendment, item 2).
+- The rules nutflix-pear's own Electron main enforces (fuses, a header CSP) hold in shape (a) only.
+  Shape (b) runs on Holepunch's Electron.
+
+## Amendment, 2026-11-22
+
+The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
+[S2](../spikes/S2-pear-v3-ota.md).
+
+1. **Shape (b) stays, as a risk accepted in writing.** S1 recommended dropping it. On Pear v2.6.5
+   the renderer has Node integration and no sandbox, and an app cannot change that. In S1, an
+   injected `<img onerror>` ran a command as the user, so one missed escape in a stranger's title
+   is code execution. Its engine is Chromium 130 and stays there. Hardening lowers the odds of an
+   injection; it does not add a boundary. Shape (b) does not ship until all of these hold:
+   - It runs on a pinned v2.6.5 from a SovTech-controlled release line, because S1 found that only
+     re-homing onto a key we control holds the version. Users run the versioned link a signed
+     notice names.
+   - A `<meta>` CSP, first in the document, allows no inline script and no `eval`.
+   - Every remote field renders as text. `innerHTML` and `dangerouslySetInnerHTML` are refused by
+     lint, and anything that cannot be text goes in an `<iframe sandbox="allow-scripts">`.
+   - Remote URLs never reach navigation or `window.open`, which the runtime passes to
+     `shell.openExternal` with no scheme check. Links go through an `https:` check.
+   - No signing key is on disk: shape (b) signs only through a NIP-46 bunker, and holds no wallet.
+     The seeder key is a network identity and is treated as exposed.
+   - An authenticated renderer-to-worker channel works. S1 did not confirm this pipe.
+   - The window, the README and the install instructions say plainly that this is unsandboxed
+     legacy software, and point to shape (a).
+2. **Without Chromium's sandbox, the app runs only if the user chooses to (shape a).** The AppImage's
+   `AppRun` adds `--no-sandbox` on Ubuntu 24 and later. The main process detects the switch before
+   any window opens and shows a warning, with Quit as the default and "Run anyway" as the choice.
+   The choice is stored per install and can be revoked in Settings, and a banner stays visible while
+   the sandbox is off. The app never adds the switch itself. Where the sandbox cannot start and
+   nothing passes the switch, Chromium aborts before app code runs, so the user has to start the
+   app with `--no-sandbox` to reach this warning.
+3. **Without FUSE, the app still starts, and tells the user how to start faster.** It falls back to
+   extract-and-run and shows a notice to install FUSE 2. S2 found that the stock AppImage runtime
+   exits before any app code when `libfuse.so.2` is missing, so this fallback has to live in the
+   AppImage's runtime or launcher. The shell step must prove a pinned way to do that before release.
+4. **The update gate follows S2.** It judges only the newest build on the link. A newer build with
+   no notice holds back an older announced one: this fails safe, and publishing a notice clears it.
+   S2's record has the exact API sequence. Still untested: Chromium's sandbox on a real Debian
+   desktop, a signed multisig quorum, and a real signed notice.
