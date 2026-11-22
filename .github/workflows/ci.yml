@@ -73,8 +73,9 @@ jobs:
           case "$out" in *EMISSINGSIGNATUREKEY*) ;; *) exit "$rc" ;; esac
           tuf="$(npm config get cache)/_tuf"
           echo "::warning::npm reported a missing signing key; retrying with a fresh TUF cache"
-          find "$tuf" -type f -name '*keys.json' -print0 2>/dev/null |
-            xargs -0 -r node -e 'for (const f of process.argv.slice(1)) console.log("cached keys:", JSON.parse(require("fs").readFileSync(f)).keys.map((k) => k.keyId.slice(-14)).join(" "))'
+          # Diagnostics only: a missing or unreadable cache must never stop the retry.
+          { find "$tuf" -type f -name '*keys.json' -print0 2>/dev/null |
+            xargs -0 -r node -e 'for (const f of process.argv.slice(1)) console.log("cached keys:", JSON.parse(require("fs").readFileSync(f)).keys.map((k) => k.keyId.slice(-14)).join(" "))'; } || true
           rm -rf "$tuf"
           npm audit signatures
       - name: advisories (high and above)
