@@ -91,9 +91,10 @@ What the worker sees is main's own re-encoding of a checked request, with main's
 
 ### Without Chromium's sandbox (amendment, item 2)
 
-The app never adds `--no-sandbox`, and its AppImage's `AppRun` is the Electron binary itself, not
-electron-builder's script, which adds the switch by itself on Ubuntu 24 and later (S2). If the
-switch is on the command line, main shows a native warning before any window and before the worker:
+Main never adds `--no-sandbox`. The AppImage's launcher (`packaging/apprun.ts`) passes it in one
+case: the kernel limits user namespaces, as stock Ubuntu 24.04 and later do, **and** Chromium itself
+then reports that its sandbox cannot start. Without that, Chromium would abort before any app code
+and the user would never see a warning. If the switch is on the command line, main shows a native warning before any window and before the worker:
 **Quit is the default** (Enter, Escape and closing the box all quit); "Run anyway" is the choice. It
 is stored in `<userData>/sandbox-consent.json`, and a red banner stays at the top of the window
 while the sandbox is off (the title says so too). Start the app with `--forget-sandbox-choice` to
@@ -172,11 +173,10 @@ Seen on GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` runners, with the type-2 
 - So the FUSE fallback of item 3 cannot live in `AppRun` or in the app: the runtime is the first
   thing that runs. It needs a custom runtime or a stub in front of it, pinned by sha256 like this
   one.
-- `AppRun` here is the Electron binary, so nothing adds `--no-sandbox`. The sandbox then needs
-  unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not setuid (CI lifts
-  Ubuntu 24.04's AppArmor restriction on its throwaway runner, so that pass says nothing about a
-  stock Ubuntu 24.04 or later; CI prints what happens there first, as information). The launcher
-  that item 3 needs is also where a machine with no usable sandbox must reach the warning.
+- The sandbox needs unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not
+  setuid. CI runs the AppImage twice with Ubuntu 24.04's restriction still on (it must reach the
+  warning, and after "Run anyway" it must run with the sandbox off), then lifts the restriction on
+  its throwaway runner and requires an OS-enforced sandbox.
 
 ## Layout
 

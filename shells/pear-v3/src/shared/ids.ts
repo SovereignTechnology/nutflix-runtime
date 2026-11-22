@@ -19,6 +19,12 @@ export const MAX_PIPE_CHUNK = 1024 * 1024 + 4;
 /** The longest link the preload sends (the renderer's own cap, `MAX_LINK_LENGTH`). */
 export const MAX_LINK_CHARS = 2048;
 
+/**
+ * The AppImage's launcher asks with this whether Chromium's sandbox starts (`packaging/apprun.ts`).
+ * A run that reaches main exits 0 at once: no window, no worker, nothing read or written.
+ */
+export const SANDBOX_PREFLIGHT_SWITCH = 'sandbox-preflight';
+
 /** One line a build prints on stdout once the window and the worker are both up (CI reads it). */
 export const READY_PREFIX = 'NUTFLIX_SHELL_READY';
 /** Every other line main prints on stdout for CI and for a person reading a terminal. */

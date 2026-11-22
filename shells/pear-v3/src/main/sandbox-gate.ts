@@ -6,8 +6,8 @@
  * is off a banner stays in the window (`main.ts`). The app never adds the switch itself, and the
  * choice has no effect on a launch without it.
  *
- * Where the sandbox cannot start and nothing passes the switch, Chromium aborts before any app
- * code runs: the user has to start the app with `--no-sandbox` to reach this warning.
+ * Where the sandbox cannot start, Chromium aborts before any app code runs, so the AppImage's
+ * launcher passes the switch in that one case (`packaging/apprun.ts`) to reach this warning.
  *
  * The decision is pure: Electron's dialog and the filesystem arrive as `deps`, so the tests drive
  * every branch. `forget` (the `--forget-sandbox-choice` switch) is the revoke.
@@ -87,8 +87,10 @@ export const WARNING = {
   title: 'Nutflix was started without Chromium’s sandbox',
   message: 'Run without the sandbox?',
   detail:
-    'The --no-sandbox switch is on the command line. Without the sandbox, a flaw in this app or ' +
-    'in anything a stranger publishes (a title, a description, a video) can run code as you.\n\n' +
+    'This system does not let the sandbox start, or --no-sandbox is on the command line. On ' +
+    'Ubuntu 24.04 and later, the usual cause is AppArmor’s limit on user namespaces.\n\n' +
+    'Without the sandbox, a flaw in this app or in anything a stranger publishes (a title, a ' +
+    'description, a video) can run code as you.\n\n' +
     'Quit is the safe choice. “Run anyway” is remembered on this install; a banner ' +
     'stays on the window while the sandbox is off. Start the app with --forget-sandbox-choice ' +
     'to forget it.',
@@ -97,4 +99,4 @@ export const WARNING = {
 
 /** The banner's text (main injects it into the page while the sandbox is off). */
 export const BANNER_TEXT =
-  'Chromium’s sandbox is OFF. A flaw in this app or in a published video could run code as you. Quit and start Nutflix without --no-sandbox.';
+  'Chromium’s sandbox is OFF. A flaw in this app or in a published video could run code as you.';

@@ -3,10 +3,9 @@
  * `app-desktop/packaging/maker-appimage.ts` (the submodule's pinned commit), which says why no
  * published maker is used:
  *   - `pear-electron-forge-maker-appimage` (Holepunch) writes an `AppRun` that adds `--no-sandbox`
- *     on Ubuntu 24 and later (S2 read it from the built file): the app would start without the
- *     sandbox and say nothing. This `AppRun` is the Electron binary itself (a symlink, no wrapper
- *     script, no extra switch), so the only way the app runs unsandboxed is a user passing
- *     `--no-sandbox`, which main answers with a warning (`src/main/sandbox-gate.ts`);
+ *     on Ubuntu 24 and later by version (S2 read it from the built file). This `AppRun`
+ *     (`apprun.ts`) adds it only when Chromium itself reports that its sandbox cannot start, and
+ *     main answers the switch with a warning before anything opens (`src/main/sandbox-gate.ts`);
  *   - `@reforged/maker-appimage` downloads the AppImage runtime from a MOVING release tag, unverified.
  * What an AppImage is: the type-2 runtime (a static ELF) followed by a squashfs image of an AppDir.
  * This maker builds the AppDir, squashes it with the system `mksquashfs`, and prepends the
@@ -35,6 +34,8 @@ import { promisify } from 'node:util';
 
 import { MakerBase, type MakerOptions } from '@electron-forge/maker-base';
 import type { ForgePlatform } from '@electron-forge/shared-types';
+
+import { appRunScript } from './apprun.ts';
 
 const run = promisify(execFile);
 
@@ -172,7 +173,8 @@ export class MakerAppImage extends MakerBase<MakerAppImageConfig> {
     mkdirSync(lib, { recursive: true });
     // Modes are kept (the Electron binary, chrome-sandbox, the unpacked `bare`).
     cpSync(dir, lib, { recursive: true, verbatimSymlinks: true });
-    symlinkSync(join('usr', 'lib', c.executableName, c.executableName), join(appDir, 'AppRun'));
+    writeFileSync(join(appDir, 'AppRun'), appRunScript(c.executableName));
+    chmodSync(join(appDir, 'AppRun'), 0o755);
     writeFileSync(
       join(appDir, `${c.executableName}.desktop`),
       desktopEntry({ ...c, version, icon: c.icon !== undefined }),
