@@ -217,6 +217,37 @@ describe('the worker and nutflix-pear over NFX-12 (hyperdht testnet)', () => {
     expect(w.fatal).toEqual([]);
   });
 
+  it('starts no DHT node until a seed needs one, and at launch only for stored videos', async () => {
+    const v = vectorVideo();
+    const ns = namespaceOf(v.video);
+    const peer = await pearSeeder(memorySource(v.files, v.video), ns);
+    const d = await tempDir('nf-worker-');
+    cleanups.push(() => d.rm());
+    const init = { v: 1, storage: d.dir, bootstrap: testnet.bootstrap } as const;
+
+    const first = startWorker();
+    cleanups.push(() => first.close());
+    await first.client.request('init', init);
+    expect((await first.client.request('status', {})).dht).toBe('idle');
+    await first.client.request('nfx.seed.start', {
+      video: v.video,
+      root: v.root,
+      segs: v.segs,
+      peers: [peer],
+    });
+    expect((await first.client.request('status', {})).dht).toBe('ready');
+    await first.close();
+
+    // The next launch has a video to serve, so it does start the node, and listens.
+    const second = startWorker();
+    cleanups.push(() => second.close());
+    await second.client.request('init', init);
+    const status = await second.client.request('status', {});
+    expect(status.dht).not.toBe('idle');
+    expect(status.listening.map((l) => l.namespace)).toEqual([ns]);
+    expect([...first.fatal, ...second.fatal]).toEqual([]);
+  });
+
   it('(c) the progressive stream serves layout C by range; refusals', async () => {
     const v = testNfxVideo();
     const empty = await pearSeeder(memorySource(new Map(), v.video), NFX_NS);
