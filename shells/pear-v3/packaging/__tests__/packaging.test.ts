@@ -336,7 +336,9 @@ describe("the smoke test's reading of the app", () => {
       'utf8',
     );
     expect(main.match(/readyLine\(/g)).toHaveLength(1);
-    expect(main).toMatch(/!state\.window \|\| !state\.renderer \|\| !state\.worker/);
+    expect(main).toMatch(
+      /state\.printed \|\| !state\.window \|\| probe === null \|\| !state\.worker/,
+    );
   });
 });
 
