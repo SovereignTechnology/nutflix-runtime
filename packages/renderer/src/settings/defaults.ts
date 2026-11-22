@@ -31,10 +31,7 @@ const relay = (url: string): Settings['relays'][number] =>
   Object.freeze({ url: url as RelayUrl, read: true, write: true });
 
 export const DEFAULT_SETTINGS: Settings = Object.freeze({
-  relays: Object.freeze([
-    relay('wss://relay.primal.net'),
-    relay('wss://relay.ditto.pub'),
-  ]),
+  relays: Object.freeze([relay('wss://relay.primal.net'), relay('wss://relay.ditto.pub')]),
   // Fixed in this slice: no wallet, no seeding, and only images whose sha256 the publisher signed.
   defaultMints: Object.freeze([]),
   seeding: Object.freeze({ enabled: false, diskCapBytes: 0, serveImages: false }),
