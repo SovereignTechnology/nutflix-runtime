@@ -261,12 +261,9 @@ describe('the worker over the wire', () => {
         namespace: 'nfx:testnet:1',
       }),
     ).toEqual({ hyperdht: null });
-    await until(
-      () => w.events.some((e) => e.e === 'status' && e.status.dht === 'ready'),
-      'the DHT node bootstrapped',
-    );
+    // Nothing to play or seed: no DHT node, so nothing was sent.
     expect(await w.client.request('status', {})).toEqual({
-      dht: 'ready',
+      dht: 'idle',
       playSessions: 0,
       storedVideos: 0,
       listening: [],

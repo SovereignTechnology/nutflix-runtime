@@ -198,8 +198,11 @@ export interface NfxSeedListResult {
 }
 
 export interface WorkerStatus {
-  /** `ready` once the DHT node bootstrapped (or its bootstrap wait ran out). */
-  readonly dht: 'starting' | 'ready' | 'closed';
+  /**
+   * `idle`: no DHT node yet, none starts until a play or a stored video needs one. `ready` once
+   * it bootstrapped (or its bootstrap wait ran out).
+   */
+  readonly dht: 'idle' | 'starting' | 'ready' | 'closed';
   readonly playSessions: number;
   readonly storedVideos: number;
   readonly listening: readonly NfxListenerWire[];

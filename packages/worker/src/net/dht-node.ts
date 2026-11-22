@@ -7,9 +7,10 @@
  * from it (`../nfx/hyperdht-fetcher.ts`) and listens on it (`../nfx/seeding.ts`), each with its
  * own key pair (NFX-12 §1).
  *
+ *   - on demand: nothing is sent until a play dials or a stored video needs a listener, so an
+ *     app that only opened tells the DHT nothing about this machine (`state` is `idle` until then);
  *   - `bootstrap`: the network's nodes from local configuration, `null` for HyperDHT's public
- *     bootstrap; the node starts at once and `ready()` waits (bounded) for it to bootstrap, so a
- *     dial that comes first goes ahead anyway;
+ *     bootstrap; `ready()` waits (bounded) for the node to bootstrap, so a dial goes ahead anyway;
  *   - `loopbackOnly` (dev and tests only, as peer-node's): bind the UDP socket to 127.0.0.1,
  *     which needs a 127.0.0.1 bootstrap. Never in production: a loopback-bound node cannot reach
  *     a peer's LAN addresses, which HyperDHT tries for peers behind the same address.
@@ -30,16 +31,18 @@ export interface DhtNodeOptions {
   readonly loopbackOnly?: boolean;
   /** Tests: `BOOTSTRAP_WAIT_MS`. */
   readonly bootstrapWaitMs?: number;
+  /** Called when `state` moves to `starting` or `ready`. */
+  readonly onChange?: () => void;
 }
 
-export type DhtState = 'starting' | 'ready' | 'closed';
+export type DhtState = 'idle' | 'starting' | 'ready' | 'closed';
 
 export class DhtNode {
   private readonly o: DhtNodeOptions;
   private readonly log: Logger;
   private node: DHT | null = null;
   private readying: Promise<DHT> | null = null;
-  private stateNow: DhtState = 'starting';
+  private stateNow: DhtState = 'idle';
   private destroyed = false;
 
   constructor(o: DhtNodeOptions) {
@@ -68,11 +71,20 @@ export class DhtNode {
       ...(loopbackOnly ? { host: '127.0.0.1' } : {}),
     });
     this.node = node;
+    this.stateNow = 'starting';
     this.log.info('DHT node started', {
       bootstrap: bootstrap === null ? 'public' : 'configured',
       loopbackOnly,
     });
+    this.o.onChange?.();
     return node;
+  }
+
+  /** For a listener, which needs the node synchronously: starts it if needed; `null` once closed. */
+  forListener(): DHT | null {
+    if (this.destroyed) return null;
+    void this.ready().catch(() => undefined);
+    return this.node;
   }
 
   /**
@@ -103,7 +115,10 @@ export class DhtNode {
       }),
     ]);
     clearTimeout(timer);
-    if (!this.destroyed) this.stateNow = 'ready';
+    if (!this.destroyed) {
+      this.stateNow = 'ready';
+      this.o.onChange?.();
+    }
     return node;
   }
 }
