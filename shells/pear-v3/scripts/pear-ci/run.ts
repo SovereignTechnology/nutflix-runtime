@@ -262,9 +262,9 @@ export async function run(o: Options): Promise<number> {
   };
 
   /**
-   * `pear install` moves the app into a folder and does not make it (read in pear-install 1.5.0 and
-   * 1.6.0). One more install, into a home that has no such folder, says what really happens; it
-   * only adds a note, whatever the answer.
+   * `pear install` moves the app into a folder and does not make it (pear-install 1.5.0 and 1.6.0).
+   * One more install, into a home that has no such folder, shows what happens (ENOENT on the
+   * first four legs that ran it); it only adds a note, whatever the answer.
    */
   const probeBareHome = async (link: string): Promise<void> => {
     if (process.platform !== 'linux' && process.platform !== 'darwin') return;
@@ -532,8 +532,8 @@ export async function run(o: Options): Promise<number> {
       'pear install: from the private DHT, as a user would',
       async () => {
         // The folders a user who has Pear has: `pear install` moves the app into one of them and
-        // does not make it (pear-install 1.5.0 and 1.6.0, read, not run on a bare home), and it
-        // registers a launcher only when the applications folder exists (S2).
+        // does not make it (the bare-home probe below shows ENOENT), and it registers a launcher
+        // only when the applications folder exists (S2).
         for (const d of process.platform === 'linux'
           ? [join('.local', 'bin'), join('.local', 'share', 'applications')]
           : process.platform === 'darwin'

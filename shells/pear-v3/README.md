@@ -225,9 +225,9 @@ signs. No secret is used.
   with FUSE, and its sha256 equals the staged file's. The job also checks the launcher entry
   `pear install` writes (`~/.local/share/applications/Nutflix.desktop` runs that file). The folders
   `~/.local/bin` and `~/.local/share/applications` are made before the install, as on a machine that
-  has Pear: `pear install` moves the app into a folder and does not make it (read in pear-install
-  1.5.0 and 1.6.0; the job also installs once into a home without the folder and logs what
-  happens). **No icons are installed:** `pear install` copies `usr/share/icons/hicolor` out of the
+  has Pear: `pear install` moves the app into a folder and does not make it, and the job's extra
+  install into a home without the folder shows it: exit 1, `ENOENT … rename … -> ~/.local/bin/Nutflix.AppImage`
+  (on macOS the same for `~/Applications`). **No icons are installed:** `pear install` copies `usr/share/icons/hicolor` out of the
   AppImage, and ours has only `Nutflix.png` at its root (`maker-appimage.ts`), so the launcher
   entry names an icon the system does not have. The job notes it; it does not fail on it.
 - **macOS:** the bundle is ad-hoc signed (no certificate), as before. After the round trip through
