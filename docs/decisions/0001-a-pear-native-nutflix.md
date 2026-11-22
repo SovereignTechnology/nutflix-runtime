@@ -109,12 +109,12 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    - The window, the README and the install instructions say plainly that this is unsandboxed
      legacy software, and point to shape (a).
 2. **Without Chromium's sandbox, the app runs only if the user chooses to (shape a).** The AppImage's
-   `AppRun` adds `--no-sandbox` on Ubuntu 24 and later. The main process detects the switch before
-   any window opens and shows a warning, with Quit as the default and "Run anyway" as the choice.
-   The choice is stored per install and can be revoked in Settings, and a banner stays visible while
-   the sandbox is off. The app never adds the switch itself. Where the sandbox cannot start and
-   nothing passes the switch, Chromium aborts before app code runs, so the user has to start the
-   app with `--no-sandbox` to reach this warning.
+   `AppRun` adds `--no-sandbox` only when the kernel limits user namespaces and Chromium itself then
+   reports that its sandbox cannot start, because Chromium would otherwise abort before app code.
+   The main process detects the switch before any window opens and shows a warning, with Quit as
+   the default and "Run anyway" as the choice. The choice is stored per install and can be revoked
+   in Settings, and a banner stays visible while the sandbox is off. The main process never adds
+   the switch itself.
 3. **Without FUSE, the app still starts, and tells the user how to start faster.** It falls back to
    extract-and-run and shows a notice to install FUSE 2. S2 found that the stock AppImage runtime
    exits before any app code when `libfuse.so.2` is missing, so this fallback has to live in the

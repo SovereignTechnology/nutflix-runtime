@@ -31,7 +31,13 @@ import {
   type WebContents,
 } from 'electron';
 
-import { OPEN_LINK, PIPE_CLOSE, PIPE_DATA, PIPE_WRITE } from '../shared/ids.ts';
+import {
+  OPEN_LINK,
+  PIPE_CLOSE,
+  PIPE_DATA,
+  PIPE_WRITE,
+  SANDBOX_PREFLIGHT_SWITCH,
+} from '../shared/ids.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
@@ -159,7 +165,10 @@ app.on('will-quit', () => {
 
 // ---- start ---------------------------------------------------------------------------------
 
-if (app.commandLine.hasSwitch(FORGET_SWITCH)) {
+if (app.commandLine.hasSwitch(SANDBOX_PREFLIGHT_SWITCH)) {
+  // Chromium started its sandbox, or this line would not run. That was the whole question.
+  app.exit(0);
+} else if (app.commandLine.hasSwitch(FORGET_SWITCH)) {
   void rm(consentFile, { force: true }).then(
     () => {
       event('sandbox-choice-forgotten');

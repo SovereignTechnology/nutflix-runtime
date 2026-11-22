@@ -220,22 +220,28 @@ jobs:
             "https://github.com/AppImage/type2-runtime/releases/download/20251108/$asset"
       - name: package (stage, Forge, fuses, layout)
         run: node shells/pear-v3/scripts/package.ts build --platform "$PLATFORM" --arch "$ARCH"
-      # Information, not a gate: what a user on stock Ubuntu 24.04 gets today. The lift below hides it.
-      - name: the AppImage on stock Ubuntu, restriction still on (information only)
+      # Stock Ubuntu 24.04, before the restriction is lifted below: what a user there gets. The
+      # AppImage must reach the warning, and after "Run anyway" it must run and say the sandbox is off.
+      - name: stock Ubuntu, no usable sandbox, the AppImage reaches the warning (Xvfb)
         if: matrix.platform == 'linux'
-        continue-on-error: true
-        run: |
-          f="$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage"
-          echo "apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
-          code=0
-          out=$(xvfb-run -a timeout 45 "$f" 2>&1) || code=$?
-          echo "exit $code (124 = still running when stopped)"
-          printf '%s\n' "$out" | grep -E 'NUTFLIX_SHELL|FATAL|SUID|sandbox' | cut -c1-200 | head -6 || true
+        run: xvfb-run -a node "$SMOKE" stock-warning --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 90
+      - name: stock Ubuntu, after Run anyway, the AppImage runs with the sandbox off (Xvfb)
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a node "$SMOKE" stock-consented --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 120
       # Chromium's sandbox stays on: Ubuntu 24.04 restricts the unprivileged user namespaces it
       # uses, so lift that on this throwaway runner (the AppImage's chrome-sandbox is not setuid).
       - name: allow Chromium's user-namespace sandbox on this runner
         if: matrix.platform == 'linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The launcher asks this where the kernel has a limit but the sandbox still starts. A hang
+      # here would be a hang at every start on those machines.
+      - name: the launcher's sandbox question answers at once and opens nothing (Linux, Xvfb)
+        if: matrix.platform == 'linux'
+        run: |
+          out=$(xvfb-run -a timeout 60 "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix" --sandbox-preflight 2>&1) || {
+            echo "the preflight exited $?"; printf '%s\n' "$out" | tail -20; exit 1; }
+          if printf '%s\n' "$out" | grep -q NUTFLIX_SHELL; then echo "the preflight ran the app"; exit 1; fi
+          echo "preflight: exit 0, nothing started"
       - name: the shipped Bare runtime is the version the worker needs
         run: |
           case "$PLATFORM" in

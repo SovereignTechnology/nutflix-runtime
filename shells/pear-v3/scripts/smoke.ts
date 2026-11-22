@@ -9,6 +9,8 @@
  *   node scripts/smoke.ts ready    --exe <file> [--timeout s]
  *   node scripts/smoke.ts warning  --exe <file> [--timeout s]    adds --no-sandbox: expects the warning, no window
  *   node scripts/smoke.ts appimage --file <file>                 native FUSE first, then --appimage-extract-and-run
+ *   node scripts/smoke.ts stock-warning   --file <file>          restricted kernel, no stored choice: the warning
+ *   node scripts/smoke.ts stock-consented --file <file>          restricted kernel, "Run anyway" stored: runs, sandbox off
  *   node scripts/smoke.ts msix     --file <file>                 `makeappx unpack`, then `ready` on app/Nutflix.exe
  *   node scripts/smoke.ts bare     --app <resources/app dir> --platform p --arch a
  *
@@ -16,13 +18,14 @@
  * a name match. Output is the verdict plus, on a failure, the tail of what the app printed.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { EVENT_PREFIX, READY_PREFIX } from '../src/shared/ids.ts';
-import { MIN_BARE, bareBinary } from '../packaging/identity.ts';
+import { APP, MIN_BARE, bareBinary } from '../packaging/identity.ts';
+import { CONSENT_FILE } from '../src/main/sandbox-gate.ts';
 import { makeAppx } from '../packaging/windows-kit.ts';
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -130,11 +133,18 @@ export interface LaunchResult {
 
 export type Expect = 'ready' | 'warning';
 
+export interface LaunchOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  /** What the ready line must say about the sandbox. */
+  readonly sandbox?: 'on' | 'off';
+}
+
 export async function launch(
   exe: string,
   args: readonly string[],
   expect: Expect,
   timeoutS: number,
+  opts: LaunchOptions = {},
 ): Promise<LaunchResult> {
   const started = Date.now();
   const tail: string[] = [];
@@ -145,6 +155,7 @@ export async function launch(
   const child = spawn(exe, [...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
+    ...(opts.env === undefined ? {} : { env: opts.env }),
   });
   const exited = new Promise<number | null>((r) => {
     child.once('exit', (code) => {
@@ -181,7 +192,7 @@ export async function launch(
       if (f !== null) {
         st.ready = f;
         if (st.verdict === null) {
-          const bad = readyProblems(f, 'on');
+          const bad = readyProblems(f, opts.sandbox ?? 'on');
           st.verdict =
             expect === 'warning'
               ? { ok: false, reason: 'a window loaded although the sandbox warning was due' }
@@ -303,6 +314,41 @@ function need(argv: readonly string[], name: string): string {
   return v;
 }
 
+/** Refuses a machine that does not restrict user namespaces: the stock checks would prove nothing. */
+function assertRestricted(): void {
+  const v = readFileSync('/proc/sys/kernel/apparmor_restrict_unprivileged_userns', 'utf8').trim();
+  if (v !== '1') throw new Error(`this kernel does not restrict user namespaces (${v})`);
+}
+
+/** A launch with its own empty config directory, holding a stored "Run anyway" if asked. */
+async function stockLaunch(
+  file: string,
+  consented: boolean,
+  timeout: number,
+): Promise<LaunchResult> {
+  assertRestricted();
+  const dir = mkdtempSync(join(tmpdir(), 'shell-v3-config-'));
+  try {
+    if (consented) {
+      mkdirSync(join(dir, APP.name));
+      const choice = { v: 1, choice: 'run-anyway', at: new Date().toISOString() };
+      writeFileSync(join(dir, APP.name, CONSENT_FILE), `${JSON.stringify(choice)}\n`, {
+        mode: 0o600,
+      });
+    }
+    const env = { ...process.env, XDG_CONFIG_HOME: dir };
+    return await launch(
+      file,
+      [],
+      consented ? 'ready' : 'warning',
+      timeout,
+      consented ? { env, sandbox: 'off' } : { env },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   const timeout = Number(arg(rest, '--timeout') ?? '120');
@@ -327,6 +373,16 @@ export async function main(argv: readonly string[]): Promise<number> {
       const extract = await launch(file, ['--appimage-extract-and-run'], 'ready', timeout);
       report('appimage (--appimage-extract-and-run)', extract);
       return extract.ok ? 0 : 1;
+    }
+    case 'stock-warning': {
+      const r = await stockLaunch(resolve(need(rest, '--file')), false, timeout);
+      report('stock kernel: the warning', r);
+      return r.ok ? 0 : 1;
+    }
+    case 'stock-consented': {
+      const r = await stockLaunch(resolve(need(rest, '--file')), true, timeout);
+      report('stock kernel: after Run anyway', r);
+      return r.ok ? 0 : 1;
     }
     case 'msix': {
       const file = resolve(need(rest, '--file'));
