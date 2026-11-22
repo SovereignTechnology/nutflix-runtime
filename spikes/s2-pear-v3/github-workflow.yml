@@ -1,3 +1,6 @@
+# INERT HERE, AND NEVER RUN: GitHub dispatches only workflows on the default branch. To use it,
+# copy it to .github/workflows/ on main.
+#
 # Spike S2 (docs/spikes/S2-pear-v3-ota.md): runs spikes/s2-pear-v3/run.sh on a GitHub-hosted
 # Ubuntu 24.04 runner, the second environment beside the Kata VM. Dispatch only: it builds and
 # runs Holepunch's Electron template, bootstraps Pear over HyperDHT and keeps a `pear seed` of
