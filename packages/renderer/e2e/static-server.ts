@@ -15,11 +15,17 @@ const TYPES: Readonly<Record<string, string>> = {
 
 export async function serveDir(
   dir: string,
+  extra: Readonly<Record<string, string>> = {},
 ): Promise<{ readonly origin: string; close(): Promise<void> }> {
   const root = normalize(dir) + sep;
   const server: Server = createServer((req, res) => {
     const path = (req.url ?? '/').split(/[?#]/)[0] ?? '/';
     const rel = path === '/' ? 'index.html' : path.slice(1);
+    const body = extra[path];
+    if (body !== undefined) {
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }).end(body);
+      return;
+    }
     const file = normalize(join(dir, rel));
     if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {
       res.writeHead(404).end('not found');

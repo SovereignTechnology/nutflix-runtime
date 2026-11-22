@@ -59,6 +59,10 @@ function memorySource(files: ReadonlyMap<string, Uint8Array>, video: string): Nf
   };
 }
 
+/** What the page's own code would try: the policy has no 'unsafe-eval', so it must throw. */
+const EVAL_PROBE =
+  "try { new Function('return 1')(); globalThis.__evalProbe = 'ran'; } catch (e) { globalThis.__evalProbe = e.name; }";
+
 const cleanups: (() => Promise<void>)[] = [];
 
 interface World {
@@ -124,7 +128,7 @@ async function start(): Promise<World> {
 
   const bridge = await startWorkerBridge(testnet.bootstrap);
   cleanups.push(() => bridge.close());
-  const site = await serveDir(APP);
+  const site = await serveDir(APP, { '/e2e-eval-probe.js': EVAL_PROBE });
   cleanups.push(() => site.close());
 
   const browser: Browser = await chromium.launch({
@@ -248,21 +252,29 @@ describe('the renderer plays a free NFX video over HyperDHT alone', () => {
   });
 
   it('the policy holds in the page: an inline script and an eval do not run', async () => {
-    const r = await w().page.evaluate(async () => {
-      const out: string[] = [];
-      try {
-        // The policy has no 'unsafe-eval': this must throw.
-        // eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call, no-new-func
-        out.push(String(new Function('return 1')()));
-      } catch (e) {
-        out.push(e instanceof Error ? e.name : 'threw');
-      }
+    const { page } = w();
+    // A same-origin script is allowed (script-src 'self'), so it can try what the page's own code
+    // could: `new Function`. (A function Playwright evaluates over CDP would bypass the eval check.)
+    await page.evaluate(() => {
       const s = document.createElement('script');
-      s.textContent = 'globalThis.__ran = true';
+      s.src = '/e2e-eval-probe.js';
+      document.head.append(s);
+    });
+    await page.waitForFunction(
+      () => (globalThis as unknown as { __evalProbe?: string }).__evalProbe !== undefined,
+      undefined,
+      { timeout: 10_000 },
+    );
+    // An inline script is refused whoever adds it.
+    await page.evaluate(async () => {
+      const s = document.createElement('script');
+      s.textContent = 'globalThis.__inlineRan = true';
       document.head.append(s);
       await new Promise((resolve) => setTimeout(resolve, 50));
-      out.push(String((globalThis as unknown as { __ran?: boolean }).__ran === true));
-      return out;
+    });
+    const r = await page.evaluate(() => {
+      const g = globalThis as unknown as { __evalProbe?: string; __inlineRan?: boolean };
+      return [g.__evalProbe, String(g.__inlineRan === true)];
     });
     expect(r).toEqual(['EvalError', 'false']);
   });
