@@ -58,26 +58,8 @@ jobs:
             const p = require("./package-lock.json").packages;
             const bad = Object.entries(p).filter(([k, v]) => k.startsWith("node_modules/") && !v.link && v.resolved && !/^https:\/\/registry\.npmjs\.org\//.test(v.resolved));
             if (bad.length) { console.error("non-registry resolutions:", bad.map(([k]) => k)); process.exit(1); }'
-      # A pass is always a complete verification. setup-node restores npm's cache, which holds its
-      # Sigstore TUF data, and on some runner images the check then reports a key the registry does
-      # list as missing (EMISSINGSIGNATUREKEY). Only for that error: show the cached key ids, drop the
-      # TUF cache and verify again from npm's embedded root. Any other failure stops here.
       - name: registry signatures and provenance
-        shell: bash
-        run: |
-          set +e
-          out=$(npm audit signatures 2>&1); rc=$?
-          set -e
-          printf '%s\n' "$out"
-          [ "$rc" -eq 0 ] && exit 0
-          case "$out" in *EMISSINGSIGNATUREKEY*) ;; *) exit "$rc" ;; esac
-          tuf="$(npm config get cache)/_tuf"
-          echo "::warning::npm reported a missing signing key; retrying with a fresh TUF cache"
-          # Diagnostics only: a missing or unreadable cache must never stop the retry.
-          { find "$tuf" -type f -name '*keys.json' -print0 2>/dev/null |
-            xargs -0 -r node -e 'for (const f of process.argv.slice(1)) console.log("cached keys:", JSON.parse(require("fs").readFileSync(f)).keys.map((k) => k.keyId.slice(-14)).join(" "))'; } || true
-          rm -rf "$tuf"
-          npm audit signatures
+        run: npm audit signatures
       - name: advisories (high and above)
         run: npm audit --audit-level=high
       - run: npm run lint
