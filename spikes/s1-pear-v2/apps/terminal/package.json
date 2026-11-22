@@ -1,0 +1,10 @@
+{
+  "name": "s1-terminal",
+  "version": "0.0.1",
+  "description": "S1: minimal Bare terminal app for a pre-v3 Pear runtime",
+  "main": "index.js",
+  "license": "Apache-2.0",
+  "pear": {
+    "name": "s1-terminal"
+  }
+}

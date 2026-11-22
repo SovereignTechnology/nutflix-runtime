@@ -1,0 +1,119 @@
+# Kata job 21640 (a throwaway Kata VM on a private CI runner), run.sh drive then terminal, 2026-11-19 12:19Z. Result lines only.
+npm ci: 0
+S1: == env
+S1: os: Debian GNU/Linux 12 (bookworm)
+S1: kernel: 6.18.63 arch: x86_64
+S1: id: uid=0(root) gid=0(root) groups=0(root)
+S1: nproc: 12 mem: 8151752 kB
+S1: status: NoNewPrivs: 1 Seccomp: 2 
+S1: node: v24.21.0 npm: 11.19.0
+S1: disk: 478G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U fails
+S1: sysctl: unprivileged_userns_clone=n/a apparmor_restrict_unprivileged_userns=n/a max_user_namespaces=31831
+S1: runner: a throwaway Kata VM on a private CI runner
+S1: == drive: find the last pre-v3 length
+S1 {"tag":"open","t":0,"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","discoveryKey":"2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170"}
+S1 {"tag":"peers","t":1,"connections":4,"corePeers":4,"length":3243,"fork":0,"nat":{"randomized":false,"firewalled":true,"host":"set"}}
+S1 {"tag":"latest","t":3,"length":3243,"fork":0,"version":"2.6.5","changelogTop":"v2.6.5"}
+S1 {"tag":"boundary","t":3,"firstLengthPackageJson3":null,"firstLengthChangelog3":null,"versionBefore":"2.6.5","changelogBefore":null}
+S1 {"tag":"blobs","t":9,"entry":{"blob":{"byteOffset":1338748641,"blockOffset":22410,"blockLength":1156,"byteLength":75756968},"executable":true},"blobsLength":28162,"blobPeers":[{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0},{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0},{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0},{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0}],"firstBlockBytes":65536,"lastBlockBytes":62888,"firstBlockIsElf":"7f454c46"}
+S1 {"tag":"pin","t":9,"candidateLength":3243,"reason":"no 3.x anywhere on this key: the latest length is the last pre-v3 release","versionAtPin":"2.6.5","changelogAtPin":"v2.6.5"}
+S1 {"tag":"summary","t":9,"latestLength":3243,"latestVersion":"2.6.5","fork":0,"pinnedLength":3243,"pinnedVersion":"2.6.5"}
+S1 {"tag":"v3-key","t":12,"key":"smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy","length":92,"fork":0,"peers":4,"packageVersion":"3.7.0","topLevel":["by-arch","checksums.sha256","package.json"]}
+S1: drive exit: 0
+S1: == env
+S1: os: Debian GNU/Linux 12 (bookworm)
+S1: kernel: 6.18.63 arch: x86_64
+S1: id: uid=0(root) gid=0(root) groups=0(root)
+S1: nproc: 12 mem: 8151752 kB
+S1: status: NoNewPrivs: 1 Seccomp: 2 
+S1: node: v24.21.0 npm: 11.19.0
+S1: disk: 478G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U fails
+S1: sysctl: unprivileged_userns_clone=n/a apparmor_restrict_unprivileged_userns=n/a max_user_namespaces=31831
+S1: runner: a throwaway Kata VM on a private CI runner
+S1: == install: pinned bootstrap length=3243 fork=0
+S1 {"tag":"pin-peers","t":1,"peers":4,"remoteLength":3243,"fork":0,"pin":3243,"pinFork":0}
+S1 {"tag":"pin-updating","t":3,"length":3243,"fork":0}
+S1 {"tag":"pin-progress","t":22,"status":"updating-assets","downloadedBytes":23440601,"blobPeers":4}
+S1 {"tag":"pin-progress","t":42,"status":"updating-bundle","downloadedBytes":76063361,"blobPeers":4}
+S1 {"tag":"pin-progress","t":62,"status":"updating-bundle","downloadedBytes":92160655,"blobPeers":4}
+S1 {"tag":"pin-installed","t":76,"swapEntries":["boot.bundle","by-arch","checkout","prebuilds"],"applied":{"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","length":3243,"fork":0},"current":"/tmp/s1/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1","runtimeSha256":"17a24785a94a8439617eecdb8844d3dc73c5a5d170e9666bae2cb17bfdf61636","packageVersion":"2.6.5","downloadedBytes":110800331,"seconds":76}
+S1: pin-bootstrap exit: 0
+S1: current -> /tmp/s1/pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1
+S1: runtime sha256: 17a24785a94a8439617eecdb8844d3dc73c5a5d170e9666bae2cb17bfdf61636
+S1: state[holepunch key, after install]: current -> pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1; checkout: length 3243 fork 0
+S1:   Pear ~ Welcome to the Internet of Peers
+S1:   🍐 v0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o
+S1:   
+S1:   pear: 2.6.5 | bare: 1.24.3 | uv: 1.51.0 | v8: 14.2.231.14
+S1:   
+S1:   link: pear://0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o
+S1:   
+S1:   Use --modules|-m flag for module versions
+S1:   
+S1: versions-after-install exit: 0
+S1: == Q3a: terminal app from a local dir
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"file://<repo>/spikes/s1-pear-v2/apps/terminal","key":null,"dev":false,"platform":{"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","length":3243,"fork":0},"app":{"length":0,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5"}}
+S1: q3a-dir exit: 0
+S1: == Q3a: terminal app from a pear:// link made with pear touch + pear stage
+S1:   {"cmd":"touch","tag":"final","data":{"success":true,"key":"qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo","link":"pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo"}}
+S1: q3a-touch exit: 0
+S1: touch link: pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo
+S1:   
+S1:   🍐 Staging s1-terminal
+S1:   
+S1:   [  pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo  ]
+S1:   pear://0.0.qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo
+S1:   
+S1:   Current: 1
+S1:   Release: 0 [UNRELEASED]
+S1:   
+S1:   + /.gitignore (+14B)
+S1:   + /index.js (+712B)
+S1:   + /package.json (+218B)
+S1:   ✔ Warmed up app (used 4/12 blocks)
+S1:   
+S1:   Staging complete!
+S1:   
+S1:   ^Latest: 6
+S1:   Release: 0 [UNRELEASED]
+S1:   
+S1:   Use pear release pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo to set release to latest
+S1:   
+S1:   pear://0.6.qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo
+S1:   [  pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo  ]
+S1:   
+S1: q3a-stage exit: 0
+S1: run pear:// without --trusted (no TTY, stdin closed):
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo","key":"set","dev":false,"platform":{"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","length":3243,"fork":0},"app":{"length":6,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5"}}
+S1: q3a-link-untrusted exit: 0
+S1: run pear:// with --trusted:
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"pear://qnsp41d7iyxdx7483enyqicekccqteesnazud78zfgygfjy8j9bo","key":"set","dev":false,"platform":{"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","length":3243,"fork":0},"app":{"length":6,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5"}}
+S1: q3a-link exit: 0
+S1: == Q2: a normal sidecar on Holepunch's key, 240 s
+S1: == sidecar watch [holepunch-default] 240s args: 
+S1:   DEPRECATED: pear run is deprecated and will be removed
+S1:   Use the pear-runtime module instead
+S1:   S1 {"tag":"terminal-app","ok":true,"bare":"v1.24.3","link":"file://<repo>/spikes/s1-pear-v2/apps/terminal","key":null,"dev":false,"platform":{"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","length":3243,"fork":0},"app":{"length":0,"fork":0},"runtimes":{"bare":"1.24.3","pear":"2.6.5"}}
+S1: watch-holepunch-default-run exit: 0
+S1: sidecar [holepunch-default] after 245s: update lines:
+S1:   - Sidecar Booting [+0ms]
+S1:   - Sidecar Booted [+3.2505ms]
+S1: sidecar [holepunch-default] log tail:
+S1:   
+S1:   - Replicator: drive = 0.3243.pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o [+5964.5288ms]
+S1:   - Swarm join dkey of: pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o [+0.5499ms]
+S1:   - Sidecar Booted [+3.2505ms]
+S1:   - Sidecar Shutting Down... [+239672.106ms]
+S1:   ✔ Sidecar Closed [+11.5963ms]
+S1: state[holepunch key, after a normal sidecar]: current -> pear/by-dkey/2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170/1; checkout: length 3243 fork 0
+KATA_RUN_RC=0

