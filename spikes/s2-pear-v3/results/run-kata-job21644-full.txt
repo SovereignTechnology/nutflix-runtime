@@ -1,0 +1,1158 @@
+[kata-run] snapshot of the spike worktree
+[kata-run] command: 'env' 'S2_ENV=kata-agentrun' 'S2_PHASES=env deps bootstrap template link make1 build1 stage1 install launch-checks run1 update2 hold restart-held wrong-notice update3 stale-notice apply restart-applied provision multisig-demo sandbox-nonroot' 'bash' 'spikes/s2-pear-v3/run.sh'
+[kata-run] agentrun job 21644 (pipeline 6739)
+[kata-run] waiting for an agentrun runner (ubuntu-server, booty overflow)
+[kata-run] running on ci-agentrun@ubuntu-server
+== kata-run setup
+== kata-run command
+======== [S2 12:25:55] env: kata-agentrun (S2_ENV) ========
+$ node --check /builds/gitlab/sovtech/agent-run/spikes/s2-pear-v3/worker-instrumented.js
+[exit 0]
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+VERSION_ID="12"
+ID=debian
+Linux 2282b95a70a4 6.18.63 #1 SMP Mon Nov 16 23:11:55 UTC 2026 x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+CapEff:	00000000a80425fb
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+nproc=12
+               total        used        free      shared  buff/cache   available
+Mem:            7960         216        7635           8         200        7744
+Swap:              0           0           0
+Filesystem     Type      Size  Used Avail Use% Mounted on
+none           virtiofs  717G  209G  478G  31% /
+none           virtiofs  717G  209G  478G  31% /
+none           virtiofs  717G  209G  478G  31% /
+none           virtiofs  717G  209G  478G  31% /
+--- FUSE
+ls: cannot access '/dev/fuse': No such file or directory
+no fusermount
+	libatomic.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libatomic.so.1
+--- user namespaces
+/proc/sys/kernel/unprivileged_userns_clone=cat: /proc/sys/kernel/unprivileged_userns_clone: No such file or directory
+/proc/sys/user/max_user_namespaces=31831
+/proc/sys/kernel/apparmor_restrict_unprivileged_userns=cat: /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
+$ unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+$ setpriv --reuid=65534 --regid=65534 --clear-groups unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+--- tools
+xvfb-run=missing
+Xvfb=missing
+apt-get=/usr/bin/apt-get
+node=/usr/local/bin/node
+npm=/usr/local/bin/npm
+npx=/usr/local/bin/npx
+git=/usr/bin/git
+python3=/usr/bin/python3
+curl=/usr/bin/curl
+v24.21.0
+11.19.0
+git version 2.39.5
+--- network
+88.99.3.86      node1.hyperdht.org
+142.93.90.113   node2.hyperdht.org
+138.68.147.8    node3.hyperdht.org
+104.16.7.34     registry.npmjs.org
+104.16.6.34     registry.npmjs.org
+104.16.3.34     registry.npmjs.org
+104.16.8.34     registry.npmjs.org
+104.16.9.34     registry.npmjs.org
+104.16.5.34     registry.npmjs.org
+104.16.1.34     registry.npmjs.org
+104.16.11.34    registry.npmjs.org
+104.16.10.34    registry.npmjs.org
+104.16.0.34     registry.npmjs.org
+104.16.2.34     registry.npmjs.org
+104.16.4.34     registry.npmjs.org
+udp/123 to pool.ntp.org: reply 48 bytes from 107.141.134.168
+https://registry.npmjs.org/ -> 200
+https://github.com/ -> 200
+PHASE OK: env
+======== [S2 12:25:57] deps: xvfb and Electron's libraries ========
+$ bash -c apt-get update -qq 2>&1 | tail -3
+[exit 0]
+$ bash -c apt-get install -y -qq --no-install-recommends  xvfb xauth libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libxtst6 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libatomic1 libsecret-1-0 libnotify4 dbus-x11 file squashfs-tools procps 2>&1 | tail -3
+Setting up xserver-common (2:21.1.7-3+deb12u13) ...
+Setting up xvfb (2:21.1.7-3+deb12u13) ...
+Processing triggers for libc-bin (2.36-9+deb12u14) ...
+[exit 0]
+xvfb-run=/usr/bin/xvfb-run
+Xvfb=/usr/bin/Xvfb
+unsquashfs=/usr/bin/unsquashfs
+PHASE OK: deps
+======== [S2 12:26:59] bootstrap: npx pear@3.0.0 (HOME=/var/tmp/s2/home) ========
+registry dist.integrity: sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+integrity matches the pin
+$ timeout 1500 npx --yes pear@3.0.0
+Installing Pear (Please stand by, this might take a bit...)
+Bootstrapping: pear://smw4thqaqed9iq6bae7a9cxd4fesruixgkafe38jny33ahs33igy
+Pear installed!
+Please open a new terminal (or restart your current one) for the updated PATH to take effect.
+[exit 0]
+bootstrap: attempt 1 installed /var/tmp/s2/home/.local/bin/pear
+--- what npx installed (registry integrity of each)
+node_modules/corestore 7.16.1 sha512-Zk2lirmXxNKxdKp7aqObnPxQKUzc+DmAfzff45EZDxSeW2k8UbXlEEPrg35Xme5OC6E/ZkZgSZaAe3Ki9NI44w==
+node_modules/hyperdrive 13.3.4 sha512-cbh4Zoov2l6GMn6NCYs8VNBzPU3C2M5/otOjIR1qagsrLbKZsfSC4Q7ryTbnDrj8FK32Jkdo0jLU1NeRmTkj3Q==
+node_modules/hyperswarm 4.17.2 sha512-yKTNgHjijwrmSj5neC2Lu5JyKDvj9gZK/zkVLySP6J2M7nF+uvFMoxzRlWKKjdySfZVHZXPLfhk4xAnpqibm5A==
+node_modules/pear 3.0.0 sha512-nTUqvyGrDSCNJuvaBgBbygXgKJcUVJpr9hww3/AysocUgpW5gdbV4HveXI+KxJc/Y0Rti752xP8h9LkZL4AnNw==
+node_modules/pear-install 1.6.0 sha512-aMTWX6TaUgbzo0MtQfPrRH8bDFH/LDAvGZ8LPw/ql2iPyTMIxKhisLjYsaA+VOJEd+fr0o7VoxozT6Nu/Ptwyg==
+total 97352
+drwxr-xr-x 2 root root     4096 Nov 19 12:28 .
+drwxr-xr-x 3 root root     4096 Nov 19 12:28 ..
+-rwxr-xr-x 1 root root 99679496 Nov 19 12:28 pear
+/var/tmp/s2/home/.local/bin/pear: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, not stripped
+PHASE OK: bootstrap
+======== [S2 12:28:18] template: https://github.com/holepunchto/hello-pear-electron.git @ ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2 ========
+$ git clone -q https://github.com/holepunchto/hello-pear-electron.git /var/tmp/s2/dl-template/app
+[exit 0]
+$ git -C /var/tmp/s2/dl-template/app checkout -q ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2
+[exit 0]
+ed067ea5d8a9b22a98a879789ef8b56bfc4acbd2 2026-11-17 22:45:23 +0100 update electron-forge dependencies (#99)
+$ bash -o pipefail -c npm ci --ignore-scripts --no-audit --no-fund --loglevel=error 2>&1 | tail -5
+added 530 packages in 31s
+[exit 0]
+$ node node_modules/electron/install.js
+[exit 0]
+hello-pear-electron@1.0.0 /var/tmp/s2/dl-template/app
++-- @electron-forge/cli@8.0.1
++-- electron@42.11.18
++-- hello-pear-worker@1.2.0
+| +-- hyperswarm@4.17.2 deduped
+| `-- pear-runtime@1.3.1 deduped
++-- hyperswarm@4.17.2
++-- pear-electron-forge-maker-appimage@3.0.1
++-- pear-mobile@4.3.0
+| +-- hyperswarm@4.17.2 deduped
+| `-- pear-runtime-updater@3.4.0
+|   `-- hyperdrive@13.3.4
+`-- pear-runtime@1.3.1
+  +-- bare-sidecar@0.5.16
+  +-- hyperswarm@4.17.2 deduped
+  `-- pear-runtime-updater@3.4.0 deduped
+{
+  "multisig": {
+    "publicKeys": ["<PUBKEY_HERE>", "<PUBKEY_HERE>", "<PUBKEY_HERE>"],
+    "namespace": "holepunchto/hello-pear-electron",
+    "quorum": 2
+  }
+}
+PHASE OK: template
+======== [S2 12:29:00] link: pear touch, a background seeder, package.json#upgrade, the instrumented worker ========
+$ bash -o pipefail -c timeout 120 '/var/tmp/s2/home/.local/bin/pear' touch --json </dev/null | tee '/var/tmp/s2/logs/touch.ndjson'
+{"cmd":"touch","tag":"final","data":{"success":true,"key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+[exit 0]
+STATE LINK=pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+STATE SEED_PID=2267
+{
+  "name": "hello-pear-electron",
+  "productName": "HelloPear",
+  "version": "1.0.0",
+  "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o",
+  "main": "electron/main.js"
+}
+ package.json    |   2 +-
+ workers/main.js | 399 ++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 386 insertions(+), 15 deletions(-)
+PHASE OK: link
+======== [S2 12:29:01] make 1.0.0 (full) ========
+$ bash -o pipefail -c timeout 1500 npm run make 2>&1 | tail -40
+> hello-pear-electron@1.0.0 make
+> electron-forge make
+❯ Checking your system
+❯ Checking package manager version
+✔ Found npm@11.19.0
+✔ Checking your system
+❯ Loading configuration
+✔ Loading configuration
+❯ Resolving make targets
+✖ Resolving make targets [FAILED: Cannot make for snap, the following external binaries need to be installed: snapcraft, lxd]
+An unhandled rejection has occurred inside Forge:
+Error: Cannot make for snap, the following external binaries need to be installed: snapcraft, lxd
+at MakerSnap.ensureExternalBinariesExist (file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/maker-base/src/Maker.ts:167:13)
+    at file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/core/src/api/make.ts:249:21
+    at Task.taskFn (file:///var/tmp/s2/dl-template/app/node_modules/@electron-forge/tracer/src/index.ts:60:14)
+    at Task.run (file:///var/tmp/s2/dl-template/app/node_modules/listr2/dist/index.mjs:1965:5)
+[exit 1]
+$ bash -o pipefail -c timeout 1500 npx electron-forge make --targets pear-electron-forge-maker-appimage 2>&1 | tail -30
+› Determining targets...
+❯ Packaging for x64 on linux
+❯ Copying files
+✔ Copying files
+❯ Preparing native dependencies
+✔ Preparing native dependencies
+❯ Finalizing package
+✔ Finalizing package
+✔ Packaging for x64 on linux
+✔ Packaging application
+❯ Running postPackage hook
+✔ Running postPackage hook
+✔ Running package command
+❯ Running preMake hook
+❯ Running preMake hook from forgeConfig
+✔ Running preMake hook from forgeConfig
+✔ Running preMake hook
+❯ Making distributables
+❯ Making a appImage distributable for linux/x64
+  • downloaded      label=appimage-12.0.1.7z progress=100%
+  • downloaded      label=7zip-linux-x64.tar.gz progress=100%
+  • building embedded block map  file=out/make/HelloPear-1.0.0-x64.AppImage
+✔ Making a appImage distributable for linux/x64
+✔ Making distributables
+❯ Running postMake hook
+› Artifacts available at: /var/tmp/s2/dl-template/app/out/make
+✔ Running postMake hook
+❯ Saving make results
+› Make results saved to: /var/tmp/s2/dl-template/app/out/make-results
+✔ Saving make results
+[exit 0]
+--- out/ (depth 2)
+d         4096 .
+d         4096 ./HelloPear-linux-x64
+f    220253400 ./HelloPear-linux-x64/HelloPear
+f         1096 ./HelloPear-linux-x64/LICENSE
+f     20008860 ./HelloPear-linux-x64/LICENSES.chromium.html
+f        15232 ./HelloPear-linux-x64/chrome-sandbox
+f       120284 ./HelloPear-linux-x64/chrome_100_percent.pak
+f       198601 ./HelloPear-linux-x64/chrome_200_percent.pak
+f      1906240 ./HelloPear-linux-x64/chrome_crashpad_handler
+f     10876560 ./HelloPear-linux-x64/icudtl.dat
+f       256744 ./HelloPear-linux-x64/libEGL.so
+f      6460064 ./HelloPear-linux-x64/libGLESv2.so
+f      2714344 ./HelloPear-linux-x64/libffmpeg.so
+f      4636360 ./HelloPear-linux-x64/libvk_swiftshader.so
+f      2450616 ./HelloPear-linux-x64/libvulkan.so.1
+d         4096 ./HelloPear-linux-x64/locales
+d         4096 ./HelloPear-linux-x64/resources
+f      7058669 ./HelloPear-linux-x64/resources.pak
+f       346664 ./HelloPear-linux-x64/snapshot_blob.bin
+f       721416 ./HelloPear-linux-x64/v8_context_snapshot.bin
+f            8 ./HelloPear-linux-x64/version
+f          107 ./HelloPear-linux-x64/vk_swiftshader_icd.json
+d         4096 ./make
+d         4096 ./make-results
+f         2922 ./make-results/e2fc0392e1302ef587b81515e57f0f81e63c6801fee158b245b4f36676254d88.forge-make.json
+f    154159476 ./make/HelloPear-1.0.0-x64.AppImage
+forge AppImage: /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage sha256=58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364
+STATE FORGE_AIMG_1_0_0=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage
+STATE SHA_1_0_0=58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364
+PHASE OK: make1
+======== [S2 12:29:52] pear build with Forge's own file name (expected to be refused) ========
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage --target /var/tmp/s2/builds/refused-1.0.0 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.0","target":"/var/tmp/s2/builds/refused-1.0.0"}}
+{"cmd":"build","tag":"error","data":{"success":false,"code":"ERR_INVALID_APP_NAME","message":"expected HelloPear but got HelloPear-1.0.0-x64.AppImage for linux-x64"}}
+[exit 1]
+======== [S2 12:29:52] pear build 1.0.0 ========
+$ timeout 300 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dist/1.0.0/HelloPear.AppImage --target /var/tmp/s2/builds/hello-pear-electron-1.0.0 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.0","target":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"build","tag":"executable","data":{"file":"/var/tmp/s2/builds/hello-pear-electron-1.0.0/by-arch/linux-x64/app/HelloPear.AppImage","origin":"/var/tmp/s2/dist/1.0.0/HelloPear.AppImage"}}
+{"cmd":"build","tag":"final","data":{"success":true}}
+[exit 0]
+--- deployment folder /var/tmp/s2/builds/hello-pear-electron-1.0.0
+d         4096 755 .
+d         4096 755 ./by-arch
+d         4096 755 ./by-arch/linux-x64
+d         4096 755 ./by-arch/linux-x64/app
+f    154159476 755 ./by-arch/linux-x64/app/HelloPear.AppImage
+f         2470 644 ./package.json
+844da9e3138d59e7c24c2deb114444ed44a19efa321126bd85808cc76c16b793  package.json
+58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364  by-arch/linux-x64/app/HelloPear.AppImage
+{'name': 'hello-pear-electron', 'productName': 'HelloPear', 'version': '1.0.0', 'upgrade': 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o', 'main': 'electron/main.js'}
+PHASE OK: build1
+======== [S2 12:29:54] pear stage --dry-run 1.0.0 ========
+$ bash -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' stage --dry-run --json 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' '/var/tmp/s2/builds/hello-pear-electron-1.0.0' </dev/null > '/var/tmp/s2/logs/stage-dry-1.0.0.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.0.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","current":1,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"stage","tag":"dry"}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[154159476],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":2,"remove":0,"change":0,"length":0,"byteLength":0,"blobs":{"length":0,"fork":0,"byteLength":0}}}
+{"cmd":"stage","tag":"skipping","data":{"reason":"dry-run","success":true}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":true}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+======== [S2 12:29:54] pear stage 1.0.0 ========
+$ bash -c timeout 900 '/var/tmp/s2/home/.local/bin/pear' stage --json 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' '/var/tmp/s2/builds/hello-pear-electron-1.0.0' </dev/null > '/var/tmp/s2/logs/stage-1.0.0.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.0.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","current":1,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.0"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[154159476],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":2,"remove":0,"change":0,"length":3,"byteLength":397,"blobs":{"length":114,"fork":0,"byteLength":154162620}}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":false}}
+{"cmd":"stage","tag":"addendum","data":{"version":3,"key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+STATE VERLINK_1_0_0=pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear info pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Info:          pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Verlink:       pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  App:           hello-pear-electron@1.0.0
+  Product Name:  HelloPear
+  Writable:      true
+  Targets:
+    linux-x64 (154.2MB)
+  Drive Key:     3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Drive Fork:    0
+  Drive Length:  3
+  Drive Size:    397B
+  Blobs Key:     ok4rasj3zhsxhhfnw5jczcnuoit9zb8da5gbqd8qyjqjwqbx517y
+  Blobs Fork:    0
+  Blobs Length:  114
+  Blobs Size:    154.2MB
+  Discovery Key: moemepxfuuai6ktp454rdfo1smf8shatq4jy67ar3t1gafg57uxy
+  Upgrade:       pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+✔ Success
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear dump --list pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+🍐 Output pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+/by-arch/linux-x64/app/HelloPear.AppImage
+/package.json
+✔ Success
+[exit 0]
+PHASE OK: stage1
+======== [S2 12:30:05] pear install pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o ========
+$ bash -o pipefail -c timeout 300 '/var/tmp/s2/home/.local/bin/pear' install 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' --json --timeout 90 </dev/null | grep -v '"tag":"stats"' | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","host":"linux-x64"}}
+{"cmd":"install","tag":"error","data":{"stack":"ERR_NETWORK_TIMEOUT: Network Timeout 90s\n    at bare:/app.bundle/node_modules/pear-install/index.js:117:16\n    at Scheduler._ontimeout (bare:/bare.js:3507:17)","code":"ERR_NETWORK_TIMEOUT","message":"Network Timeout 90s","success":false,"info":null}}
+{"cmd":"install","tag":"final","data":{"success":false}}
+[exit 1]
+install: attempt 1 failed
+$ bash -o pipefail -c timeout 300 '/var/tmp/s2/home/.local/bin/pear' install 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' --json --timeout 90 </dev/null | grep -v '"tag":"stats"' | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","host":"linux-x64"}}
+{"cmd":"install","tag":"error","data":{"stack":"ERR_NETWORK_TIMEOUT: Network Timeout 90s\n    at bare:/app.bundle/node_modules/pear-install/index.js:117:16\n    at Scheduler._ontimeout (bare:/bare.js:3507:17)","code":"ERR_NETWORK_TIMEOUT","message":"Network Timeout 90s","success":false,"info":null}}
+{"cmd":"install","tag":"final","data":{"success":false}}
+[exit 1]
+install: attempt 2 failed
+restarting the seeder (pid 2267) so that it announces again
+STATE SEED_PID=2664
+$ bash -o pipefail -c timeout 300 '/var/tmp/s2/home/.local/bin/pear' install 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' --json --timeout 90 </dev/null | grep -v '"tag":"stats"' | tee '/var/tmp/s2/logs/install.ndjson'
+{"cmd":"install","tag":"installing","data":{"link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","host":"linux-x64"}}
+{"cmd":"install","tag":"app","data":{"app":"HelloPear","name":"hello-pear-electron","version":"1.0.0","upgrade":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","key":"/by-arch/linux-x64/app/HelloPear.AppImage","tmp":"/var/tmp/s2/home/.config/pear/gc/ef6e38739c49e0c093312e263546c6a9/targets","dest":"/var/tmp/s2/home/.local/bin/HelloPear.AppImage"}}
+{"cmd":"install","tag":"final","data":{"success":true,"installed":1,"exists":[]}}
+[exit 0]
+STATE INSTALLED=/var/tmp/s2/home/.local/bin/HelloPear.AppImage
+STATE INSTALL_HOW=pear-install
+-rwxr-xr-x 1 root root 154159476 Nov 19 12:33 /var/tmp/s2/home/.local/bin/HelloPear.AppImage
+installed sha256=58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364 build 1.0.0 sha256=58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364
+--- HOME after install (names only; build caches and Pear's own storage pruned)
+d         4096 .
+d         4096 ./.config
+d         4096 ./.local
+d         4096 ./.local/bin
+f    154159476 ./.local/bin/HelloPear.AppImage
+f     99679496 ./.local/bin/pear
+d         4096 ./.local/share
+d         4096 ./.local/share/applications
+f          254 ./.local/share/applications/HelloPear.desktop
+d         4096 ./.local/share/icons
+d         4096 ./.local/share/icons/hicolor
+d         4096 ./.local/share/icons/hicolor/128x128
+d         4096 ./.local/share/icons/hicolor/128x128/apps
+f         1251 ./.local/share/icons/hicolor/128x128/apps/HelloPear.png
+d         4096 ./.local/share/icons/hicolor/16x16
+d         4096 ./.local/share/icons/hicolor/16x16/apps
+f          172 ./.local/share/icons/hicolor/16x16/apps/HelloPear.png
+d         4096 ./.local/share/icons/hicolor/256x256
+d         4096 ./.local/share/icons/hicolor/256x256/apps
+f         3492 ./.local/share/icons/hicolor/256x256/apps/HelloPear.png
+d         4096 ./.local/share/icons/hicolor/32x32
+d         4096 ./.local/share/icons/hicolor/32x32/apps
+f          236 ./.local/share/icons/hicolor/32x32/apps/HelloPear.png
+d         4096 ./.local/share/icons/hicolor/512x512
+d         4096 ./.local/share/icons/hicolor/512x512/apps
+f         6806 ./.local/share/icons/hicolor/512x512/apps/HelloPear.png
+d         4096 ./.local/share/icons/hicolor/64x64
+d         4096 ./.local/share/icons/hicolor/64x64/apps
+f          464 ./.local/share/icons/hicolor/64x64/apps/HelloPear.png
+f           49 ./.profile
+--- the .desktop entry pear install wrote
+[Desktop Entry]
+Name=HelloPear
+Exec=/var/tmp/s2/home/.local/bin/HelloPear.AppImage
+Terminal=false
+Type=Application
+Icon=HelloPear
+StartupWMClass=hellopear
+X-AppImage-Version=1.0.0
+Comment=
+Categories=Utility
+MimeType=x-scheme-handler/hello-pear-electron
+PHASE OK: install
+======== [S2 12:33:34] launch checks: AppImage contents, FUSE, the root/sandbox refusal ========
+$ bash -c '/var/tmp/s2/home/.local/bin/HelloPear.AppImage' --appimage-extract >/dev/null
+[exit 0]
+--- AppRun (the whole file when it is a script)
+/var/tmp/s2/extract/squashfs-root/AppRun: Bourne-Again shell script, ASCII text executable
+     1	#!/bin/bash
+     2	
+     3	# modified AppRun script from https://github.com/develar/app-builder
+     4	
+     5	set -e
+     6	
+     7	if [ ! -z "$DEBUG" ] ; then
+     8	  env
+     9	  set -x
+    10	fi
+    11	
+    12	THIS="$0"
+    13	# http://stackoverflow.com/questions/3190818/
+    14	args=("$@")
+    15	NUMBER_OF_ARGS="$#"
+    16	
+    17	if [ -z "$APPDIR" ] ; then
+    18	  # Find the AppDir. It is the directory that contains AppRun.
+    19	  # This assumes that this script resides inside the AppDir or a subdirectory.
+    20	  # If this script is run inside an AppImage, then the AppImage runtime likely has already set $APPDIR
+    21	  path="$(dirname "$(readlink -f "${THIS}")")"
+    22	  while [[ "$path" != "" && ! -e "$path/$1" ]]; do
+    23	    path=${path%/*}
+    24	  done
+    25	  APPDIR="$path"
+    26	fi
+    27	
+    28	export PATH="${APPDIR}:${APPDIR}/usr/sbin:${PATH}"
+    29	export XDG_DATA_DIRS="./share/:/usr/share/gnome:/usr/local/share/:/usr/share/:${XDG_DATA_DIRS}"
+    30	export LD_LIBRARY_PATH="${APPDIR}/usr/lib:${LD_LIBRARY_PATH}"
+    31	export XDG_DATA_DIRS="${APPDIR}"/usr/share/:"${XDG_DATA_DIRS}":/usr/share/gnome/:/usr/local/share/:/usr/share/
+    32	export GSETTINGS_SCHEMA_DIR="${APPDIR}/usr/share/glib-2.0/schemas:${GSETTINGS_SCHEMA_DIR}"
+    33	
+    34	BIN="$APPDIR/HelloPear"
+    35	
+    36	if [ -z "$APPIMAGE_EXIT_AFTER_INSTALL" ] ; then
+    37	  trap atexit EXIT
+    38	fi
+    39	
+    40	isEulaAccepted=1
+    41	 
+    42	# Detect if running on Ubuntu 24+
+    43	EXTRA_ARGS=""
+    44	if [ -f /etc/os-release ]; then
+    45	  . /etc/os-release
+    46	  if [ "$ID" = "ubuntu" ] && [ "${VERSION_ID%%.*}" -ge 24 ] 2>/dev/null; then
+    47	    EXTRA_ARGS="--no-sandbox"
+    48	  fi
+    49	fi
+    50	
+    51	atexit()
+    52	{
+    53	  if [ $isEulaAccepted == 1 ] ; then
+    54	    if [ $NUMBER_OF_ARGS -eq 0 ] ; then
+    55	      exec "$BIN" $EXTRA_ARGS
+    56	    else
+    57	      exec "$BIN" $EXTRA_ARGS "${args[@]}"
+    58	    fi
+    59	  fi
+    60	}
+    61	
+    62	error()
+    63	{
+    64	  if [ -x /usr/bin/zenity ] ; then
+    65	    LD_LIBRARY_PATH="" zenity --error --text "${1}" 2>/dev/null
+    66	  elif [ -x /usr/bin/kdialog ] ; then
+    67	    LD_LIBRARY_PATH="" kdialog --msgbox "${1}" 2>/dev/null
+    68	  elif [ -x /usr/bin/Xdialog ] ; then
+    69	    LD_LIBRARY_PATH="" Xdialog --msgbox "${1}" 2>/dev/null
+    70	  else
+    71	    echo "${1}"
+    72	  fi
+    73	  exit 1
+    74	}
+    75	
+    76	yesno()
+    77	{
+    78	  TITLE=$1
+    79	  TEXT=$2
+    80	  if [ -x /usr/bin/zenity ] ; then
+    81	    LD_LIBRARY_PATH="" zenity --question --title="$TITLE" --text="$TEXT" 2>/dev/null || exit 0
+    82	  elif [ -x /usr/bin/kdialog ] ; then
+    83	    LD_LIBRARY_PATH="" kdialog --title "$TITLE" --yesno "$TEXT" || exit 0
+    84	  elif [ -x /usr/bin/Xdialog ] ; then
+    85	    LD_LIBRARY_PATH="" Xdialog --title "$TITLE" --clear --yesno "$TEXT" 10 80 || exit 0
+    86	  else
+    87	    echo "zenity, kdialog, Xdialog missing. Skipping ${THIS}."
+    88	    exit 0
+    89	  fi
+    90	}
+    91	
+    92	check_dep()
+    93	{
+    94	  DEP=$1
+    95	  if [ -z $(which "$DEP") ] ; then
+    96	    echo "$DEP is missing. Skipping ${THIS}."
+    97	    exit 0
+    98	  fi
+    99	}
+   100	
+   101	if [ -z "$APPIMAGE" ] ; then
+   102	  APPIMAGE="$APPDIR/AppRun"
+   103	  # not running from within an AppImage; hence using the AppRun for Exec=
+   104	fi
+   105	
+--- the AppImage's own .desktop
+[Desktop Entry]
+Name=HelloPear
+Exec=HelloPear
+Terminal=false
+Type=Application
+Icon=HelloPear
+StartupWMClass=hellopear
+X-AppImage-Version=1.0.0
+Comment=
+Categories=Utility
+MimeType=x-scheme-handler/hello-pear-electron
+--- chrome-sandbox and top level
+total 271576
+drwx------ 5 root root      4096 Nov 19 12:33 .
+drwxr-xr-x 3 root root      4096 Nov 19 12:33 ..
+lrwxrwxrwx 1 root root        50 Nov 19 12:33 .DirIcon -> usr/share/icons/hicolor/512x512/apps/HelloPear.png
+-rwxr-xr-x 1 root root      2663 Nov 19 12:33 AppRun
+-rwxr-xr-x 1 root root 220253400 Nov 19 12:33 HelloPear
+-rw-r--r-- 1 root root       217 Nov 19 12:33 HelloPear.desktop
+lrwxrwxrwx 1 root root        50 Nov 19 12:33 HelloPear.png -> usr/share/icons/hicolor/512x512/apps/HelloPear.png
+-rw-r--r-- 1 root root      1096 Nov 19 12:33 LICENSE
+-rw-r--r-- 1 root root  20008860 Nov 19 12:33 LICENSES.chromium.html
+-rwxr-xr-x 1 root root     15232 Nov 19 12:33 chrome-sandbox
+-rw-r--r-- 1 root root    120284 Nov 19 12:33 chrome_100_percent.pak
+-rw-r--r-- 1 root root    198601 Nov 19 12:33 chrome_200_percent.pak
+-rwxr-xr-x 1 root root   1906240 Nov 19 12:33 chrome_crashpad_handler
+-rw-r--r-- 1 root root  10876560 Nov 19 12:33 icudtl.dat
+-rwxr-xr-x 1 root root    256744 Nov 19 12:33 libEGL.so
+-rwxr-xr-x 1 root root   6460064 Nov 19 12:33 libGLESv2.so
+-rwxr-xr-x 1 root root   2714344 Nov 19 12:33 libffmpeg.so
+-rwxr-xr-x 1 root root   4636360 Nov 19 12:33 libvk_swiftshader.so
+-rwxr-xr-x 1 root root   2450616 Nov 19 12:33 libvulkan.so.1
+drwx------ 2 root root      4096 Nov 19 12:33 locales
+drwx------ 3 root root      4096 Nov 19 12:33 resources
+-rw-r--r-- 1 root root   7058669 Nov 19 12:33 resources.pak
+-rw-r--r-- 1 root root    346664 Nov 19 12:33 snapshot_blob.bin
+drwx------ 4 root root      4096 Nov 19 12:33 usr
+-rw-r--r-- 1 root root    721416 Nov 19 12:33 v8_context_snapshot.bin
+-rw-r--r-- 1 root root         8 Nov 19 12:33 version
+-rw-r--r-- 1 root root       107 Nov 19 12:33 vk_swiftshader_icd.json
+-rwxr-xr-x 1 root root 15232 Nov 19 12:33 /var/tmp/s2/extract/squashfs-root/chrome-sandbox
+--- runtime type, and the FUSE library and helper its first 256 KiB name
+000000 7f 45 4c 46 02 01 01 00 41 49 02 00 00 00 00 00  >.ELF....AI......<
+000010
+      6 libfuse.so.2
+======== [S2 12:33:37] run the AppImage as is (needs FUSE) ========
+$ timeout 30 xvfb-run -a /var/tmp/s2/home/.local/bin/HelloPear.AppImage
+dlopen(): error loading libfuse.so.2
+AppImages require FUSE to run. 
+You might still be able to extract the contents of this AppImage 
+if you run it with the --appimage-extract option. 
+See https://github.com/AppImage/AppImageKit/wiki/FUSE 
+for more information
+[exit 1]
+======== [S2 12:33:37] --appimage-extract-and-run as root, sandbox not disabled ========
+$ timeout 40 xvfb-run -a /var/tmp/s2/home/.local/bin/HelloPear.AppImage --appimage-extract-and-run
+[1119/123341.667572:FATAL:electron/shell/app/electron_main_delegate.cc:219] Running as root without --no-sandbox is not supported. See https://crbug.com/638180.
+[exit 127]
+PHASE OK: launch-checks
+======== [S2 12:33:44] start app (run1): --appimage-extract-and-run --no-sandbox under xvfb (sandbox off) ========
+app pid/pgid 2797
+--- app processes (args cut at 220 chars)
+   2756       1    2745 [Xvfb] <defunct>
+   2774       1    2763 [Xvfb] <defunct>
+   2797      96    2797 /bin/sh /usr/bin/xvfb-run -a -s -screen 0 1280x800x24 /var/tmp/s2/home/.local/bin/HelloPear.AppImage --appimage-extract-and-run --no-sandbox
+   2808    2797    2797 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -auth /tmp/custom-executor979667869/xvfb-run.tL44nS/Xauthority
+   2811    2797    2797 /var/tmp/s2/home/.local/bin/HelloPear.AppImage --appimage-extract-and-run --no-sandbox
+   2812    2811    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/HelloPear --no-sandbox
+   2814    2812    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/HelloPear --type=zygote --no-zygote-sandbox --no-sandbox
+   2815    2812    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/HelloPear --type=zygote --no-sandbox
+   2836    2814    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/HelloPear --type=gpu-process --no-sandbox --ozone-platform=x11 --enable-crash-reporter=bd537b9e-5487-4296-ad79-59b
+   2840    2812    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/HelloPear --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none 
+   2846    2815    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/HelloPear --type=renderer --enable-crash-reporter=bd537b9e-5487-4296-ad79-59b0d72600b4,no_channel --user-data-dir=
+   2900    2812    2797 /tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/node_modules/bare-sidecar/prebuilds/linux-x64/bare /tmp/custom-executor979667869/appimage_extracted_
+
+======== [S2 12:34:01] events so far (run1) ========
+{"bare": "v1.37.1", "boot": "2900-1795091630117", "config": {"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "dir": "/var/tmp/s2/home/.config/HelloPear", "name": "HelloPear.AppImage", "updates": true, "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.0"}, "ev": "worker-start", "host": "linux-x64", "modules": {"hyperdrive": "13.3.4", "hyperswarm": "4.17.2", "pear-runtime": "<PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by \"exports\" in 'file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/node_modules/pear-runtime/package.json'>", "pear-runtime-updater": "<PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by \"exports\" in 'file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/node_modules/pear-runtime-updater/package.json'>"}, "seq": 0, "sha256Streaming": true, "t": "2026-11-19T12:33:50.130Z", "updater": {"bootGracePeriodMs": 60000, "bundled": true, "delayDefaultMs": 3600000, "delayDrawnMs": 1224, "link": "pear://0.0.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+{"args": ["error", "<function anonymous>"], "boot": "2900-1795091630117", "ev": "updater-event", "name": "newListener", "seq": 1, "t": "2026-11-19T12:33:50.132Z"}
+{"boot": "2900-1795091630117", "ev": "join-peer", "seeder": "sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy", "seq": 2, "t": "2026-11-19T12:33:50.136Z"}
+{"args": ["update-scheduled", "<function anonymous>"], "boot": "2900-1795091630117", "ev": "updater-event", "name": "newListener", "seq": 3, "t": "2026-11-19T12:33:50.137Z"}
+{"args": ["updating", "<function anonymous>"], "boot": "2900-1795091630117", "ev": "updater-event", "name": "newListener", "seq": 4, "t": "2026-11-19T12:33:50.137Z"}
+{"args": ["updated", "<function anonymous>"], "boot": "2900-1795091630117", "ev": "updater-event", "name": "newListener", "seq": 5, "t": "2026-11-19T12:33:50.137Z"}
+{"args": ["minver-required", "<function anonymous>"], "boot": "2900-1795091630117", "ev": "pear-event", "name": "newListener", "seq": 6, "t": "2026-11-19T12:33:50.137Z"}
+{"boot": "2900-1795091630117", "coreFork": 0, "coreLength": 0, "ev": "skipUpdate-called", "seq": 7, "t": "2026-11-19T12:33:50.238Z", "updated": false, "updating": false}
+{"args": [], "boot": "2900-1795091630117", "ev": "updater-event", "name": "ready", "seq": 8, "t": "2026-11-19T12:33:50.238Z"}
+{"args": [], "boot": "2900-1795091630117", "ev": "pear-event", "name": "ready", "seq": 9, "t": "2026-11-19T12:33:50.242Z"}
+{"boot": "2900-1795091630117", "drive": {"corePeers": 0, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 0, "verlink": null}, "ev": "pear-ready", "seq": 10, "storage": "/var/tmp/s2/home/.config/HelloPear/app-storage", "t": "2026-11-19T12:33:50.242Z"}
+{"boot": "2900-1795091630117", "empty": true, "ev": "read-ahead", "seq": 11, "t": "2026-11-19T12:33:50.243Z", "trigger": "startup"}
+{"boot": "2900-1795091630117", "connections": 1, "ev": "swarm-connection", "remote": "sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy", "seq": 12, "t": "2026-11-19T12:33:51.272Z"}
+{"args": [1224], "boot": "2900-1795091630117", "ev": "updater-event", "name": "update-scheduled", "seq": 13, "t": "2026-11-19T12:33:51.292Z"}
+{"boot": "2900-1795091630117", "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 3, "verlink": "pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "drive-append", "seq": 14, "t": "2026-11-19T12:33:51.292Z"}
+{"boot": "2900-1795091630117", "coreFork": 0, "coreLength": 3, "ev": "skipUpdate-called", "seq": 15, "t": "2026-11-19T12:33:51.293Z", "updated": false, "updating": false}
+{"artifact": "/by-arch/linux-x64/app/HelloPear.AppImage", "boot": "2900-1795091630117", "entry": {"key": "/by-arch/linux-x64/app/HelloPear.AppImage", "seq": 1, "value": {"blob": {"blockLength": 1, "blockMap": true, "blockOffset": 111, "byteLength": 668, "byteOffset": 154159476}, "executable": true, "linkname": null, "metadata": null}}, "ev": "read-ahead", "files": [{"bytes": 668, "executable": true, "path": "/by-arch/linux-x64/app/HelloPear.AppImage"}, {"bytes": 6, "executable": false, "path": "/package.json"}], "hashMs": 2000, "seq": 16, "sha256": "58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364", "t": "2026-11-19T12:33:53.316Z", "trigger": "update-scheduled", "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "verlink": "pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.0"}
+{"boot": "2900-1795091630117", "connections": 1, "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 3, "verlink": "pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "status", "next": null, "seq": 17, "t": "2026-11-19T12:33:55.138Z", "updated": false, "updating": false}
+next-line 18
+PHASE OK: run1
+======== [S2 12:34:01] make 1.0.1 (appimage) ========
+$ bash -o pipefail -c timeout 1500 npx electron-forge make --targets pear-electron-forge-maker-appimage 2>&1 | tail -30
+✔ Running packaging hooks
+❯ Packaging application
+› Determining targets...
+❯ Packaging for x64 on linux
+❯ Copying files
+✔ Copying files
+❯ Preparing native dependencies
+✔ Preparing native dependencies
+❯ Finalizing package
+✔ Finalizing package
+✔ Packaging for x64 on linux
+✔ Packaging application
+❯ Running postPackage hook
+✔ Running postPackage hook
+✔ Running package command
+❯ Running preMake hook
+❯ Running preMake hook from forgeConfig
+✔ Running preMake hook from forgeConfig
+✔ Running preMake hook
+❯ Making distributables
+❯ Making a appImage distributable for linux/x64
+  • building embedded block map  file=out/make/HelloPear-1.0.1-x64.AppImage
+✔ Making a appImage distributable for linux/x64
+✔ Making distributables
+❯ Running postMake hook
+› Artifacts available at: /var/tmp/s2/dl-template/app/out/make
+✔ Running postMake hook
+❯ Saving make results
+› Make results saved to: /var/tmp/s2/dl-template/app/out/make-results
+✔ Saving make results
+[exit 0]
+--- out/ (depth 2)
+d         4096 .
+d         4096 ./HelloPear-linux-x64
+f    220253400 ./HelloPear-linux-x64/HelloPear
+f         1096 ./HelloPear-linux-x64/LICENSE
+f     20008860 ./HelloPear-linux-x64/LICENSES.chromium.html
+f        15232 ./HelloPear-linux-x64/chrome-sandbox
+f       120284 ./HelloPear-linux-x64/chrome_100_percent.pak
+f       198601 ./HelloPear-linux-x64/chrome_200_percent.pak
+f      1906240 ./HelloPear-linux-x64/chrome_crashpad_handler
+f     10876560 ./HelloPear-linux-x64/icudtl.dat
+f       256744 ./HelloPear-linux-x64/libEGL.so
+f      6460064 ./HelloPear-linux-x64/libGLESv2.so
+f      2714344 ./HelloPear-linux-x64/libffmpeg.so
+f      4636360 ./HelloPear-linux-x64/libvk_swiftshader.so
+f      2450616 ./HelloPear-linux-x64/libvulkan.so.1
+d         4096 ./HelloPear-linux-x64/locales
+d         4096 ./HelloPear-linux-x64/resources
+f      7058669 ./HelloPear-linux-x64/resources.pak
+f       346664 ./HelloPear-linux-x64/snapshot_blob.bin
+f       721416 ./HelloPear-linux-x64/v8_context_snapshot.bin
+f            8 ./HelloPear-linux-x64/version
+f          107 ./HelloPear-linux-x64/vk_swiftshader_icd.json
+d         4096 ./make
+d         4096 ./make-results
+f         2922 ./make-results/f357a75ba0d8e768061d82c35557564c1e3b008dac6e6e14b1759cc357d5908c.forge-make.json
+f    154159477 ./make/HelloPear-1.0.1-x64.AppImage
+forge AppImage: /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.1-x64.AppImage sha256=4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950
+STATE FORGE_AIMG_1_0_1=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.1-x64.AppImage
+STATE SHA_1_0_1=4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950
+======== [S2 12:34:25] pear build 1.0.1 ========
+$ timeout 300 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dist/1.0.1/HelloPear.AppImage --target /var/tmp/s2/builds/hello-pear-electron-1.0.1 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.1","target":"/var/tmp/s2/builds/hello-pear-electron-1.0.1"}}
+{"cmd":"build","tag":"executable","data":{"file":"/var/tmp/s2/builds/hello-pear-electron-1.0.1/by-arch/linux-x64/app/HelloPear.AppImage","origin":"/var/tmp/s2/dist/1.0.1/HelloPear.AppImage"}}
+{"cmd":"build","tag":"final","data":{"success":true}}
+[exit 0]
+--- deployment folder /var/tmp/s2/builds/hello-pear-electron-1.0.1
+d         4096 755 .
+d         4096 755 ./by-arch
+d         4096 755 ./by-arch/linux-x64
+d         4096 755 ./by-arch/linux-x64/app
+f    154159477 755 ./by-arch/linux-x64/app/HelloPear.AppImage
+f         2470 644 ./package.json
+4426ae05538f1413faa9b930ee77babe77bfc94593ac809185a12356f4afe332  package.json
+4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950  by-arch/linux-x64/app/HelloPear.AppImage
+{'name': 'hello-pear-electron', 'productName': 'HelloPear', 'version': '1.0.1', 'upgrade': 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o', 'main': 'electron/main.js'}
+======== [S2 12:34:27] pear stage --dry-run 1.0.1 ========
+$ bash -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' stage --dry-run --json 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' '/var/tmp/s2/builds/hello-pear-electron-1.0.1' </dev/null > '/var/tmp/s2/logs/stage-dry-1.0.1.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","current":3,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.1"}}
+{"cmd":"stage","tag":"dry"}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-154159476,154159477],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-2470,2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":0,"remove":0,"change":2,"length":3,"byteLength":397,"blobs":{"length":114,"fork":0,"byteLength":154162620}}}
+{"cmd":"stage","tag":"skipping","data":{"reason":"dry-run","success":true}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":true}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+======== [S2 12:34:27] pear stage 1.0.1 ========
+$ bash -c timeout 900 '/var/tmp/s2/home/.local/bin/pear' stage --json 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' '/var/tmp/s2/builds/hello-pear-electron-1.0.1' </dev/null > '/var/tmp/s2/logs/stage-1.0.1.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","current":3,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.1"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-154159476,154159477],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-2470,2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":0,"remove":0,"change":2,"length":5,"byteLength":782,"blobs":{"length":121,"fork":0,"byteLength":159886869}}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":false}}
+{"cmd":"stage","tag":"addendum","data":{"version":5,"key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+STATE VERLINK_1_0_1=pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear info pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Info:          pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Verlink:       pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  App:           hello-pear-electron@1.0.1
+  Product Name:  HelloPear
+  Writable:      true
+  Targets:
+    linux-x64 (154.2MB)
+  Drive Key:     3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Drive Fork:    0
+  Drive Length:  5
+  Drive Size:    782B
+  Blobs Key:     ok4rasj3zhsxhhfnw5jczcnuoit9zb8da5gbqd8qyjqjwqbx517y
+  Blobs Fork:    0
+  Blobs Length:  121
+  Blobs Size:    159.9MB
+  Discovery Key: moemepxfuuai6ktp454rdfo1smf8shatq4jy67ar3t1gafg57uxy
+  Upgrade:       pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+✔ Success
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear dump --list pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+🍐 Output pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+/by-arch/linux-x64/app/HelloPear.AppImage
+/package.json
+✔ Success
+[exit 0]
+======== [S2 12:34:35] waiting for the running app's updater to hold pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o (1.0.1) ========
+{"args": [1224], "boot": "2900-1795091630117", "ev": "updater-event", "name": "update-scheduled", "seq": 18, "t": "2026-11-19T12:34:29.269Z"}
+{"boot": "2900-1795091630117", "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "drive-append", "seq": 19, "t": "2026-11-19T12:34:29.270Z"}
+{"boot": "2900-1795091630117", "coreFork": 0, "coreLength": 5, "ev": "skipUpdate-called", "seq": 20, "t": "2026-11-19T12:34:29.271Z", "updated": false, "updating": false}
+{"args": [], "boot": "2900-1795091630117", "ev": "updater-event", "name": "updating", "seq": 21, "t": "2026-11-19T12:34:29.280Z"}
+{"args": [{"download": {"blocks": 0, "bytes": 0, "progress": 0, "speed": 0}, "peers": 1, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "2900-1795091630117", "ev": "updater-event", "name": "updating-progress", "seq": 22, "t": "2026-11-19T12:34:29.281Z"}
+{"args": [{"bytesAdded": 154159477, "bytesRemoved": 0, "key": "/by-arch/linux-x64/app/HelloPear.AppImage", "op": "add"}], "boot": "2900-1795091630117", "ev": "updater-event", "name": "updating-delta", "seq": 23, "t": "2026-11-19T12:34:29.288Z"}
+{"args": [{"download": {"blocks": 4, "bytes": 5268106, "progress": 0.03571428571428571, "speed": 5268106}, "peers": 1, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "2900-1795091630117", "ev": "updater-event", "name": "updating-progress", "seq": 24, "t": "2026-11-19T12:34:29.544Z"}
+  ... 1 more updating-progress events ...
+{"args": [{"download": {"blocks": 5, "bytes": 5721773, "progress": 0.044642857142857144, "speed": 4577418.4}, "peers": 1, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "2900-1795091630117", "ev": "updater-event", "name": "updating-progress", "seq": 26, "t": "2026-11-19T12:34:30.057Z"}
+{"boot": "2900-1795091630117", "connections": 1, "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "status", "next": null, "seq": 27, "t": "2026-11-19T12:34:30.144Z", "updated": false, "updating": true}
+{"artifact": "/by-arch/linux-x64/app/HelloPear.AppImage", "boot": "2900-1795091630117", "entry": {"key": "/by-arch/linux-x64/app/HelloPear.AppImage", "seq": 3, "value": {"blob": {"blockLength": 1, "blockMap": true, "blockOffset": 118, "byteLength": 668, "byteOffset": 159883725}, "executable": true, "linkname": null, "metadata": null}}, "ev": "read-ahead", "files": [{"bytes": 668, "executable": true, "path": "/by-arch/linux-x64/app/HelloPear.AppImage"}, {"bytes": 6, "executable": false, "path": "/package.json"}], "hashMs": 946, "seq": 28, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "t": "2026-11-19T12:34:30.228Z", "trigger": "update-scheduled", "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+{"args": [], "boot": "2900-1795091630117", "ev": "updater-event", "name": "updated", "seq": 29, "t": "2026-11-19T12:34:30.230Z"}
+{"boot": "2900-1795091630117", "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "gate-candidate", "file": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/5.0/by-arch/linux-x64/app/HelloPear.AppImage", "hashMs": 854, "id": "5.0", "next": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/5.0", "nextListing": [{"mode": "755", "path": "/by-arch/linux-x64/app/HelloPear.AppImage", "size": 154159477}], "seq": 30, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "size": 154159477, "t": "2026-11-19T12:34:31.091Z", "updater": {"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "applied": false, "bundled": true, "length": 5, "nextVersion": "1.0.1", "updated": true, "updating": false}, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+{"boot": "2900-1795091630117", "ev": "gate-held", "reason": "no release notice names this build", "seq": 31, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "t": "2026-11-19T12:34:32.155Z", "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+{"boot": "2900-1795091630117", "connections": 1, "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "status", "next": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/5.0", "seq": 32, "t": "2026-11-19T12:34:35.145Z", "updated": true, "updating": false}
+next-line 33
+stage verlink:   pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+build sha256:    4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950
+installed now:   58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364
+PHASE OK: update2
+======== [S2 12:34:41] hold: no notice for 60 s ========
+next-line 33
+installed sha256 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364 (1.0.0 = 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364)
+total 12
+drwxr-xr-x 3 root root 4096 Nov 19 12:34 .
+drwxr-xr-x 4 root root 4096 Nov 19 12:34 ..
+drwxr-xr-x 3 root root 4096 Nov 19 12:34 5.0
+PHASE OK: hold
+======== [S2 12:35:42] stop app (run1) ========
+--- leftover app processes
+   2811    2797 [HelloPear.AppIm] <defunct>
+   2812    2797 [HelloPear] <defunct>
+   2814    2797 [HelloPear] <defunct>
+   2815    2797 [HelloPear] <defunct>
+   2836    2797 [HelloPear] <defunct>
+   2840    2797 [HelloPear] <defunct>
+   2846    2797 [HelloPear] <defunct>
+--- app log (filtered)
+[2836:1119/123348.835468:WARNING:sandbox/policy/linux/sandbox_linux.cc:404] InitializeSandbox() called with multiple threads in process gpu-process.
+[2836:1119/123348.839569:WARNING:ui/gfx/linux/gbm_support_x11.cc:48] dri3 extension not supported.
+[2812:1119/123350.146260:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: Hello from worker", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[2812:1119/123350.148572:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: unknown-message Hello from renderer", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[2812:1119/123351.294152:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-scheduled 1224", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[2812:1119/123429.272124:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-scheduled 1224", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[2812:1119/123429.282869:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: updating", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[2812:1119/123430.231456:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: updated", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[2812:1119/123432.157566:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-held no release notice names this build", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+after stop: installed sha256 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364 (1.0.0 = 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364)
+total 12
+drwxr-xr-x 3 root root 4096 Nov 19 12:34 .
+drwxr-xr-x 4 root root 4096 Nov 19 12:34 ..
+drwxr-xr-x 3 root root 4096 Nov 19 12:34 5.0
+======== [S2 12:35:45] start app (run2): --appimage-extract-and-run --no-sandbox under xvfb (sandbox off) ========
+app pid/pgid 3212
+{"bare": "v1.37.1", "boot": "3313-1795091748074", "config": {"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "dir": "/var/tmp/s2/home/.config/HelloPear", "name": "HelloPear.AppImage", "updates": true, "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.0"}, "ev": "worker-start", "host": "linux-x64", "modules": {"hyperdrive": "13.3.4", "hyperswarm": "4.17.2", "pear-runtime": "<PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by \"exports\" in 'file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/node_modules/pear-runtime/package.json'>", "pear-runtime-updater": "<PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by \"exports\" in 'file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/node_modules/pear-runtime-updater/package.json'>"}, "seq": 0, "sha256Streaming": true, "t": "2026-11-19T12:35:48.086Z", "updater": {"bootGracePeriodMs": 60000, "bundled": true, "delayDefaultMs": 3600000, "delayDrawnMs": 4811, "link": "pear://0.0.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+{"args": ["error", "<function anonymous>"], "boot": "3313-1795091748074", "ev": "updater-event", "name": "newListener", "seq": 1, "t": "2026-11-19T12:35:48.087Z"}
+{"boot": "3313-1795091748074", "ev": "join-peer", "seeder": "sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy", "seq": 2, "t": "2026-11-19T12:35:48.091Z"}
+{"args": ["update-scheduled", "<function anonymous>"], "boot": "3313-1795091748074", "ev": "updater-event", "name": "newListener", "seq": 3, "t": "2026-11-19T12:35:48.091Z"}
+{"args": ["updating", "<function anonymous>"], "boot": "3313-1795091748074", "ev": "updater-event", "name": "newListener", "seq": 4, "t": "2026-11-19T12:35:48.091Z"}
+{"args": ["updated", "<function anonymous>"], "boot": "3313-1795091748074", "ev": "updater-event", "name": "newListener", "seq": 5, "t": "2026-11-19T12:35:48.091Z"}
+{"args": ["minver-required", "<function anonymous>"], "boot": "3313-1795091748074", "ev": "pear-event", "name": "newListener", "seq": 6, "t": "2026-11-19T12:35:48.091Z"}
+{"boot": "3313-1795091748074", "coreFork": 0, "coreLength": 5, "ev": "skipUpdate-called", "seq": 7, "t": "2026-11-19T12:35:48.323Z", "updated": false, "updating": false}
+{"args": [], "boot": "3313-1795091748074", "ev": "updater-event", "name": "ready", "seq": 8, "t": "2026-11-19T12:35:48.323Z"}
+{"args": [], "boot": "3313-1795091748074", "ev": "pear-event", "name": "ready", "seq": 9, "t": "2026-11-19T12:35:48.325Z"}
+{"boot": "3313-1795091748074", "drive": {"corePeers": 0, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "pear-ready", "seq": 10, "storage": "/var/tmp/s2/home/.config/HelloPear/app-storage", "t": "2026-11-19T12:35:48.326Z"}
+{"args": [], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating", "seq": 11, "t": "2026-11-19T12:35:48.332Z"}
+{"args": [{"download": {"blocks": 0, "bytes": 0, "progress": 0, "speed": 0}, "peers": 0, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-progress", "seq": 12, "t": "2026-11-19T12:35:48.333Z"}
+{"args": [{"bytesAdded": 154159477, "bytesRemoved": 0, "key": "/by-arch/linux-x64/app/HelloPear.AppImage", "op": "add"}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-delta", "seq": 13, "t": "2026-11-19T12:35:48.339Z"}
+{"args": [{"download": {"blocks": 0, "bytes": 0, "progress": 0, "speed": 0}, "peers": 0, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-progress", "seq": 14, "t": "2026-11-19T12:35:48.587Z"}
+  ... 2 more updating-progress events ...
+{"args": [{"download": {"blocks": 0, "bytes": 0, "progress": 0, "speed": 0}, "peers": 0, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-progress", "seq": 17, "t": "2026-11-19T12:35:49.341Z"}
+{"artifact": "/by-arch/linux-x64/app/HelloPear.AppImage", "boot": "3313-1795091748074", "entry": {"key": "/by-arch/linux-x64/app/HelloPear.AppImage", "seq": 3, "value": {"blob": {"blockLength": 1, "blockMap": true, "blockOffset": 118, "byteLength": 668, "byteOffset": 159883725}, "executable": true, "linkname": null, "metadata": null}}, "ev": "read-ahead", "files": [{"bytes": 668, "executable": true, "path": "/by-arch/linux-x64/app/HelloPear.AppImage"}, {"bytes": 6, "executable": false, "path": "/package.json"}], "hashMs": 1014, "seq": 18, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "t": "2026-11-19T12:35:49.350Z", "trigger": "startup", "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+{"args": [], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updated", "seq": 19, "t": "2026-11-19T12:35:49.352Z"}
+{"boot": "3313-1795091748074", "connections": 1, "ev": "swarm-connection", "remote": "sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy", "seq": 20, "t": "2026-11-19T12:35:49.571Z"}
+{"boot": "3313-1795091748074", "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "gate-candidate", "file": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/5.0/by-arch/linux-x64/app/HelloPear.AppImage", "hashMs": 839, "id": "5.0", "next": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/5.0", "nextListing": [{"mode": "755", "path": "/by-arch/linux-x64/app/HelloPear.AppImage", "size": 154159477}], "seq": 21, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "size": 154159477, "t": "2026-11-19T12:35:50.193Z", "updater": {"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "applied": false, "bundled": true, "length": 5, "nextVersion": "1.0.1", "updated": true, "updating": false}, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+{"boot": "3313-1795091748074", "ev": "gate-held", "reason": "no release notice names this build", "seq": 22, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "t": "2026-11-19T12:35:52.092Z", "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+{"boot": "3313-1795091748074", "connections": 1, "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 5, "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "status", "next": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/5.0", "seq": 23, "t": "2026-11-19T12:35:53.092Z", "updated": true, "updating": false}
+next-line 59
+after restart: installed sha256 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364 (1.0.0 = 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364)
+PHASE OK: restart-held
+======== [S2 12:35:56] a notice naming 1.0.1 with the wrong sha256 ========
+notice: {"verlink":"pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","sha256":{"linux-x64":"0000000000000000000000000000000000000000000000000000000000000000"}}
+{"boot": "3313-1795091748074", "ev": "gate-held", "reason": "sha256 mismatch: the notice says 0000000000000000000000000000000000000000000000000000000000000000", "seq": 24, "sha256": "4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950", "t": "2026-11-19T12:35:58.095Z", "verlink": "pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.1"}
+next-line 60
+installed sha256 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364 (1.0.0 = 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364)
+PHASE OK: wrong-notice
+======== [S2 12:36:12] make 1.0.2 (appimage) ========
+$ bash -o pipefail -c timeout 1500 npx electron-forge make --targets pear-electron-forge-maker-appimage 2>&1 | tail -30
+✔ Running packaging hooks
+❯ Packaging application
+› Determining targets...
+❯ Packaging for x64 on linux
+❯ Copying files
+✔ Copying files
+❯ Preparing native dependencies
+✔ Preparing native dependencies
+❯ Finalizing package
+✔ Finalizing package
+✔ Packaging for x64 on linux
+✔ Packaging application
+❯ Running postPackage hook
+✔ Running postPackage hook
+✔ Running package command
+❯ Running preMake hook
+❯ Running preMake hook from forgeConfig
+✔ Running preMake hook from forgeConfig
+✔ Running preMake hook
+❯ Making distributables
+❯ Making a appImage distributable for linux/x64
+  • building embedded block map  file=out/make/HelloPear-1.0.2-x64.AppImage
+✔ Making a appImage distributable for linux/x64
+✔ Making distributables
+❯ Running postMake hook
+› Artifacts available at: /var/tmp/s2/dl-template/app/out/make
+✔ Running postMake hook
+❯ Saving make results
+› Make results saved to: /var/tmp/s2/dl-template/app/out/make-results
+✔ Saving make results
+[exit 0]
+--- out/ (depth 2)
+d         4096 .
+d         4096 ./HelloPear-linux-x64
+f    220253400 ./HelloPear-linux-x64/HelloPear
+f         1096 ./HelloPear-linux-x64/LICENSE
+f     20008860 ./HelloPear-linux-x64/LICENSES.chromium.html
+f        15232 ./HelloPear-linux-x64/chrome-sandbox
+f       120284 ./HelloPear-linux-x64/chrome_100_percent.pak
+f       198601 ./HelloPear-linux-x64/chrome_200_percent.pak
+f      1906240 ./HelloPear-linux-x64/chrome_crashpad_handler
+f     10876560 ./HelloPear-linux-x64/icudtl.dat
+f       256744 ./HelloPear-linux-x64/libEGL.so
+f      6460064 ./HelloPear-linux-x64/libGLESv2.so
+f      2714344 ./HelloPear-linux-x64/libffmpeg.so
+f      4636360 ./HelloPear-linux-x64/libvk_swiftshader.so
+f      2450616 ./HelloPear-linux-x64/libvulkan.so.1
+d         4096 ./HelloPear-linux-x64/locales
+d         4096 ./HelloPear-linux-x64/resources
+f      7058669 ./HelloPear-linux-x64/resources.pak
+f       346664 ./HelloPear-linux-x64/snapshot_blob.bin
+f       721416 ./HelloPear-linux-x64/v8_context_snapshot.bin
+f            8 ./HelloPear-linux-x64/version
+f          107 ./HelloPear-linux-x64/vk_swiftshader_icd.json
+d         4096 ./make
+d         4096 ./make-results
+f         2922 ./make-results/f78a7082f3b4450822fa049bec0220e1825681784a425b1f5c307ca7e3fd682c.forge-make.json
+f    154159476 ./make/HelloPear-1.0.2-x64.AppImage
+forge AppImage: /var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.2-x64.AppImage sha256=afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8
+STATE FORGE_AIMG_1_0_2=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.2-x64.AppImage
+STATE SHA_1_0_2=afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8
+======== [S2 12:36:36] pear build 1.0.2 ========
+$ timeout 300 /var/tmp/s2/home/.local/bin/pear build --package /var/tmp/s2/dl-template/app/package.json --linux-x64-app /var/tmp/s2/dist/1.0.2/HelloPear.AppImage --target /var/tmp/s2/builds/hello-pear-electron-1.0.2 --json
+{"cmd":"build","tag":"building","data":{"name":"HelloPear","version":"1.0.2","target":"/var/tmp/s2/builds/hello-pear-electron-1.0.2"}}
+{"cmd":"build","tag":"executable","data":{"file":"/var/tmp/s2/builds/hello-pear-electron-1.0.2/by-arch/linux-x64/app/HelloPear.AppImage","origin":"/var/tmp/s2/dist/1.0.2/HelloPear.AppImage"}}
+{"cmd":"build","tag":"final","data":{"success":true}}
+[exit 0]
+--- deployment folder /var/tmp/s2/builds/hello-pear-electron-1.0.2
+d         4096 755 .
+d         4096 755 ./by-arch
+d         4096 755 ./by-arch/linux-x64
+d         4096 755 ./by-arch/linux-x64/app
+f    154159476 755 ./by-arch/linux-x64/app/HelloPear.AppImage
+f         2470 644 ./package.json
+5a1cbfc7b20fd961d606f10499c5b64f460a089edb11ae92b17faac6acd7abb3  package.json
+afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8  by-arch/linux-x64/app/HelloPear.AppImage
+{'name': 'hello-pear-electron', 'productName': 'HelloPear', 'version': '1.0.2', 'upgrade': 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o', 'main': 'electron/main.js'}
+======== [S2 12:36:38] pear stage --dry-run 1.0.2 ========
+$ bash -c timeout 600 '/var/tmp/s2/home/.local/bin/pear' stage --dry-run --json 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' '/var/tmp/s2/builds/hello-pear-electron-1.0.2' </dev/null > '/var/tmp/s2/logs/stage-dry-1.0.2.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","current":5,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.2"}}
+{"cmd":"stage","tag":"dry"}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-154159477,154159476],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-2470,2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":0,"remove":0,"change":2,"length":5,"byteLength":782,"blobs":{"length":121,"fork":0,"byteLength":159886869}}}
+{"cmd":"stage","tag":"skipping","data":{"reason":"dry-run","success":true}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":true}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+======== [S2 12:36:38] pear stage 1.0.2 ========
+$ bash -c timeout 900 '/var/tmp/s2/home/.local/bin/pear' stage --json 'pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o' '/var/tmp/s2/builds/hello-pear-electron-1.0.2' </dev/null > '/var/tmp/s2/logs/stage-1.0.2.ndjson' 2>&1
+[exit 0]
+{"cmd":"stage","tag":"staging","data":{"name":"hello-pear-electron","key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","current":5,"dir":"/var/tmp/s2/builds/hello-pear-electron-1.0.2"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-154159477,154159476],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"stage","tag":"byte-diff","data":{"type":0,"sizes":[-2470,2470],"message":"/package.json"}}
+{"cmd":"stage","tag":"summary","data":{"files":2,"add":0,"remove":0,"change":2,"length":7,"byteLength":1167,"blobs":{"length":129,"fork":0,"byteLength":166735985}}}
+{"cmd":"stage","tag":"complete","data":{"dryRun":false}}
+{"cmd":"stage","tag":"addendum","data":{"version":7,"key":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","link":"pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","verlink":"pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+{"cmd":"stage","tag":"final","data":{"success":true}}
+STATE VERLINK_1_0_2=pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear info pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Info:          pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Verlink:       pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  App:           hello-pear-electron@1.0.2
+  Product Name:  HelloPear
+  Writable:      true
+  Targets:
+    linux-x64 (154.2MB)
+  Drive Key:     3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+  Drive Fork:    0
+  Drive Length:  7
+  Drive Size:    1.2kB
+  Blobs Key:     ok4rasj3zhsxhhfnw5jczcnuoit9zb8da5gbqd8qyjqjwqbx517y
+  Blobs Fork:    0
+  Blobs Length:  129
+  Blobs Size:    166.7MB
+  Discovery Key: moemepxfuuai6ktp454rdfo1smf8shatq4jy67ar3t1gafg57uxy
+  Upgrade:       pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+✔ Success
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear dump --list pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+🍐 Output pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+/by-arch/linux-x64/app/HelloPear.AppImage
+/package.json
+✔ Success
+[exit 0]
+======== [S2 12:36:44] waiting for the running app's updater to hold pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o (1.0.2) ========
+{"args": [4811], "boot": "3313-1795091748074", "ev": "updater-event", "name": "update-scheduled", "seq": 25, "t": "2026-11-19T12:36:40.285Z"}
+{"boot": "3313-1795091748074", "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 7, "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "drive-append", "seq": 26, "t": "2026-11-19T12:36:40.286Z"}
+{"boot": "3313-1795091748074", "coreFork": 0, "coreLength": 7, "ev": "skipUpdate-called", "seq": 27, "t": "2026-11-19T12:36:40.287Z", "updated": true, "updating": false}
+{"args": [], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating", "seq": 28, "t": "2026-11-19T12:36:40.298Z"}
+{"args": [{"download": {"blocks": 0, "bytes": 0, "progress": 0, "speed": 0}, "peers": 1, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-progress", "seq": 29, "t": "2026-11-19T12:36:40.298Z"}
+{"args": [{"bytesAdded": 154159476, "bytesRemoved": 0, "key": "/by-arch/linux-x64/app/HelloPear.AppImage", "op": "add"}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-delta", "seq": 30, "t": "2026-11-19T12:36:40.306Z"}
+{"args": [{"download": {"blocks": 2, "bytes": 1142497, "progress": 0.017857142857142856, "speed": 1142497}, "peers": 1, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-progress", "seq": 31, "t": "2026-11-19T12:36:40.549Z"}
+  ... 1 more updating-progress events ...
+{"args": [{"download": {"blocks": 6, "bytes": 6846640, "progress": 0.05357142857142857, "speed": 5477312}, "peers": 1, "upload": {"blocks": 0, "bytes": 0, "speed": 0}}], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updating-progress", "seq": 33, "t": "2026-11-19T12:36:41.052Z"}
+{"artifact": "/by-arch/linux-x64/app/HelloPear.AppImage", "boot": "3313-1795091748074", "entry": {"key": "/by-arch/linux-x64/app/HelloPear.AppImage", "seq": 5, "value": {"blob": {"blockLength": 1, "blockMap": true, "blockOffset": 126, "byteLength": 668, "byteOffset": 166732841}, "executable": true, "linkname": null, "metadata": null}}, "ev": "read-ahead", "files": [{"bytes": 668, "executable": true, "path": "/by-arch/linux-x64/app/HelloPear.AppImage"}, {"bytes": 6, "executable": false, "path": "/package.json"}], "hashMs": 953, "seq": 34, "sha256": "afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8", "t": "2026-11-19T12:36:41.252Z", "trigger": "update-scheduled", "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.2"}
+{"args": [], "boot": "3313-1795091748074", "ev": "updater-event", "name": "updated", "seq": 35, "t": "2026-11-19T12:36:41.253Z"}
+{"boot": "3313-1795091748074", "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 7, "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "gate-candidate", "file": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/7.0/by-arch/linux-x64/app/HelloPear.AppImage", "hashMs": 856, "id": "7.0", "next": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/7.0", "nextListing": [{"mode": "755", "path": "/by-arch/linux-x64/app/HelloPear.AppImage", "size": 154159476}], "seq": 36, "sha256": "afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8", "size": 154159476, "t": "2026-11-19T12:36:42.111Z", "updater": {"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "applied": false, "bundled": true, "length": 7, "nextVersion": "1.0.2", "updated": true, "updating": false}, "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.2"}
+{"boot": "3313-1795091748074", "connections": 1, "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 7, "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "status", "next": "/var/tmp/s2/home/.config/HelloPear/pear-runtime/next/7.0", "seq": 37, "t": "2026-11-19T12:36:43.098Z", "updated": true, "updating": false}
+{"boot": "3313-1795091748074", "ev": "gate-held", "reason": "the notice names pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "seq": 38, "sha256": "afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8", "t": "2026-11-19T12:36:44.099Z", "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.2"}
+next-line 74
+stage verlink:   pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+build sha256:    afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8
+installed now:   58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364
+PHASE OK: update3
+======== [S2 12:36:50] a correct notice for 1.0.1, after the updater moved on to 1.0.2 ========
+notice: {"verlink":"pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","sha256":{"linux-x64":"4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950"}}
+next-line 74
+installed sha256 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364 (1.0.0 = 58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364)
+PHASE OK: stale-notice
+======== [S2 12:37:06] the notice for 1.0.2: the gate applies ========
+notice: {"verlink":"pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","sha256":{"linux-x64":"afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8"}}
+{"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "boot": "3313-1795091748074", "ev": "gate-apply", "seq": 39, "sha256": "afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8", "t": "2026-11-19T12:37:08.948Z", "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}
+{"appSha256": "afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8", "applied": true, "boot": "3313-1795091748074", "ev": "gate-applied", "matches": true, "nextStillExists": false, "seq": 40, "t": "2026-11-19T12:37:09.729Z", "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}
+next-line 76
+installed sha256 afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8 (1.0.2 = afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8)
+/var/tmp/s2/home/.config/HelloPear/pear-runtime/next:
+total 12
+drwxr-xr-x 3 root root 4096 Nov 19 12:37 .
+drwxr-xr-x 4 root root 4096 Nov 19 12:35 ..
+drwxr-xr-x 3 root root 4096 Nov 19 12:35 5.0
+/var/tmp/s2/home/.local/bin:
+total 247904
+drwxr-xr-x 2 root root      4096 Nov 19 12:37 .
+drwxr-xr-x 4 root root      4096 Nov 19 12:30 ..
+-rwxr-xr-x 1 root root 154159476 Nov 19 12:36 HelloPear.AppImage
+-rwxr-xr-x 1 root root  99679496 Nov 19 12:28 pear
+PHASE OK: apply
+======== [S2 12:37:14] stop app (run2) ========
+--- leftover app processes
+   2811    2797 [HelloPear.AppIm] <defunct>
+   2812    2797 [HelloPear] <defunct>
+   2814    2797 [HelloPear] <defunct>
+   2815    2797 [HelloPear] <defunct>
+   2836    2797 [HelloPear] <defunct>
+   2840    2797 [HelloPear] <defunct>
+   2846    2797 [HelloPear] <defunct>
+   3226    3212 [HelloPear.AppIm] <defunct>
+   3227    3212 [HelloPear] <defunct>
+   3229    3212 [HelloPear] <defunct>
+   3230    3212 [HelloPear] <defunct>
+   3253    3212 [HelloPear] <defunct>
+   3256    3212 [HelloPear] <defunct>
+   3261    3212 [HelloPear] <defunct>
+--- app log (filtered)
+/tmp/custom-executor979667869/appimage_extracFile exists and file size matches, skipping
+File exists and file size matches, skipping
+File exists and file size matches, skipping
+File exists and file size matches, skipping
+[3253:1119/123546.760360:WARNING:sandbox/policy/linux/sandbox_linux.cc:404] InitializeSandbox() called with multiple threads in process gpu-process.
+[3253:1119/123546.763493:WARNING:ui/gfx/linux/gbm_support_x11.cc:48] dri3 extension not supported.
+[3227:1119/123548.098586:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: Hello from worker", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123548.100685:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: unknown-message Hello from renderer", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123548.334827:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: updating", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123549.353623:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: updated", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123552.095095:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-held no release notice names this build", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123558.099313:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-held sha256 mismatch: the notice says 0000000000000000000000000000000000000000000000000000000000000000", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123640.287672:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-scheduled 4811", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123640.300290:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: updating", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123641.254816:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: updated", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+[3227:1119/123644.102355:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: update-held the notice names pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", source: file:///tmp/custom-executor979667869/appimage_extracted_01a076b9165424163000ce637ad461e8/resources/app/renderer/app.js (48)
+======== [S2 12:37:16] start app (run3): --appimage-extract-and-run --no-sandbox under xvfb (sandbox off) ========
+app pid/pgid 3643
+{"bare": "v1.37.1", "boot": "3741-1795091842358", "config": {"app": "/var/tmp/s2/home/.local/bin/HelloPear.AppImage", "dir": "/var/tmp/s2/home/.config/HelloPear", "name": "HelloPear.AppImage", "updates": true, "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.2"}, "ev": "worker-start", "host": "linux-x64", "modules": {"hyperdrive": "13.3.4", "hyperswarm": "4.17.2", "pear-runtime": "<PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by \"exports\" in 'file:///tmp/custom-executor979667869/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/resources/app/node_modules/pear-runtime/package.json'>", "pear-runtime-updater": "<PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by \"exports\" in 'file:///tmp/custom-executor979667869/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/resources/app/node_modules/pear-runtime-updater/package.json'>"}, "seq": 0, "sha256Streaming": true, "t": "2026-11-19T12:37:22.369Z", "updater": {"bootGracePeriodMs": 60000, "bundled": true, "delayDefaultMs": 3600000, "delayDrawnMs": 1020, "link": "pear://0.0.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}}
+{"args": ["error", "<function anonymous>"], "boot": "3741-1795091842358", "ev": "updater-event", "name": "newListener", "seq": 1, "t": "2026-11-19T12:37:22.369Z"}
+{"boot": "3741-1795091842358", "ev": "join-peer", "seeder": "sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy", "seq": 2, "t": "2026-11-19T12:37:22.373Z"}
+{"args": ["update-scheduled", "<function anonymous>"], "boot": "3741-1795091842358", "ev": "updater-event", "name": "newListener", "seq": 3, "t": "2026-11-19T12:37:22.373Z"}
+{"args": ["updating", "<function anonymous>"], "boot": "3741-1795091842358", "ev": "updater-event", "name": "newListener", "seq": 4, "t": "2026-11-19T12:37:22.373Z"}
+{"args": ["updated", "<function anonymous>"], "boot": "3741-1795091842358", "ev": "updater-event", "name": "newListener", "seq": 5, "t": "2026-11-19T12:37:22.373Z"}
+{"args": ["minver-required", "<function anonymous>"], "boot": "3741-1795091842358", "ev": "pear-event", "name": "newListener", "seq": 6, "t": "2026-11-19T12:37:22.373Z"}
+{"boot": "3741-1795091842358", "coreFork": 0, "coreLength": 7, "ev": "skipUpdate-called", "seq": 7, "t": "2026-11-19T12:37:22.495Z", "updated": false, "updating": false}
+{"args": [], "boot": "3741-1795091842358", "ev": "updater-event", "name": "ready", "seq": 8, "t": "2026-11-19T12:37:22.496Z"}
+{"args": [], "boot": "3741-1795091842358", "ev": "pear-event", "name": "ready", "seq": 9, "t": "2026-11-19T12:37:22.497Z"}
+{"boot": "3741-1795091842358", "drive": {"corePeers": 0, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 7, "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "pear-ready", "seq": 10, "storage": "/var/tmp/s2/home/.config/HelloPear/app-storage", "t": "2026-11-19T12:37:22.498Z"}
+{"artifact": "/by-arch/linux-x64/app/HelloPear.AppImage", "boot": "3741-1795091842358", "entry": {"key": "/by-arch/linux-x64/app/HelloPear.AppImage", "seq": 5, "value": {"blob": {"blockLength": 1, "blockMap": true, "blockOffset": 126, "byteLength": 668, "byteOffset": 166732841}, "executable": true, "linkname": null, "metadata": null}}, "ev": "read-ahead", "files": [{"bytes": 668, "executable": true, "path": "/by-arch/linux-x64/app/HelloPear.AppImage"}, {"bytes": 6, "executable": false, "path": "/package.json"}], "hashMs": 961, "seq": 11, "sha256": "afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8", "t": "2026-11-19T12:37:23.466Z", "trigger": "startup", "upgrade": "pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "version": "1.0.2"}
+{"boot": "3741-1795091842358", "connections": 1, "ev": "swarm-connection", "remote": "sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy", "seq": 12, "t": "2026-11-19T12:37:23.694Z"}
+{"boot": "3741-1795091842358", "connections": 1, "drive": {"corePeers": 1, "fork": 0, "key": "3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o", "length": 7, "verlink": "pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o"}, "ev": "status", "next": null, "seq": 13, "t": "2026-11-19T12:37:27.373Z", "updated": false, "updating": false}
+next-line 92
+======== [S2 12:37:43] stop app (run3) ========
+--- leftover app processes
+   2811    2797 [HelloPear.AppIm] <defunct>
+   2812    2797 [HelloPear] <defunct>
+   2814    2797 [HelloPear] <defunct>
+   2815    2797 [HelloPear] <defunct>
+   2836    2797 [HelloPear] <defunct>
+   2840    2797 [HelloPear] <defunct>
+   2846    2797 [HelloPear] <defunct>
+   3226    3212 [HelloPear.AppIm] <defunct>
+   3227    3212 [HelloPear] <defunct>
+   3229    3212 [HelloPear] <defunct>
+   3230    3212 [HelloPear] <defunct>
+   3253    3212 [HelloPear] <defunct>
+   3256    3212 [HelloPear] <defunct>
+   3261    3212 [HelloPear] <defunct>
+   3657    3643 [HelloPear.AppIm] <defunct>
+   3658    3643 [HelloPear] <defunct>
+   3660    3643 [HelloPear] <defunct>
+   3661    3643 [HelloPear] <defunct>
+   3684    3643 [HelloPear] <defunct>
+   3687    3643 [HelloPear] <defunct>
+   3692    3643 [HelloPear] <defunct>
+--- app log (filtered)
+[3684:1119/123721.275146:WARNING:sandbox/policy/linux/sandbox_linux.cc:404] InitializeSandbox() called with multiple threads in process gpu-process.
+[3684:1119/123721.278142:WARNING:ui/gfx/linux/gbm_support_x11.cc:48] dri3 extension not supported.
+[3658:1119/123722.380814:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: Hello from worker", source: file:///tmp/custom-executor979667869/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/resources/app/renderer/app.js (48)
+[3658:1119/123722.383365:INFO:CONSOLE:48] "worker ipc [ /workers/main.js ]: unknown-message Hello from renderer", source: file:///tmp/custom-executor979667869/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/resources/app/renderer/app.js (48)
+PHASE OK: restart-applied
+======== [S2 12:37:45] pear provision --dry-run (a throwaway target) ========
+$ bash -o pipefail -c timeout 120 '/var/tmp/s2/home/.local/bin/pear' touch --json </dev/null > '/var/tmp/s2/logs/touch-prov.ndjson'
+[exit 0]
+$ timeout 600 /var/tmp/s2/home/.local/bin/pear provision --dry-run --json pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o pear://nyi6sn7yxaoxbzcqfbjgoq9e1ikhx6yjw45udmoxzbukjo6k9qyy pear://0.0.nyi6sn7yxaoxbzcqfbjgoq9e1ikhx6yjw45udmoxzbukjo6k9qyy
+{"cmd":"provision","tag":"syncing","data":{"type":"metadata"}}
+{"cmd":"provision","tag":"synced","data":{"type":"metadata"}}
+{"cmd":"provision","tag":"diffing"}
+{"cmd":"provision","tag":"byte-diff","data":{"type":1,"sizes":[154159476],"message":"/by-arch/linux-x64/app/HelloPear.AppImage"}}
+{"cmd":"provision","tag":"byte-diff","data":{"type":1,"sizes":[2470],"message":"/package.json"}}
+{"cmd":"provision","tag":"diffed","data":{"changes":2,"semver":"1.0.2","source":{"core":{"id":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","length":7,"hash":"g79dkm9euk5forhgkta9ce7otgypb6zgouyej81kiorzxi5xgmco"},"blobs":{"id":"ok4rasj3zhsxhhfnw5jczcnuoit9zb8da5gbqd8qyjqjwqbx517y","length":129,"hash":"kq3br6gg7scyyes3info8c75qzi5t6dnomkncj3p6r46hbmcowuy"}},"target":{"core":{"id":"enx3u7kimptetpxqkkyfbt848t8obajp8qt7m9dqoee3td73iwgy","length":0,"hash":"zcakemy6cmak9s19bj8ewitxxej4ru8kydzedrm5o4hj7yyun1iy"},"blobs":{"id":"eo3yzmagotzfm99u9inhaqxd97w14ez84ozguek45cj1ij3a8gfo","length":0,"hash":"zcakemy6cmak9s19bj8ewitxxej4ru8kydzedrm5o4hj7yyun1iy"}}}}
+{"cmd":"provision","tag":"dry"}
+{"cmd":"provision","tag":"final","data":{"success":true}}
+[exit 0]
+PHASE OK: provision
+======== [S2 12:37:46] pear multisig link from a throwaway pear.json (three public keys of throwaway links) ========
+{"multisig":{"publicKeys":["yg6b8jdxmjhmkd9a8c91tudqgb1n9j5xdbh4qag4jnttfkm18m3o","dfhtzufesc4ssaffj1ofwshzesq3jg5j98xfyjz6og6kwhtihefo","xn9d4uk3ka44s3tqxay85yzxbajf7trq1jfwhjc99c97ixjyn64y"],"namespace":"sovtech/s2-demo","quorum":2}}
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear multisig link --json
+{"cmd":"multisig","tag":"final","data":{"success":true,"link":"pear://xbwdj6s7kkm3ngecpg8cb6bcrxpuhts6kdrkak9mpgre7y943m4o"}}
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear multisig link --json
+{"cmd":"multisig","tag":"final","data":{"success":true,"link":"pear://mtzmtbzyfqc317p5qwhcnxk38pz1851ui3nnzh5gn6unncp8t7wo"}}
+[exit 0]
+$ timeout 120 /var/tmp/s2/home/.local/bin/pear multisig request pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+Getting the source blobs...
+Verifying the db core is requestable...
+✖ SOURCE_CORE_INSUFFICIENT_PEERS: Source core is not well seeded (1/2 peers)
+[exit 1]
+PHASE OK: multisig-demo
+======== [S2 12:37:54] Chromium's sandbox as a non-root user (no --no-sandbox), env=kata-agentrun ========
+/proc/sys/kernel/unprivileged_userns_clone=cat: /proc/sys/kernel/unprivileged_userns_clone: No such file or directory
+/proc/sys/user/max_user_namespaces=31831
+/proc/sys/kernel/apparmor_restrict_unprivileged_userns=cat: /proc/sys/kernel/apparmor_restrict_unprivileged_userns: No such file or directory
+ls: cannot access '/dev/fuse': No such file or directory
+no fusermount
+no libfuse in ldconfig
+NoNewPrivs:	1
+Seccomp:	2
+$ setpriv --reuid=s2user --regid=s2user --init-groups unshare -U -r true
+unshare: unshare failed: Operation not permitted
+[exit 1]
+======== [S2 12:37:54] non-root (fuse): ./HelloPear.AppImage  ========
+exited by itself after about 2 s, status 1
+--- app log (filtered)
+dlopen(): error loading libfuse.so.2
+AppImages require FUSE to run. 
+You might still be able to extract the contents of this AppImage 
+if you run it with the --appimage-extract option. 
+See https://github.com/AppImage/AppImageKit/wiki/FUSE 
+for more information
+======== [S2 12:37:56] non-root (extract): ./HelloPear.AppImage --appimage-extract-and-run ========
+exited by itself after about 6 s, status 127
+--- app log (filtered)
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/128x128
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/128x128/apps
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/128x128/apps/HelloPear.png
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/16x16
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/16x16/apps
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/16x16/apps/HelloPear.png
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/256x256
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/256x256/a[4029:1119/123759.961718:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/chrome-sandbox is owned by root and has mode 4755.
+[1119/123800.129800:ERROR:base/i18n/icu_util.cc:232] Invalid file descriptor to ICU data received.
+pps
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/256x256/apps/HelloPear.png
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/32x32
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/32x32/apps
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/32x32/apps/HelloPear.png
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/512x512
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/512x512/apps
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/512x512/apps/HelloPear.png
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/64x64
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/64x64/apps
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/usr/share/icons/hicolor/64x64/apps/HelloPear.png
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/v8_context_snapshot.bin
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/version
+/home/s2user/tmp/appimage_extracted_3ebd2e3cdf4e8258d18a211b2f0ec59d/vk_swiftshader_icd.json
+PHASE OK: sandbox-nonroot
+======== [S2 12:38:01] cleanup ========
+--- seeder log (tail)
+":"45mxxfyy1f9awccffg3fxw7zmoa17dowmfftxptwcsgizsy8jaeo"}
+{"cmd":"seed","tag":"stats","data":{"firewalled":true,"peers":0,"driveKey":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","driveFork":0,"driveSynced":7,"driveLength":7,"blobsSynced":129,"blobsLength":129,"blobsByteLength":166735985,"name":"hello-pear-electron","semver":"1.0.2","discoveryKey":"moemepxfuuai6ktp454rdfo1smf8shatq4jy67ar3t1gafg57uxy","contentKey":"ok4rasj3zhsxhhfnw5jczcnuoit9zb8da5gbqd8qyjqjwqbx517y","whoami":"sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy","uptime":282015,"upload":{"totalBytes":320900169,"totalBlocks":253,"speed":0},"download":{"totalBytes":12,"totalBlocks":1,"speed":0},"natType":"Consistent","connections":4,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+{"cmd":"seed","tag":"stats","data":{"firewalled":true,"peers":0,"driveKey":"3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o","driveFork":0,"driveSynced":7,"driveLength":7,"blobsSynced":129,"blobsLength":129,"blobsByteLength":166735985,"name":"hello-pear-electron","semver":"1.0.2","discoveryKey":"moemepxfuuai6ktp454rdfo1smf8shatq4jy67ar3t1gafg57uxy","contentKey":"ok4rasj3zhsxhhfnw5jczcnuoit9zb8da5gbqd8qyjqjwqbx517y","whoami":"sz6uzhqcgrmxmq1histc8wfpz1esumwnnjkop5d111dbr98tpbqy","uptime":285015,"upload":{"totalBytes":320900169,"totalBlocks":253,"speed":0},"download":{"totalBytes":12,"totalBlocks":1,"speed":0},"natType":"Consistent","connections":4,"dht":{"bootstrapped":true,"degraded":false,"online":true}}}
+- Closing any current Sidecar clients...
+- Shutting down current Sidecar...
+✔ Sidecar has shutdown
+--- state
+LINK=pear://3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+SEED_PID=2267
+FORGE_AIMG_1_0_0=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.0-x64.AppImage
+SHA_1_0_0=58e2505193336c9f1d8ea6948276c72da0e64f8c4be66204b3d556b8b78b2364
+VERLINK_1_0_0=pear://0.3.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+SEED_PID=2664
+INSTALLED=/var/tmp/s2/home/.local/bin/HelloPear.AppImage
+INSTALL_HOW=pear-install
+FORGE_AIMG_1_0_1=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.1-x64.AppImage
+SHA_1_0_1=4e9af2397870d041e94387f15f8f47a4c9617cd4716e712147f6d1ec5f3ce950
+VERLINK_1_0_1=pear://0.5.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+FORGE_AIMG_1_0_2=/var/tmp/s2/dl-template/app/out/make/HelloPear-1.0.2-x64.AppImage
+SHA_1_0_2=afd1cb131811ae79f5f1ced2beaac557d12c0795f6a424aacfac6593cdcce1c8
+VERLINK_1_0_2=pear://0.7.3gnix9rsw9n7sxr6ou851xtj9kr4b7jfh63kepnodr5bf3xcmb4o
+KATA_RUN_RC=0
+Job succeeded
+[kata-run] job success, exit 0
+[kata-run] timing (agentrun): sync 3.0 s, queue 1360.5 s, setup 0.0 s, command 726.6 s, job 731.1 s, total 2108.9 s
+kata-run exit 0
