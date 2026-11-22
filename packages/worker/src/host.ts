@@ -166,15 +166,11 @@ export class WorkerHost implements WorkerRpcHandler {
     const dht = new DhtNode({
       bootstrap: a.bootstrap ?? null,
       logger,
-      ...(this.o.bootstrapWaitMs === undefined ? {} : { bootstrapWaitMs: this.o.bootstrapWaitMs }),
-    });
-    dht.start();
-    void dht.ready().then(
-      () => {
+      onChange: () => {
         this.emitStatus();
       },
-      () => undefined,
-    );
+      ...(this.o.bootstrapWaitMs === undefined ? {} : { bootstrapWaitMs: this.o.bootstrapWaitMs }),
+    });
     const pool = new NfxPeerPool({
       dht: () => dht.ready(),
       keyPair: (namespace) => keys.keyPair(watcherKeyName(namespace)),
@@ -202,7 +198,7 @@ export class WorkerHost implements WorkerRpcHandler {
     const seeds = new NfxSeeds({
       store,
       pool,
-      dht: () => dht.dht,
+      dht: () => dht.forListener(),
       keyPair: (name) => keys.keyPair(name),
       logger,
       emit: (ev) => {
