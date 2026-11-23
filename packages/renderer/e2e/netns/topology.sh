@@ -17,6 +17,11 @@
 #     loopback or 11.77.0.0/24. `check` proves the counter counts (one canary datagram to an RFC
 #     5737 address per namespace), `counts` prints what it caught and `who` where it was going.
 #
+# Chromium joins the mDNS group on every interface, and the kernel then sends IGMP reports for it.
+# They are link-local, but they are packets to an address outside the subnet, so the tripwire caught
+# them. The kernel is told not to send reports for link-local groups (224.0.0.0/24). The tripwire
+# rule is unchanged, with no exception for multicast: any packet that is sent still counts.
+#
 # Each viewer also has a private address on a dummy interface, reachable only from itself: its
 # worker and its seeder share a private HyperDHT testnet on this namespace, and HyperDHT takes its
 # same-host shortcut only between private addresses. The default route, which is all WebRTC uses
@@ -63,6 +68,7 @@ case ${1:-} in
             in_ns "$ns" ip link set lo up
             in_ns "$ns" sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
             in_ns "$ns" sysctl -q -w net.ipv4.ip_forward=0
+            in_ns "$ns" sysctl -q -w net.ipv4.igmp_link_local_mcast_reports=0
         done
         ip -n nfx-hub link add br0 type bridge
         ip -n nfx-hub addr add "$HUB/24" dev br0
