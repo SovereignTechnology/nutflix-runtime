@@ -4,8 +4,8 @@
  * itself the web counterpart of the desktop app's `isSettingsPatch`. The URL rules are the desktop
  * guards' own, so a relay one app accepts the other does too. Differences from the web's:
  *
- * - **NFX is always on**, on the one network this build speaks, with no iroh relays, and no
- *   signaling relays yet (the WebRTC player is slice B, which adds `meshRelays` here).
+ * - **NFX is always on**, on the one network this build speaks, with no iroh relays. WebRTC has
+ *   its switch, its signaling relays and its STUN servers.
  * - **No wallet, seeding or auto top-up** fields: there is none to set (`defaultMints`, `seeding`,
  *   `autoTopUp` are refused).
  * - **`loadRemoteImages` stays `false`**: only images whose sha256 their publisher signed are
@@ -15,7 +15,7 @@
  * exception (a hostile getter or Proxy included). Objects must be plain with no unknown keys;
  * optional keys are absent, never `undefined`. Strings and arrays have caps.
  */
-import type { NfxSettings, RelayConfig, RelayUrl, Settings } from '@sovit/core';
+import type { NfxSettings, RelayConfig, RelayUrl, Settings, StunServer } from '@sovit/core';
 
 import { NFX_NETWORK } from './defaults.js';
 
@@ -27,6 +27,10 @@ export const MAX_SERVER_URL = 512;
 export const MAX_RELAYS = 256;
 /** NFX-04 scoped relays (contracts' `MAX_NFX_SCOPED_RELAYS`). */
 export const MAX_SCOPED_RELAYS = 8;
+/** NFX-10 §6 signaling relays (contracts' `MAX_NFX_MESH_RELAYS`, the library's own limit). */
+export const MAX_MESH_RELAYS = 8;
+/** STUN servers (the library takes at most 4). */
+export const MAX_STUN_SERVERS = 4;
 /** Prefetch depth ceiling, seconds (the desktop's `LIMITS.maxPrefetchSec`). */
 export const MAX_PREFETCH_SEC = 600;
 
@@ -106,12 +110,34 @@ export const isScopedRelayUrl = safe(
 
 const isRelayConfig = obj<RelayConfig>({ url: isRelayUrl, read: bool, write: bool });
 
-/** NFX here: always on, one network, no iroh relays and no signaling relays (yet). */
-const isRuntimeNfx = obj<NfxSettings>({
-  enabled: (x): x is true => x === true,
-  network: (x): x is string => x === NFX_NETWORK,
-  scopedRelays: unique(arrayOf(isScopedRelayUrl, MAX_SCOPED_RELAYS)),
-});
+const STUN_RE =
+  /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]{2,45}\]):([1-9][0-9]{0,4})$/;
+
+/**
+ * A STUN server, `host:port` with no scheme: the desktop guard's grammar (a DNS name, a dotted
+ * IPv4 address or a bracketed IPv6 address; a port 1 to 65535).
+ */
+export const isStunServer = safe(
+  (x: unknown): x is StunServer =>
+    typeof x === 'string' &&
+    x.length <= 300 &&
+    STUN_RE.test(x) &&
+    Number(STUN_RE.exec(x)?.[1] ?? '0') <= 65535,
+);
+
+/** NFX here: always on, one network, no iroh relays; WebRTC's three settings are optional. */
+const isRuntimeNfx = obj<NfxSettings>(
+  {
+    enabled: (x): x is true => x === true,
+    network: (x): x is string => x === NFX_NETWORK,
+    scopedRelays: unique(arrayOf(isScopedRelayUrl, MAX_SCOPED_RELAYS)),
+  },
+  {
+    webrtc: bool,
+    stunServers: unique(arrayOf(isStunServer, MAX_STUN_SERVERS)),
+    meshRelays: unique(arrayOf(isScopedRelayUrl, MAX_MESH_RELAYS)),
+  },
+);
 
 /** The fields a viewer sets; every other `Settings` field is fixed. */
 export const SETTING_KEYS = [

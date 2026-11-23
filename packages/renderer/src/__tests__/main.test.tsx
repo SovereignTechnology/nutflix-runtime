@@ -13,7 +13,6 @@ import type { NostrPubkey } from '@sovit/core';
 import { FakeRelayPool } from '@sovit/core/nostr';
 
 import { startRenderer, type RendererClient } from '../main.js';
-import { probeCapabilities } from '../probe.js';
 import { SettingsStore } from '../settings/store.js';
 import type { WorkerPipe } from '../worker/pipe.js';
 import { Key, addrOf, manifest } from './support/nfx.js';
@@ -158,8 +157,13 @@ describe('the renderer shell', () => {
     expect(container.querySelector('[id$="-appearance-remote-images"]')).toBeNull();
     expect(container.querySelector('[id$="-nfx-enabled"]')).toBeNull();
     expect(container.querySelector('[id$="-nfx-iroh-add"]')).toBeNull();
-    // Signaling relays belong to the WebRTC player (slice B).
-    expect(container.querySelector('[id$="-nfx-mesh-add"]')).toBeNull();
+    // The WebRTC switch, on by default, with who sees what, and its signaling relays.
+    const webrtc = container.querySelector<HTMLInputElement>('input[id$="-nfx-webrtc"]');
+    expect(webrtc?.checked).toBe(true);
+    expect(container.querySelector('[id$="-nfx-webrtc-notice"]')?.textContent).toContain(
+      'see your IP address',
+    );
+    expect(container.querySelector('[id$="-nfx-mesh-add"]')).not.toBeNull();
     expect(container.querySelector('[id$="-nfx-mesh-notice"]')).toBeNull();
     expect(container.textContent).toContain('wss://relay.nutflix.xyz');
     expect(container.textContent).toContain('wss://relay.ditto.pub');
@@ -183,12 +187,21 @@ describe('the renderer shell', () => {
     expect(client.adapter.platform).toBe('desktop');
   });
 
-  it('reports what the probe found, and plays over HyperDHT either way in this version', async () => {
+  it('reports what the probe found: without WebRTC and MSE, no player, and it says why', async () => {
     const { client, container } = await start();
-    expect(client.capabilities).toEqual(probeCapabilities(window as never));
     // jsdom has no WebRTC and no Media Source Extensions.
-    expect(client.capabilities.player).toBe(false);
+    const report = await client.probed;
+    expect(report.player).toBe(false);
+    expect(report.missing).toEqual(expect.arrayContaining(['webrtc', 'mse', 'library']));
+    expect(report.reason).toMatch(/missing in this runtime/);
+    expect(client.capabilities).toBe(report);
+    await flush();
     expect(container.dataset['webrtcPlayer']).toBe('unavailable');
+    await goHash('#/settings');
+    await flush();
+    expect(container.querySelector('#nutflix-webrtc-status')?.textContent).toMatch(
+      /^WebRTC is off\. .*missing in this runtime/,
+    );
   });
 
   it('stop() unmounts the shell and stops following the hash', async () => {

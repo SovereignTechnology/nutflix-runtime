@@ -87,6 +87,7 @@ export default tseslint.config(
             'vitest.config.ts',
             'packages/*/vitest.config.ts',
             'packages/*/vitest.e2e.config.ts',
+            'packages/*/vitest.netns.config.ts',
             'shells/*/vitest.config.ts',
           ],
         },

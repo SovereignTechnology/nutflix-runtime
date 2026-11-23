@@ -12,7 +12,7 @@ import {
   type PolicySession,
 } from '../main/security.ts';
 import { APP_ORIGIN, APP_URL, isAppOrigin, isAppUrl, privilegedSchemes } from '../main/schemes.ts';
-import { PROBE_CODE, parseProbe } from '../main/page-probe.ts';
+import { NOT_MOUNTED_CODE, PROBE_CODE, parseNotMounted, parseProbe } from '../main/page-probe.ts';
 import { WEBRTC_IP_POLICY, createMainWindow, type BrowserWindowCtor } from '../main/window.ts';
 
 const cl = (switches: Record<string, string> = {}) => ({
@@ -100,6 +100,28 @@ describe('the window', () => {
 
   it('pins the WebRTC policy of ADR 0001 decision 5', () => {
     expect(WEBRTC_IP_POLICY).toBe('default_public_interface_only');
+  });
+});
+
+describe('what main logs when the renderer never mounted', () => {
+  it('keeps only fixed values, whatever the page says', () => {
+    expect(
+      parseNotMounted({ root: true, children: 2, player: 'available', workerLink: 'down' }),
+    ).toEqual({ root: true, children: 2, player: 'available', workerLink: 'down' });
+    for (const bad of [
+      null,
+      7,
+      'x',
+      {},
+      { root: 'yes', children: 1.5, player: '<b>', workerLink: 1 },
+    ])
+      expect(parseNotMounted(bad)).toEqual({
+        root: false,
+        children: 0,
+        player: 'none',
+        workerLink: 'none',
+      });
+    expect(NOT_MOUNTED_CODE).not.toMatch(/innerHTML|textContent|location|fetch/);
   });
 });
 

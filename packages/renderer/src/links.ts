@@ -11,6 +11,8 @@
  *   Nothing in this package calls `window.open` or sets `location` (an ESLint rule refuses both).
  * - **`isWorkerMediaUrl`** is what the worker's `progressiveUrl` must look like before it is
  *   given to a `<video>`: `http://127.0.0.1:<port>/<token>/<sid>`, nothing else.
+ * - **`isWorkerOriginUrl`** is what the worker's `originUrl` must look like before nfx's player
+ *   may fetch from it: `http://127.0.0.1:<port>/<token>`, nothing else.
  */
 import { isPublicHost, parseStrictUrl } from './net/hosts.js';
 
@@ -31,6 +33,13 @@ const WORKER_MEDIA = /^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/[0-9a-f]{32}\/[0-9
 
 export function isWorkerMediaUrl(raw: unknown): raw is string {
   return typeof raw === 'string' && raw.length <= MAX_LINK_LENGTH && WORKER_MEDIA.test(raw);
+}
+
+/** The worker's loopback NFX origin base: `http://127.0.0.1:<port>/<hex token>`. */
+const WORKER_ORIGIN = /^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/[0-9a-f]{32}$/;
+
+export function isWorkerOriginUrl(raw: unknown): raw is string {
+  return typeof raw === 'string' && raw.length <= MAX_LINK_LENGTH && WORKER_ORIGIN.test(raw);
 }
 
 /** The part of a document the guard listens on. */

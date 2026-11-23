@@ -1,7 +1,11 @@
 /**
  * The renderer, end to end (ADR 0001 decision 4, the hyper-only fallback): the built bundle in
  * headless Chromium, behind the policy in its own `<meta>`, playing a real video that a real
- * worker fetches over HyperDHT.
+ * worker fetches over HyperDHT, in a page with `RTCPeerConnection` and WebAssembly REMOVED. The
+ * settings keep WebRTC on (with signaling and STUN that lead nowhere on loopback), so it is the
+ * probe alone that sends the play down the hyper path.
+ *
+ * The real WebRTC paths, and the candidate filter's vectors, are in `e2e/netns/`.
  *
  *   seeder     nutflix-pear's own `listenNfx` (`@sovit/seeder`) on a loopback hyperdht testnet,
  *              serving a VP9 NFX package ffmpeg made, under a key whose beacons are really signed
@@ -10,8 +14,9 @@
  *   renderer   `dist/app` over loopback http; its `WorkerPipe` is a Playwright bridge
  *
  * It checks that the video plays (`currentTime` advances), that it plays from the worker's
- * loopback stream, that leaving the page closes the worker's session, that the page reached
- * nothing off loopback, and that the policy was never violated.
+ * loopback stream, that Settings says why WebRTC is off, that leaving the page closes the worker's
+ * session, that the page reached nothing off loopback and opened no peer connection, and that the
+ * policy was never violated.
  *
  * Needs: ffmpeg with libvpx-vp9 (`FFMPEG`), a Chromium (Playwright's, or `CHROMIUM`), and, as
  * root or where the sandbox cannot start, `NUTFLIX_E2E_NO_SANDBOX=1`. `npm run test:e2e` builds
@@ -39,6 +44,13 @@ import { serveDir } from './static-server.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const APP = join(here, '..', 'dist', 'app');
+
+/** Before any of the page's scripts: this runtime has no WebRTC and no WebAssembly. */
+const REMOVE_WEBRTC_AND_WASM = `(() => {
+  for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'WebAssembly']) {
+    Object.defineProperty(globalThis, name, { value: undefined, configurable: true, writable: true });
+  }
+})();`;
 
 const seederKey = new Key();
 const creator = new Key();
@@ -152,20 +164,34 @@ async function start(): Promise<World> {
       SETTINGS_KEY,
       JSON.stringify({
         v: 1,
-        settings: { relays: [], nfx: { enabled: true, network: NS, scopedRelays: [relay.url] } },
+        settings: {
+          relays: [],
+          nfx: {
+            enabled: true,
+            network: NS,
+            scopedRelays: [relay.url],
+            // On, and pointing at nothing: only the probe may keep this play off WebRTC, and if
+            // it failed to, the job still could not reach a public relay or STUN server.
+            webrtc: true,
+            meshRelays: ['ws://127.0.0.1:9'],
+            stunServers: ['127.0.0.1:9'],
+          },
+        },
       }),
     ] as const,
   );
+  await context.addInitScript(REMOVE_WEBRTC_AND_WASM);
   const page = await context.newPage();
   const requests: string[] = [];
   const pageErrors: string[] = [];
   page.on('request', (r) => requests.push(r.url()));
+  page.on('websocket', (ws) => requests.push(ws.url()));
   page.on('pageerror', (e) => pageErrors.push(e.message));
   await bridge.attach(page);
   return { page, site, relay, bridge, requests, pageErrors };
 }
 
-describe('the renderer plays a free NFX video over HyperDHT alone', () => {
+describe('with RTCPeerConnection and WebAssembly removed, it plays over HyperDHT alone', () => {
   let world: World | undefined;
   const w = (): World => {
     if (world === undefined) throw new Error('the world did not start');
@@ -184,6 +210,18 @@ describe('the renderer plays a free NFX video over HyperDHT alone', () => {
     const { page, site, bridge } = w();
     const addr = addrOf(creator, VIDEO_ID);
     await page.goto(`${site.origin}/#/watch/${addr}`);
+    // The probe ran, found what is missing, and said no.
+    await page.waitForFunction(
+      () => document.getElementById('root')?.dataset['webrtcPlayer'] === 'unavailable',
+      undefined,
+      { timeout: 30_000 },
+    );
+    expect(
+      await page.evaluate(() => [
+        typeof globalThis.RTCPeerConnection,
+        typeof globalThis.WebAssembly,
+      ]),
+    ).toEqual(['undefined', 'undefined']);
     await page.waitForFunction(
       (t) => document.querySelector('.nf-watch__title')?.textContent === t,
       TITLE,
@@ -227,6 +265,15 @@ describe('the renderer plays a free NFX video over HyperDHT alone', () => {
     const t2 = await video.evaluate((v) => (v as HTMLVideoElement).currentTime);
     expect(t2).toBeGreaterThan(state.t);
 
+    // Settings says why WebRTC is off, and keeps the disclosure beside the switch.
+    await page.getByRole('button', { name: 'Settings' }).first().click();
+    const note = page.locator('#nutflix-webrtc-status');
+    await note.waitFor({ state: 'attached', timeout: 20_000 });
+    expect(await note.textContent()).toMatch(
+      /^WebRTC is off\. WebRTC \(RTCPeerConnection\), WebAssembly are missing in this runtime/,
+    );
+    expect(await page.locator('body').textContent()).toContain('see your IP address');
+
     // Leaving the page closes the worker's play.
     await page.getByRole('button', { name: 'Home' }).first().click();
     await expect
@@ -241,6 +288,8 @@ describe('the renderer plays a free NFX video over HyperDHT alone', () => {
         !/^(http|ws):\/\/127\.0\.0\.1:/.test(u) && !u.startsWith('blob:') && !u.startsWith('data:'),
     );
     expect(off).toEqual([]);
+    // Nothing tried to signal: the dead mesh relay of the settings was never dialled.
+    expect(requests.filter((u) => u.startsWith('ws://127.0.0.1:9'))).toEqual([]);
     expect(new URL(requests[0] ?? 'http://x').origin).toBe(site.origin);
     const violations = await page.evaluate(
       () => (globalThis as unknown as { __cspViolations: string[] }).__cspViolations,

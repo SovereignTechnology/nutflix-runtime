@@ -16,7 +16,14 @@ import { appResponseHeaders } from './csp.ts';
 import { APP_HOST, APP_SCHEME } from './schemes.ts';
 
 /** What `packages/renderer/scripts/build.ts` writes, and all that `app:` will serve. */
-export const APP_FILES = ['index.html', 'app.js', 'ui.css', 'shell.css'] as const;
+export const APP_FILES = [
+  'index.html',
+  'app.js',
+  'ui.css',
+  'shell.css',
+  'nfx/player.js',
+  'nfx/wasm.js',
+] as const;
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',

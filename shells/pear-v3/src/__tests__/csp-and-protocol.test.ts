@@ -18,15 +18,20 @@ describe("the header policy is the renderer's own", () => {
 
   it("keeps what the renderer relies on: its own scripts, the worker's loopback media", () => {
     const d = parsePolicy(headerPolicy(INDEX));
-    expect(d.get('script-src')).toEqual(["'self'"]);
-    expect(d.get('media-src')).toEqual(['http://127.0.0.1:*']);
+    expect(d.get('script-src')).toEqual(["'self'", "'wasm-unsafe-eval'"]);
+    expect(d.get('media-src')).toEqual(['http://127.0.0.1:*', 'blob:']);
     expect(d.get('frame-ancestors')).toEqual(["'none'"]);
     expect(d.get('default-src')).toEqual(["'none'"]);
   });
 
   it.each([
-    ["script-src 'self' 'unsafe-inline'", "script-src 'self'"],
-    ["script-src 'self' 'unsafe-eval'", "script-src 'self'"],
+    [
+      "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
+      "script-src 'self' 'wasm-unsafe-eval'",
+    ],
+    ["script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'", "script-src 'self' 'wasm-unsafe-eval'"],
+    ["script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'"],
+    ["script-src 'self' 'wasm-unsafe-eval' https:", "script-src 'self' 'wasm-unsafe-eval'"],
     ['style-src *', "style-src 'self'"],
     ["frame-src 'self'", "frame-src 'none'"],
     ["object-src 'self'", "object-src 'none'"],
@@ -92,6 +97,8 @@ describe('the app: handler', () => {
     [join(R, 'app.js'), 'x'],
     [join(R, 'ui.css'), 'x'],
     [join(R, 'shell.css'), 'x'],
+    [join(R, 'nfx', 'player.js'), 'x'],
+    [join(R, 'nfx', 'wasm.js'), 'x'],
     [join(R, 'secret.js'), 'nope'],
     [join(OUT, 'app.js'), 'planted'],
   ]);

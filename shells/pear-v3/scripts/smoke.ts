@@ -62,6 +62,7 @@ export interface ReadyFields {
   readonly sandbox?: unknown;
   readonly pipe?: unknown;
   readonly rendererSandbox?: unknown;
+  readonly webrtcPolicy?: unknown;
   readonly player?: unknown;
   readonly vp9?: unknown;
   readonly h264?: unknown;
@@ -94,6 +95,11 @@ export function readyProblems(
     ['sandbox', sandbox],
     ['pipe', 'round-trip'],
     ['rendererSandbox', sandbox === 'on' ? 'enforced' : 'absent'],
+    // ADR 0001 decision 5, as Chromium reports it for this window.
+    ['webrtcPolicy', 'default_public_interface_only'],
+    // The renderer's whole probe passed in the packaged app: the pinned library loaded through
+    // `app:` under the real policy, and its WASM verifier started.
+    ['player', 'available'],
     // A build for release has no upgrade link and starts no updater: every launch checks it.
     ['updates', updates],
   ];
@@ -383,7 +389,7 @@ function report(label: string, r: LaunchResult): void {
   if (r.ok && r.ready !== null)
     process.stdout.write(
       `SMOKE   proved: window loaded, renderer mounted, worker answered status, page round trip ${JSON.stringify(r.ready.pipe)}, sandbox ${JSON.stringify(r.ready.sandbox)}, OS reports renderer ${JSON.stringify(r.ready.rendererSandbox)}\n` +
-        `SMOKE   engine: webrtc player ${JSON.stringify(r.ready.player)}, vp9-in-mp4 ${JSON.stringify(r.ready.vp9)}, h264 ${JSON.stringify(r.ready.h264)}\n`,
+        `SMOKE   engine: webrtc player ${JSON.stringify(r.ready.player)}, webrtc ip policy ${JSON.stringify(r.ready.webrtcPolicy)}, vp9-in-mp4 ${JSON.stringify(r.ready.vp9)}, h264 ${JSON.stringify(r.ready.h264)}\n`,
     );
   if (!r.ok) for (const l of r.tail.slice(-60)) process.stdout.write(`SMOKE   | ${l}\n`);
 }

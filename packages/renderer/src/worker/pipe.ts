@@ -55,6 +55,8 @@ export interface PlayWorker {
 export const READY_WAIT_MS = 20_000;
 /** How often `ready` asks `status` while it waits, ms. */
 export const READY_POLL_MS = 250;
+/** How long one `status` may go unanswered before `ready` asks again, ms. */
+export const READY_ASK_MS = 5_000;
 /** A play's open fetches the init and the first segment over HyperDHT before it answers, ms. */
 export const OPEN_TIMEOUT_MS = 60_000;
 
@@ -62,6 +64,7 @@ export interface WorkerLinkOptions {
   readonly pipe: WorkerPipe;
   readonly readyWaitMs?: number;
   readonly readyPollMs?: number;
+  readonly readyAskMs?: number;
   readonly openTimeoutMs?: number;
   /** Worker events (`status`, `nfx.seed`, `log`); none are needed to play. */
   readonly onEvent?: ((ev: WorkerEvent) => void) | undefined;
@@ -84,7 +87,13 @@ export class WorkerLink implements PlayWorker {
     this.#o = o;
     this.#client = new WorkerClient({
       write: (bytes) => {
-        o.pipe.write(bytes);
+        try {
+          o.pipe.write(bytes);
+        } catch (e) {
+          // A pipe that refuses a write has ended: `ready` must not wait for it.
+          this.#goDown();
+          throw e;
+        }
       },
       ...(o.onEvent === undefined ? {} : { onEvent: o.onEvent }),
       onFatal: () => {
@@ -139,10 +148,15 @@ export class WorkerLink implements PlayWorker {
     const end = Date.now() + (this.#o.readyWaitMs ?? READY_WAIT_MS);
     for (;;) {
       try {
-        await this.#client.request('status', {}, { timeoutMs: 5_000 });
+        await this.#client.request('status', {}, { timeoutMs: this.#o.readyAskMs ?? READY_ASK_MS });
         return;
       } catch (e) {
-        if (!(e instanceof WorkerError) || e.code !== 'not-ready' || Date.now() >= end) throw e;
+        // A worker that is still starting answers `not-ready`, or does not answer yet (its Bare
+        // runtime can take longer than one ask to boot). A pipe that ended will never answer.
+        const starting =
+          e instanceof WorkerError &&
+          (e.code === 'not-ready' || (e.code === 'backend-down' && !this.#isDown));
+        if (!starting || Date.now() >= end) throw e;
       }
       await sleep(this.#o.readyPollMs ?? READY_POLL_MS);
     }

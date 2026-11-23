@@ -79,7 +79,7 @@ afterEach(() => {
 
 function rig(
   handle: <M extends WorkerMethod>(m: M, a: ArgsOf<M>) => Promise<ResultOf<M>>,
-  o: { readyPollMs?: number; readyWaitMs?: number } = {},
+  o: { readyPollMs?: number; readyWaitMs?: number; readyAskMs?: number } = {},
 ): Rig {
   const pipe = new MemoryPipe();
   const seen: { m: string; a: unknown }[] = [];
@@ -170,6 +170,58 @@ describe('WorkerLink', () => {
     await expect(r.link.ready()).rejects.toMatchObject({ code: 'not-ready' });
     up = true;
     await expect(r.link.ready()).resolves.toBeUndefined();
+  });
+
+  it('ready asks again when a worker still starting has not answered yet', async () => {
+    let n = 0;
+    const r = rig(
+      (m) => {
+        if (m !== 'status') return Promise.reject(new WorkerError('internal', 'x'));
+        n += 1;
+        return n === 1
+          ? new Promise(() => undefined)
+          : Promise.resolve({
+              dht: true,
+              playSessions: 0,
+              storedVideos: 0,
+              listening: [],
+            } as never);
+      },
+      { readyAskMs: 20, readyWaitMs: 2_000 },
+    );
+    await expect(r.link.ready()).resolves.toBeUndefined();
+    expect(n).toBe(2);
+  });
+
+  it('ready gives up when nothing ever answers, within its wait', async () => {
+    const r = rig(() => new Promise(() => undefined), { readyAskMs: 10, readyWaitMs: 40 });
+    await expect(r.link.ready()).rejects.toMatchObject({ code: 'backend-down' });
+    expect(r.seen.length).toBeGreaterThan(1);
+  });
+
+  it('ready does not wait for a pipe that has ended', async () => {
+    const r = rig(() => new Promise(() => undefined), { readyAskMs: 5_000, readyWaitMs: 20_000 });
+    const failed = r.link.ready().catch((e: unknown) => e);
+    await new Promise((res) => setTimeout(res, 10));
+    const at = Date.now();
+    r.pipe.end();
+    expect(await failed).toMatchObject({ code: 'backend-down' });
+    expect(Date.now() - at).toBeLessThan(1_000);
+  });
+
+  it('ready does not wait for a pipe that refuses a write', async () => {
+    const r = rig(() => new Promise(() => undefined), { readyWaitMs: 20_000 });
+    r.pipe.onWrite = () => {
+      throw new Error('closed');
+    };
+    let down = 0;
+    r.link.onDown(() => {
+      down += 1;
+    });
+    const at = Date.now();
+    await expect(r.link.ready()).rejects.toMatchObject({ code: 'backend-down' });
+    expect(Date.now() - at).toBeLessThan(1_000);
+    expect(down).toBe(1);
   });
 
   it('a pipe that closes fails what is pending as backend-down and says the worker is down', async () => {

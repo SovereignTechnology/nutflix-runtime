@@ -6,7 +6,9 @@
  * drift: there is no second copy of the policy in this package.
  *
  * `headerPolicy` also refuses a policy that is not strict (fails closed: the app does not start):
- * scripts and styles from `'self'` only, nothing inline, no `eval`, no frames, no plugins.
+ * scripts and styles from `'self'` only, nothing inline, no `eval`, no frames, no plugins. The one
+ * addition to `script-src` is `'wasm-unsafe-eval'`, which compiles WebAssembly and nothing else:
+ * nfx's verifier is WASM, and JavaScript `eval` and `new Function` stay refused.
  */
 import { policyOf } from '../../../../packages/renderer/scripts/policy.ts';
 
@@ -17,7 +19,7 @@ export class CspError extends Error {
 /** Directives that must be present, with the one source list each may have. */
 const REQUIRED: Readonly<Record<string, string>> = {
   'default-src': "'none'",
-  'script-src': "'self'",
+  'script-src': "'self' 'wasm-unsafe-eval'",
   'style-src': "'self'",
   'object-src': "'none'",
   'base-uri': "'none'",

@@ -3,7 +3,7 @@
   <head>
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src http://127.0.0.1:*; font-src 'self'; connect-src 'self' wss: ws://127.0.0.1:* http://127.0.0.1:* https:; worker-src 'none'; manifest-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; media-src http://127.0.0.1:* blob:; font-src 'self'; connect-src 'self' wss: ws://127.0.0.1:* http://127.0.0.1:* https: blob:; worker-src 'none'; manifest-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -13,6 +13,8 @@
     <title>Nutflix</title>
     <link rel="stylesheet" href="ui.css" />
     <link rel="stylesheet" href="shell.css" />
+    <link rel="modulepreload" href="nfx/wasm.js" />
+    <link rel="modulepreload" href="nfx/player.js" />
     <script type="module" src="app.js"></script>
   </head>
   <body>

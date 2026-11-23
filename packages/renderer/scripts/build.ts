@@ -8,6 +8,8 @@
  *   app.js        the bundle (minified, production React)
  *   ui.css        @sovit/ui's tokens, components and screens
  *   shell.css     @sovit/ui's shell layout
+ *   nfx/player.js nfx's web player library, byte for byte from the tar `nfx-web.lock` pins
+ *   nfx/wasm.js   its WASM verifier as base64 (`src/player/load.ts` checks its sha256)
  *
  * It fails when the bundle holds anything the renderer must not carry (nutflix-pear's deny list for
  * its own web client: Cashu, sodium, Hypercore and HyperDHT, Bare, Electron, Pear, the wallet and
@@ -28,6 +30,7 @@ import {
   deniedInputs,
   npmPackages,
 } from '../../../vendor/nutflix-pear/packages/app-web/scripts/site.ts';
+import { readPinnedLibrary, wasmModuleSource } from './nfx-lib.ts';
 import { policyOf } from './policy.ts';
 
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,7 +44,9 @@ export interface BuildResult {
 
 export async function buildRenderer(out: string = join(pkg, 'dist', 'app')): Promise<BuildResult> {
   rmSync(out, { recursive: true, force: true });
-  mkdirSync(out, { recursive: true });
+  mkdirSync(join(out, 'nfx'), { recursive: true });
+  // Refused unless the tar is the one `nfx-web.lock` pins.
+  const nfx = readPinnedLibrary(pkg);
 
   // The design system's stylesheets are plain files `@sovit/ui` flattens into its dist/.
   const css = spawnSync(process.execPath, [join(pearUi, 'scripts', 'build-css.ts')], {
@@ -61,7 +66,10 @@ export async function buildRenderer(out: string = join(pkg, 'dist', 'app')): Pro
     sourcemap: false,
     legalComments: 'eof',
     tsconfig: join(pkg, 'tsconfig.json'),
-    define: { 'process.env.NODE_ENV': '"production"' },
+    define: {
+      'process.env.NODE_ENV': '"production"',
+      __NFX_WASM_SHA256__: JSON.stringify(nfx.wasmSha256),
+    },
     metafile: true,
     logLevel: 'warning',
   });
@@ -77,6 +85,8 @@ export async function buildRenderer(out: string = join(pkg, 'dist', 'app')): Pro
     throw new Error(`app.js may import nothing: ${JSON.stringify(external)}`);
   }
 
+  writeFileSync(join(out, 'nfx', 'player.js'), nfx.playerJs);
+  writeFileSync(join(out, 'nfx', 'wasm.js'), wasmModuleSource(nfx.wasm));
   copyFileSync(require.resolve('@sovit/ui/ui.css'), join(out, 'ui.css'));
   copyFileSync(require.resolve('@sovit/ui/shell.css'), join(out, 'shell.css'));
   const source = readFileSync(join(pkg, 'index.html'), 'utf8');

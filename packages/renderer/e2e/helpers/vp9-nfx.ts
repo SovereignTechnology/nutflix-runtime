@@ -31,6 +31,8 @@ export interface Vp9Package {
   readonly segs: number;
   /** Every file by sha256, the hash list under `root` among them. */
   readonly files: ReadonlyMap<string, Uint8Array>;
+  /** The segments' sha256, in playlist order. */
+  readonly segments: readonly string[];
   readonly durationSec: number;
 }
 
@@ -198,7 +200,14 @@ export function makeVp9Package(video: string, seconds = 10): Vp9Package {
     }
     const map = new Map<string, Uint8Array>([[root, listBytes]]);
     for (const f of all) map.set(f.entry.sha256, f.bytes);
-    return { video, root, segs: all.length, files: map, durationSec: totalMs / 1000 };
+    return {
+      video,
+      root,
+      segs: all.length,
+      files: map,
+      segments: files.filter((f) => f.entry.role === 'segment').map((f) => f.entry.sha256),
+      durationSec: totalMs / 1000,
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

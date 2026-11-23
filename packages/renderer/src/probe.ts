@@ -1,15 +1,16 @@
 /**
- * The capability probe (ADR 0001 decision 4): which of the three things the WebRTC player needs
- * this runtime has. `RTCPeerConnection`, WebAssembly that can validate a module (nfx's verifier
- * is WASM) and Media Source Extensions (hls.js feeds the `<video>` through them).
+ * The capability probe (ADR 0001 decision 4): whether this runtime can play through the WebRTC
+ * player. `RTCPeerConnection`, WebAssembly that validates nfx's pinned verifier, Media Source
+ * Extensions (hls.js feeds the `<video>` through them), and the pinned library itself, loaded and
+ * started (`probePlayer`).
  *
- * In this slice the probe only reports. Slice B adds the WebRTC player, and plays through it when
- * `player` is true; when anything is missing, playback stays on the worker's progressive range
- * server, over HyperDHT alone, and `reason` says why. Pure: the environment is a parameter, so
- * the tests pass fakes, and a getter that throws counts as "missing", never as a crash.
+ * When anything is missing, playback stays on the worker's progressive range server, over
+ * HyperDHT alone, and `reason` says why. Pure: the environment is a parameter, so the tests pass
+ * fakes, and a getter that throws counts as "missing", never as a crash.
  */
+import type { LoadedPlayer, PlayerLoader } from './player/load.js';
 
-export type Capability = 'webrtc' | 'wasm' | 'mse';
+export type Capability = 'webrtc' | 'wasm' | 'mse' | 'library';
 
 export interface CapabilityReport {
   readonly webrtc: boolean;
@@ -43,7 +44,7 @@ export const EMPTY_WASM_MODULE: Uint8Array = Uint8Array.of(
 );
 
 export interface ProbeOptions {
-  /** The module to validate: slice B passes the pinned verifier's bytes. Default: the empty one. */
+  /** The module to validate: `probePlayer` passes the pinned verifier. Default: the empty one. */
   readonly wasmModule?: Uint8Array | undefined;
 }
 
@@ -51,7 +52,14 @@ const NAMES: Readonly<Record<Capability, string>> = Object.freeze({
   webrtc: 'WebRTC (RTCPeerConnection)',
   wasm: 'WebAssembly',
   mse: 'Media Source Extensions',
+  library: 'The nfx player library',
 });
+
+function reasonFor(missing: readonly Capability[]): string | null {
+  return missing.length === 0
+    ? null
+    : `${missing.map((c) => NAMES[c]).join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing in this runtime: videos play over HyperDHT alone, without the WebRTC player.`;
+}
 
 function attempt(f: () => boolean): boolean {
   try {
@@ -96,9 +104,61 @@ export function probeCapabilities(
     mse,
     player: missing.length === 0,
     missing,
-    reason:
-      missing.length === 0
-        ? null
-        : `${missing.map((c) => NAMES[c]).join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing in this runtime: videos play over HyperDHT alone, without the WebRTC player.`,
+    reason: reasonFor(missing),
   };
+}
+
+/** How long the library may take to load and start before the probe answers without it. */
+export const PROBE_TIMEOUT_MS = 20_000;
+
+export interface PlayerProbe {
+  readonly report: CapabilityReport;
+  /** The library, loaded and started; `null` unless `report.player`. */
+  readonly player: LoadedPlayer | null;
+}
+
+/**
+ * The whole probe: the three runtime checks, then the pinned library. It is loaded only when
+ * they pass, its verifier must validate in this runtime, and any failure, a load that never ends
+ * included, is a `library` (or `wasm`) line in the report, never a rejection or a hang.
+ */
+export async function probePlayer(
+  env: ProbeEnv = globalThis,
+  load?: PlayerLoader,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<PlayerProbe> {
+  const base = probeCapabilities(env);
+  const unusable = (add: Capability): PlayerProbe => {
+    const missing = base.missing.includes(add) ? base.missing : [...base.missing, add];
+    return {
+      report: {
+        ...base,
+        wasm: add === 'wasm' ? false : base.wasm,
+        player: false,
+        missing,
+        reason: reasonFor(missing),
+      },
+      player: null,
+    };
+  };
+  if (load === undefined) return unusable('library');
+  if (!base.player) return { report: base, player: null };
+  let player: LoadedPlayer;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    player = await Promise.race([
+      load(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('the library did not load in time'));
+        }, timeoutMs);
+      }),
+    ]);
+  } catch {
+    return unusable('library');
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!probeCapabilities(env, { wasmModule: player.wasm }).wasm) return unusable('wasm');
+  return { report: base, player };
 }

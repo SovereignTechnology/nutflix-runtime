@@ -1,0 +1,188 @@
+# The WebRTC player's proofs (ADR 0001 decision 4), and the provenance of the bytes it plays with.
+#
+#   nfx-lib  builds nfx's web library from the source archive packages/renderer/nfx-web.lock pins,
+#            with its pinned tools, and fails unless the tar is byte for byte the committed one.
+#   webrtc   real playback over WebRTC: two viewers, then a viewer and nfxd --mesh-relay at the same
+#            pinned commit, on a loopback-free network of three namespaces with no way out
+#            (packages/renderer/e2e/netns/topology.sh), and the candidate filter's vectors.
+#
+# The unit tests and the fallback proof (RTCPeerConnection and WASM removed, playing over hyper)
+# are not repeated here: ci.yml's `test` and `renderer-e2e` jobs run them, and block.
+#
+# HARD CONSTRAINT, as in ci.yml: a runner is never a peer of the public network. The viewers, nfxd,
+# strfry and the STUN server run only inside those namespaces. There is no public DHT, relay,
+# tracker or STUN server anywhere in a test's configuration, and a firewall rule in each namespace
+# drops and COUNTS any packet that tries to leave it: the job fails unless the count is exactly the
+# one canary datagram that proves the counter works.
+#
+# Supply chain as ci.yml: actions pinned by commit SHA, `npm ci --ignore-scripts`, Cargo.lock
+# honoured (--locked), least-privilege token, no secrets. Downloads (build tools only, before any
+# test starts): nfx's source archive (sha256 from the lock), wasm-pack and wasm-bindgen (sha256 from
+# the lock), the runner's rustup toolchain, strfry at the commit nfx pins, apt packages, Playwright's
+# Chromium.
+name: webrtc
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webrtc-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: ''
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  nfx-lib:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: the lock's pins
+        id: lock
+        run: bash packages/renderer/scripts/nfx-lib.sh show | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: the lock's Rust toolchain and the wasm32 target (the runner's rustup)
+        env:
+          RUST_VERSION: ${{ steps.lock.outputs.RUST_VERSION }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_VERSION"
+          rustc -V
+      - name: wasm-pack and wasm-bindgen (the lock's releases, sha256-checked)
+        env:
+          WASM_PACK_VERSION: ${{ steps.lock.outputs.WASM_PACK_VERSION }}
+          WASM_PACK_SHA256: ${{ steps.lock.outputs.WASM_PACK_SHA256 }}
+          WASM_BINDGEN_VERSION: ${{ steps.lock.outputs.WASM_BINDGEN_VERSION }}
+          WASM_BINDGEN_SHA256: ${{ steps.lock.outputs.WASM_BINDGEN_SHA256 }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/tools"
+          mkdir -p "$d"
+          curl -sSfL --retry 8 --retry-all-errors -o "$d/wasm-pack.tgz" \
+            "https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${WASM_PACK_SHA256}  $d/wasm-pack.tgz" | sha256sum -c -
+          curl -sSfL --retry 8 --retry-all-errors -o "$d/wasm-bindgen.tgz" \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${WASM_BINDGEN_SHA256}  $d/wasm-bindgen.tgz" | sha256sum -c -
+          tar -xzf "$d/wasm-pack.tgz" -C "$d"
+          tar -xzf "$d/wasm-bindgen.tgz" -C "$d"
+          sudo install -m 0755 "$d/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl/wasm-pack" /usr/local/bin/
+          sudo install -m 0755 "$d/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
+      - name: build the tar from the pinned source; it must be the lock's and the committed file
+        env:
+          NFX_COMMIT: ${{ steps.lock.outputs.NFX_COMMIT }}
+        run: |
+          set -euo pipefail
+          bash packages/renderer/scripts/nfx-lib.sh build --out "$RUNNER_TEMP/nfx-lib"
+          name="nfx-web-lib-${NFX_COMMIT:0:12}.tar"
+          sha256sum "$RUNNER_TEMP/nfx-lib/$name" "packages/renderer/pinned/$name"
+          cmp "$RUNNER_TEMP/nfx-lib/$name" "packages/renderer/pinned/$name"
+          echo "the committed tar is byte for byte the build of $NFX_COMMIT"
+
+  webrtc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: the lock's pins
+        id: lock
+        run: bash packages/renderer/scripts/nfx-lib.sh show | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: ffmpeg, the namespace tools, strfry's build libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg iproute2 iptables util-linux \
+            g++ make pkg-config libtool libssl-dev zlib1g-dev liblmdb-dev libflatbuffers-dev \
+            libsecp256k1-dev libzstd-dev
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: playwright-core's Chromium
+        run: npx --no-install playwright-core install --with-deps chromium
+      - name: allow Chromium's user-namespace sandbox on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: the pinned nfx source (sha256 from the lock)
+        env:
+          NFX_COMMIT: ${{ steps.lock.outputs.NFX_COMMIT }}
+          NFX_SRC_SHA256: ${{ steps.lock.outputs.NFX_SRC_SHA256 }}
+        run: |
+          set -euo pipefail
+          curl -sSfL --proto '=https' --tlsv1.2 --retry 8 --retry-all-errors -o "$RUNNER_TEMP/nfx.tar.gz" \
+            "https://github.com/SovereignTechnology/nfx/archive/${NFX_COMMIT}.tar.gz"
+          echo "${NFX_SRC_SHA256}  $RUNNER_TEMP/nfx.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/nfx-src"
+          tar -xzf "$RUNNER_TEMP/nfx.tar.gz" -C "$RUNNER_TEMP/nfx-src" --strip-components=1 --no-same-owner
+          echo "NFX_SRC=$RUNNER_TEMP/nfx-src" >> "$GITHUB_ENV"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: tools
+        with:
+          path: |
+            ~/.cache/nutflix-netns
+          key: netns-tools-${{ runner.os }}-${{ steps.lock.outputs.NFX_COMMIT }}-${{ steps.lock.outputs.RUST_VERSION }}-v1
+      - name: strfry (the stock relay, at the commit nfx pins) and nfxd (at the pinned commit)
+        if: steps.tools.outputs.cache-hit != 'true'
+        env:
+          RUST_VERSION: ${{ steps.lock.outputs.RUST_VERSION }}
+        run: |
+          set -euo pipefail
+          d="$HOME/.cache/nutflix-netns"
+          mkdir -p "$d"
+          bash "$NFX_SRC/web/player/e2e-strfry.sh" "$RUNNER_TEMP/strfry" > "$RUNNER_TEMP/strfry.env"
+          . "$RUNNER_TEMP/strfry.env"
+          install -m 0755 "$STRFRY" "$d/strfry"
+          install -m 0644 "$STRFRY_CONF" "$d/strfry.conf"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          cargo "+$RUST_VERSION" build --locked --manifest-path "$NFX_SRC/crates/Cargo.toml" -p nfxd --bin nfxd
+          install -m 0755 "$NFX_SRC/crates/target/debug/nfxd" "$d/nfxd"
+      - name: the isolated network, and proof that its tripwire counts
+        run: |
+          set -euo pipefail
+          sudo bash packages/renderer/e2e/netns/topology.sh up
+          sudo bash packages/renderer/e2e/netns/topology.sh check
+      - name: proofs 1, 2 and 4, inside the isolated network
+        env:
+          NFX_COMMIT: ${{ steps.lock.outputs.NFX_COMMIT }}
+        run: |
+          set -euo pipefail
+          d="$HOME/.cache/nutflix-netns"
+          sudo ip netns exec nfx-hub setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups \
+            env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
+              STRFRY="$d/strfry" STRFRY_CONF="$d/strfry.conf" NFXD="$d/nfxd" \
+              NFX_SRC="$NFX_SRC" NFX_COMMIT="$NFX_COMMIT" \
+              npm run test:netns -w packages/renderer
+      - name: nothing tried to leave the isolated network (the count is the one canary each)
+        if: always()
+        run: |
+          set -euo pipefail
+          sudo bash packages/renderer/e2e/netns/topology.sh who
+          sudo bash packages/renderer/e2e/netns/topology.sh counts | tee "$RUNNER_TEMP/counts"
+          awk '$2 != 1 { bad = 1 } END { exit bad }' "$RUNNER_TEMP/counts"
+          echo "each namespace counted exactly its canary: 0 packets tried to leave"
+      - name: take the network down
+        if: always()
+        run: sudo bash packages/renderer/e2e/netns/topology.sh down
