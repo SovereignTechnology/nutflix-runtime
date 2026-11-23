@@ -8,23 +8,39 @@
  *   maintainer took `relay.damus.io` and `nos.lol` out of the client defaults on 2026-11-18: the
  *   first refuses this project's address and the second has rate-limited it. nutflix-pear makes
  *   the same change in its PR #120.
- * - **NFX, always on**, on `nfx:testnet:1`. No iroh relay (no iroh here), and no mesh or STUN
- *   setting yet: the WebRTC player is slice B.
+ * - **NFX, always on**, on `nfx:testnet:1`. No iroh relay (no iroh here).
+ * - **WebRTC, on by default** (ADR 0001 decision 4, with the disclosure Settings gives): the
+ *   desktop app's signaling pair and its STUN server, so that this app, the web client and nfxd
+ *   meet on the same relays. They learn the user's IP address and which videos' rooms it is in.
  * - **No wallet, no seeding, no unsigned images:** those fields are fixed, never stored.
  *
  * Every value here is a public name.
  */
-import type { NfxNetwork, NfxSettings, RelayUrl, Settings } from '@sovit/core';
+import type { NfxNetwork, NfxSettings, RelayUrl, Settings, StunServer } from '@sovit/core';
 
 export const NFX_NETWORK: NfxNetwork = 'nfx:testnet:1';
 
 /** The network's scoped relay (manifests and beacons), the first relay the app speaks to. */
 export const SCOPED_RELAY = 'wss://relay.nutflix.xyz' as RelayUrl;
 
+/** nutflix-pear's `DEFAULT_NFX_MESH_RELAYS`: ordinary relays that carry kind 25050 (NFX-10 §6). */
+export const DEFAULT_MESH_RELAYS: readonly RelayUrl[] = Object.freeze([
+  'wss://relay.primal.net' as RelayUrl,
+  'wss://relay.ditto.pub' as RelayUrl,
+]);
+
+/** nutflix-pear's `DEFAULT_NFX_STUN_SERVERS`: the network's own STUN server (nfxd `--stun`). */
+export const DEFAULT_STUN_SERVERS: readonly StunServer[] = Object.freeze([
+  'web.nutflix.xyz:3478' as StunServer,
+]);
+
 export const DEFAULT_NFX: NfxSettings = Object.freeze({
   enabled: true,
   network: NFX_NETWORK,
   scopedRelays: Object.freeze([SCOPED_RELAY]),
+  webrtc: true,
+  stunServers: DEFAULT_STUN_SERVERS,
+  meshRelays: DEFAULT_MESH_RELAYS,
 });
 
 const relay = (url: string): Settings['relays'][number] =>

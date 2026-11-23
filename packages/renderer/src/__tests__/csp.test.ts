@@ -2,6 +2,11 @@
 /**
  * The page's policy (ADR 0001 amendment, item 1): a strict CSP as the first element of `<head>`,
  * no inline script and no `eval`, `connect-src` and `media-src` no wider than the renderer needs.
+ * Each addition for the WebRTC player is pinned here with its reason:
+ *
+ *   script-src  'wasm-unsafe-eval'  compiles nfx's WASM verifier; `eval` stays refused
+ *   media-src   blob:               hls.js plays through a MediaSource, which is a `blob:` URL
+ *   connect-src blob:               the library's `init` fetches the sha256-checked WASM bytes
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -37,10 +42,11 @@ describe('index.html', () => {
   });
 
   it('allows no inline script and no eval, anywhere', () => {
-    expect(policy).not.toMatch(
-      /unsafe-inline|unsafe-eval|wasm-unsafe-eval|unsafe-hashes|strict-dynamic/,
+    // `'wasm-unsafe-eval'` is the one exception, and is not `'unsafe-eval'`.
+    expect(policy.replaceAll("'wasm-unsafe-eval'", '')).not.toMatch(
+      /unsafe-inline|unsafe-eval|unsafe-hashes|strict-dynamic/,
     );
-    expect(d.get('script-src')).toEqual(["'self'"]);
+    expect(d.get('script-src')).toEqual(["'self'", "'wasm-unsafe-eval'"]);
     expect(d.get('style-src')).toEqual(["'self'"]);
     expect(html).not.toMatch(/<script\b(?![^>]*\bsrc=)/i);
     expect(html).not.toMatch(/<style\b/i);
@@ -62,8 +68,8 @@ describe('index.html', () => {
     }
   });
 
-  it('plays media from the worker’s loopback server only', () => {
-    expect(d.get('media-src')).toEqual(['http://127.0.0.1:*']);
+  it('plays media from the worker’s loopback server, or hls.js’s own MediaSource', () => {
+    expect(d.get('media-src')).toEqual(['http://127.0.0.1:*', 'blob:']);
   });
 
   it('reaches relays (wss), the viewer’s NIP-11 and signed-image hosts (https), and loopback, nothing else', () => {
@@ -73,10 +79,10 @@ describe('index.html', () => {
       'ws://127.0.0.1:*',
       'http://127.0.0.1:*',
       'https:',
+      'blob:',
     ]);
-    // No bare `*`, no plain `http:` or `ws:`, no `data:` or `blob:` to connect to.
-    for (const v of d.get('connect-src') ?? [])
-      expect(v).not.toMatch(/^(\*|http:|ws:|data:|blob:)$/);
+    // No bare `*`, no plain `http:` or `ws:`, no `data:` to connect to.
+    for (const v of d.get('connect-src') ?? []) expect(v).not.toMatch(/^(\*|http:|ws:|data:)$/);
   });
 
   it('shows images only from its own files and from blob: URLs of verified bytes', () => {
@@ -89,6 +95,12 @@ describe('index.html', () => {
       /first element/,
     );
     expect(() => policyOf('<html><head></head></html>')).toThrow(/first element/);
+  });
+
+  it('preloads the pinned library’s two modules, so that SRI covers them', () => {
+    expect(
+      [...html.matchAll(/<link rel="modulepreload" href="([^"]+)"/g)].map((m) => m[1]),
+    ).toEqual(['nfx/wasm.js', 'nfx/player.js']);
   });
 
   it('loads its script as a module and its two stylesheets from itself', () => {

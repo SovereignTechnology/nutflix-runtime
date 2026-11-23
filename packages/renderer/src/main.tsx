@@ -15,8 +15,12 @@ import { SimplePoolAdapter, type PoolLike } from '@sovit/core/nostr';
 import { RuntimeNetworkAdapter } from './adapter/adapter.js';
 import { installLinkGuard } from './links.js';
 import type { FetchFn } from './net/http.js';
-import { probeCapabilities, type CapabilityReport, type ProbeEnv } from './probe.js';
+import type { NfxPlayerLib } from './player/nfx-lib.js';
+import type { PlayerLoader } from './player/load.js';
+import { probeCapabilities, probePlayer, type CapabilityReport, type ProbeEnv } from './probe.js';
 import { browserSettingsStore, type SettingsStore } from './settings/store.js';
+import { webrtcStatusText } from './settings/webrtc.js';
+import { installWebRtcNote } from './settings/webrtc-note.js';
 import { RUNTIME_OFFER } from './shell/offer.js';
 import { hashOf, routeFromLocation } from './shell/routes.js';
 import { WorkerLink, type WorkerPipe } from './worker/pipe.js';
@@ -36,15 +40,22 @@ export interface RendererOptions {
   readonly settings?: SettingsStore | undefined;
   /** Default: the window's `fetch`. */
   readonly fetch?: FetchFn | undefined;
-  /** Default: this runtime's own (`probeCapabilities`). */
+  /**
+   * The pinned nfx player library (`player/load.ts`). Absent: the WebRTC player is unavailable,
+   * and every video plays from the worker's progressive stream.
+   */
+  readonly loadPlayer?: PlayerLoader | undefined;
+  /** Default: this runtime's own (`probePlayer`). Given: no library is loaded. */
   readonly capabilities?: CapabilityReport | undefined;
 }
 
 export interface RendererClient {
   readonly adapter: RuntimeNetworkAdapter;
   readonly settings: SettingsStore;
-  /** What the probe found. In this version it only reports: every video plays over HyperDHT. */
+  /** What the probe has found so far: `probed` resolves with the final answer. */
   readonly capabilities: CapabilityReport;
+  /** Resolves when the probe is done (it loads the pinned library). Never rejects. */
+  readonly probed: Promise<CapabilityReport>;
   /** Resolves on the worker's first answer through this page's pipe. Asks only when called. */
   workerReady(): Promise<void>;
   /** Unmounts the shell, closes every play and subscription, and stops following the URL. */
@@ -54,8 +65,14 @@ export interface RendererClient {
 export function startRenderer(o: RendererOptions): RendererClient {
   const win = o.window ?? o.container.ownerDocument.defaultView;
   if (win === null) throw new Error('startRenderer: the container is not in a window');
-  const capabilities = o.capabilities ?? probeCapabilities(win as unknown as ProbeEnv);
-  o.container.dataset['webrtcPlayer'] = capabilities.player ? 'available' : 'unavailable';
+  const env = win as unknown as ProbeEnv;
+  // Until the library has loaded, nothing plays through it. The dataset attribute appears only
+  // with the final answer, because a shell's launch check reads it as that.
+  let capabilities: CapabilityReport = o.capabilities ?? {
+    ...probeCapabilities(env),
+    player: false,
+  };
+  let lib: NfxPlayerLib | null = null;
   const settings = o.settings ?? browserSettingsStore(win);
   const pool = o.pool ?? new SimplePoolAdapter();
   const link = new WorkerLink({ pipe: o.pipe });
@@ -63,6 +80,7 @@ export function startRenderer(o: RendererOptions): RendererClient {
     pool,
     settings,
     worker: link,
+    player: () => lib,
     fetch: o.fetch ?? ((input, init) => win.fetch(input, init)),
     createObjectURL: (blob) => URL.createObjectURL(blob),
     revokeObjectURL: (url) => {
@@ -94,6 +112,24 @@ export function startRenderer(o: RendererOptions): RendererClient {
     applyTheme(s.theme);
   });
 
+  const note = installWebRtcNote(o.container, () =>
+    webrtcStatusText(capabilities.reason, settings.get().nfx),
+  );
+  const offNoteSettings = settings.onChange(() => {
+    note.refresh();
+  });
+
+  const probed: Promise<CapabilityReport> = (async () => {
+    if (o.capabilities === undefined) {
+      const r = await probePlayer(env, o.loadPlayer);
+      capabilities = r.report;
+      lib = r.player?.lib ?? null;
+    }
+    o.container.dataset['webrtcPlayer'] = capabilities.player ? 'available' : 'unavailable';
+    note.refresh();
+    return capabilities;
+  })();
+
   const root = createRoot(o.container);
   root.render(
     createElement(Shell, {
@@ -108,7 +144,10 @@ export function startRenderer(o: RendererOptions): RendererClient {
   return {
     adapter,
     settings,
-    capabilities,
+    get capabilities() {
+      return capabilities;
+    },
+    probed,
     workerReady: () => link.ready(),
     stop: () => {
       stopped ??= (async (): Promise<void> => {
@@ -116,6 +155,8 @@ export function startRenderer(o: RendererOptions): RendererClient {
         unguard();
         offRouter();
         offSettings();
+        offNoteSettings();
+        note.stop();
         root.unmount();
         await adapter.close();
         link.dispose();

@@ -310,14 +310,16 @@ describe('the layout check', () => {
 
 describe("the smoke test's reading of the app", () => {
   const line =
-    'NUTFLIX_SHELL_READY {"shell":"pear-v3","version":"0.1.0","window":"loaded","renderer":"mounted","worker":"status-ok","sandbox":"on","pipe":"round-trip","rendererSandbox":"enforced"}';
+    'NUTFLIX_SHELL_READY {"shell":"pear-v3","version":"0.1.0","window":"loaded","renderer":"mounted","worker":"status-ok","sandbox":"on","pipe":"round-trip","rendererSandbox":"enforced","webrtcPolicy":"default_public_interface_only","player":"available"}';
 
   it('accepts the ready line and nothing weaker', () => {
     const f = parseReadyLine(line);
     expect(f).not.toBeNull();
     expect(readyProblems(f ?? {})).toEqual([]);
-    for (const k of ['window', 'renderer', 'worker', 'pipe', 'rendererSandbox'])
+    for (const k of ['window', 'renderer', 'worker', 'pipe', 'rendererSandbox', 'webrtcPolicy'])
       expect(readyProblems({ ...f, [k]: 'no' }).join()).toContain(k);
+    expect(readyProblems({ ...f, webrtcPolicy: 'default' }).join()).toContain('webrtcPolicy');
+    expect(readyProblems({ ...f, player: 'unavailable' }).join()).toContain('player');
     expect(readyProblems({ ...f, sandbox: 'off' }).join()).toContain('sandbox');
     expect(readyProblems({ ...f, sandbox: 'off', rendererSandbox: 'absent' }, 'off')).toEqual([]);
     expect(readyProblems({ ...f, rendererSandbox: 'unknown' }).join()).toContain('rendererSandbox');

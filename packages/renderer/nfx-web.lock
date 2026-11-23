@@ -15,8 +15,25 @@
 # (#111 url 2.5.9, #112 a closed stdout is never a panic). Its web/player, nfx-wasm and nfx-proto
 # are bb94a3a's, byte for byte. The latest release, 0.1.2, predates `remoteCandidates`.
 #
+# How the bytes get into the bundle: the tar itself is committed, as
+# vendor/nfx-web-lib-<commit, 12 hex>.tar, and scripts/build.ts refuses it unless its sha256 is the
+# one here. Why committed:
+#   - every build on every target (five OSes, a contributor's machine) takes the same bytes with no
+#     Rust toolchain, no network and no release to depend on: nfx has no release at this commit,
+#     and fetching at build time would make each build trust that download again;
+#   - nothing is taken on faith: the `nfx-lib` job of .github/workflows/webrtc.yml builds the tar
+#     from the source archive pinned here, with the tools pinned below, and fails unless it is
+#     byte for byte the committed file. lib-tar.sh's build is reproducible (nutflix-pear's lock
+#     records GitHub's runners and a Kata VM giving the same bytes).
+# Nothing is loaded from a CDN at runtime: scripts/build.ts copies player.js byte for byte into the
+# app (`nfx/player.js`, under SRI) and carries the WASM in `nfx/wasm.js`, whose sha256 the renderer
+# checks before compiling it.
+#
+# Re-pinning: `bash scripts/nfx-lib.sh pin <commit>` prints the new line; replace the tar with the
+# one it built.
+#
 # tool <name> <version> [<sha256 of the x86_64-unknown-linux-musl release tarball>]
-nfx 04209ade5e0b33cdedf2d3d2ce2da974726c1b9c 1d8e942c4f77b2c580b45613927e5bcb142273b98a1c7e9a4cc3babdb54b5368 0000000000000000000000000000000000000000000000000000000000000000
+nfx 04209ade5e0b33cdedf2d3d2ce2da974726c1b9c 1d8e942c4f77b2c580b45613927e5bcb142273b98a1c7e9a4cc3babdb54b5368 f2a21e618d8b8927051bd4b304d40ddc69654654bb3cd80baa4534848e55423a
 tool rust 1.98.0
 tool wasm-pack 0.15.1 410101009739b9d01c7d5affaaad6e9c9a24b4cba6791a4805db8e89b9bf7af2
 tool wasm-bindgen 0.2.128 b51f0208fdff83515a787bd8ab9ac5865ed84dabb66d0c709957bb59793c645f

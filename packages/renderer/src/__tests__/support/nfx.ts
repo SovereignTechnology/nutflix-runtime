@@ -23,6 +23,7 @@ import { FakeRelayPool, type PoolLike } from '@sovit/core/nostr';
 
 import { RuntimeNetworkAdapter } from '../../adapter/adapter.js';
 import type { FetchFn } from '../../net/http.js';
+import type { NfxPlayerLib } from '../../player/nfx-lib.js';
 import { DEFAULT_NFX, DEFAULT_SETTINGS } from '../../settings/defaults.js';
 import { SettingsStore } from '../../settings/store.js';
 import { FakeWorker } from './fake-worker.js';
@@ -245,6 +246,7 @@ export function rig(
     readonly beaconWaitMs?: number;
     readonly settings?: SettingsStore;
     readonly worker?: FakeWorker;
+    readonly player?: NfxPlayerLib | null;
   } = {},
 ): Rig {
   const read = o.read ?? [READ_A];
@@ -257,6 +259,7 @@ export function rig(
   const revoked: string[] = [];
   let n = 0;
   const adapter = new RuntimeNetworkAdapter({
+    player: () => o.player ?? null,
     pool: r.pool,
     settings: store,
     worker,

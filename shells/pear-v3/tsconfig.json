@@ -15,6 +15,7 @@
     "../../packages/renderer/src/net/hosts.ts",
     "../../packages/renderer/scripts/build.ts",
     "../../packages/renderer/scripts/csp-sri.d.ts",
+    "../../packages/renderer/scripts/nfx-lib.ts",
     "../../packages/renderer/scripts/policy.ts",
     "../../vendor/nutflix-pear/packages/app-desktop/packaging/closure.ts",
     "../../vendor/nutflix-pear/packages/app-web/scripts/site.ts"

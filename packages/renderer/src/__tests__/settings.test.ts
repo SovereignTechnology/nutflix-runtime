@@ -33,6 +33,9 @@ describe('the defaults', () => {
       enabled: true,
       network: 'nfx:testnet:1',
       scopedRelays: [SCOPED_RELAY],
+      webrtc: true,
+      stunServers: ['web.nutflix.xyz:3478'],
+      meshRelays: ['wss://relay.primal.net', 'wss://relay.ditto.pub'],
     });
     expect(NFX_NETWORK).toBe('nfx:testnet:1');
     expect(DEFAULT_SETTINGS.relays.map((r) => r.url)).toEqual([
@@ -74,8 +77,8 @@ describe('isSettingsPatch', () => {
     ['another network', { nfx: { enabled: true, network: 'nfx:mainnet:1', scopedRelays: [] } }],
     ['NFX off', { nfx: { enabled: false, network: NFX_NETWORK, scopedRelays: [] } }],
     [
-      'signaling relays (slice B)',
-      { nfx: { enabled: true, network: NFX_NETWORK, scopedRelays: [], meshRelays: [] } },
+      'trackers (this client signals over Nostr only)',
+      { nfx: { enabled: true, network: NFX_NETWORK, scopedRelays: [], trackers: [] } },
     ],
     [
       'iroh relays',

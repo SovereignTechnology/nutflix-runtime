@@ -278,6 +278,9 @@ async function main(): Promise<void> {
       pipe: 'round-trip',
       rendererSandbox:
         mainWindow === undefined ? 'unknown' : rendererSandbox(mainWindow.webContents),
+      // Read back from Chromium, not from the constant it was set to.
+      webrtcPolicy:
+        mainWindow === undefined ? 'unknown' : mainWindow.webContents.getWebRTCIPHandlingPolicy(),
       player: probe.player,
       vp9: probe.vp9,
       h264: probe.h264,

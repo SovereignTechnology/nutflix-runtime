@@ -1,15 +1,16 @@
 /**
  * The renderer's `NetworkAdapter` (`RuntimeNetworkAdapter`): `platform: 'desktop'` (an app, not a
  * page), NFX only, signed out, free videos, over ordinary Nostr relays on the browser's
- * WebSocket, with video fetched by the worker over HyperDHT. Modelled on nutflix-pear's
- * `packages/app-web/src/adapter/web-adapter.ts` (the submodule's pinned commit), which plays the
- * same videos over WebRTC. What each call does here:
+ * WebSocket, with video fetched by the worker over HyperDHT and, where the probe passed and the
+ * viewer has not switched it off, traded over a WebRTC mesh. Modelled on nutflix-pear's
+ * `packages/app-web/src/adapter/web-adapter.ts` (the submodule's pinned commit). What each call
+ * does here:
  *
  * | Calls | Here |
  * |---|---|
  * | `settings`, `updateSettings` | Web Storage (`SettingsStore`) |
  * | `feed` (`network`, `tags`, `author`), `search`, `nfxVideo` | core's `NfxCatalog`; search routed by NIP-11 |
- * | `playNfx` | live beacons from core's `NfxBeaconWatch`, then `nfx.play.open` on the worker |
+ * | `playNfx` | live beacons from core's `NfxBeaconWatch`, then `nfx.play.open` on the worker: its origin for nfx's web player (`WebRtcNfxSession`), or its progressive stream for a plain `<video>` (`RuntimeNfxSession`) |
  * | `profile`, `image` | kind 0 from the read relays; images only by signed sha256, as `blob:` |
  * | `video`, `comments` | read-only NIP-71 reads (an NFX copy's thread) |
  * | `signer`, `me` | signed out |
@@ -27,7 +28,6 @@ import type {
   NetworkAdapter,
   NfxAddress,
   NfxPlaySession,
-  NfxRenditionInfo,
   NfxVideo,
   NostrEventId,
   NostrPubkey,
@@ -60,23 +60,27 @@ import {
   fetchProfile,
   fetchVideo,
   nowSeconds,
+  toWire,
   type NfxBeaconWatchTimers,
   type PoolLike,
 } from '@sovit/core/nostr';
 import { MAX_PREFETCH_SECONDS, type ErrorCode } from '@nutflix-runtime/worker';
 
 import { RuntimeAdapterError, fail, unsupported, type RuntimeErrorCode } from '../errors.js';
-import { isWorkerMediaUrl } from '../links.js';
+import { isWorkerMediaUrl, isWorkerOriginUrl } from '../links.js';
 import type { FetchFn } from '../net/http.js';
 import { browserRelayInfoFetch } from '../net/relay-info.js';
+import type { NfxPlayerLib } from '../player/nfx-lib.js';
 import type { SettingsStore } from '../settings/store.js';
 import { NFX_NETWORK } from '../settings/defaults.js';
+import { webrtcPlan } from '../settings/webrtc.js';
 import { codeOf, type PlayWorker } from '../worker/pipe.js';
 import { canonicalNfxAddress } from './address.js';
 import { hyperdhtEndpoints } from './endpoints.js';
 import { Images } from './images.js';
 import { RuntimeNfxSession } from './session.js';
 import { RuntimeWallet } from './wallet.js';
+import { WebRtcNfxSession, type ProgressivePlay } from './webrtc-session.js';
 
 /** Page size of a comment thread (the desktop app's). */
 export const COMMENTS_PAGE = 20;
@@ -95,6 +99,12 @@ export interface RuntimeAdapterOptions {
   readonly settings: SettingsStore;
   /** The worker, over its pipe (`WorkerLink`). */
   readonly worker: PlayWorker;
+  /**
+   * nfx's web player, when the capability probe passed; `null` or absent: every video plays from
+   * the worker's progressive stream. Asked at each play, so a probe that finishes after the first
+   * screen counts from the next play on.
+   */
+  readonly player?: (() => NfxPlayerLib | null) | undefined;
   /** The page's `fetch`, for NIP-11 documents and images. */
   readonly fetch: FetchFn;
   readonly createObjectURL: (blob: Blob) => string;
@@ -194,7 +204,7 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
   readonly #catalog: NfxCatalog;
   readonly #beacons: NfxBeaconWatch;
   readonly #images: Images;
-  readonly #sessions = new Set<RuntimeNfxSession>();
+  readonly #sessions = new Set<RuntimeNfxSession | WebRtcNfxSession>();
   #client: { readonly relays: Settings['relays']; readonly client: NostrClient } | null = null;
   #closed = false;
 
@@ -344,51 +354,103 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
     );
     const found = hyperdhtEndpoints(video, events, now());
     if (found.seeders === 0) fail('no-seeders', 'nobody seeding this NFX video is online');
-    const sid = (this.#o.newSid ?? randomSid)();
-    let opened;
-    try {
-      // `peers` may be empty: the worker plays from its own store when it holds the video.
-      opened = await this.#o.worker.open({
+    const common = {
+      video: target.value.addr.toString(),
+      root: video.root,
+      segs: video.segs,
+      peers: found.peers,
+      ...(found.held.seeders > 0 ? { held: found.held } : {}),
+      ...(rendition === undefined ? {} : { renditions: [rendition] }),
+    };
+    const openProgressive = async (): Promise<ProgressivePlay> => {
+      const sid = (this.#o.newSid ?? randomSid)();
+      let opened;
+      try {
+        // `peers` may be empty: the worker plays from its own store when it holds the video.
+        opened = await this.#o.worker.open({
+          ...common,
+          sid,
+          prefetchSeconds: Math.min(
+            Math.max(0, Math.trunc(this.#settings().prefetchSeconds)),
+            MAX_PREFETCH_SECONDS,
+          ),
+          // The progressive stream alone.
+          origin: false,
+        });
+      } catch (e) {
+        throw fromWorker(e);
+      }
+      const url = opened.progressiveUrl;
+      if (!isWorkerMediaUrl(url)) {
+        // The worker answered with something that is not its own loopback stream: refuse it, and
+        // close the play it opened.
+        await this.#o.worker.close(sid).catch(() => undefined);
+        fail('internal', 'the worker gave no playable stream');
+      }
+      return {
         sid,
-        video: target.value.addr.toString(),
-        root: video.root,
-        segs: video.segs,
-        peers: found.peers,
-        ...(found.held.seeders > 0 ? { held: found.held } : {}),
-        ...(rendition === undefined ? {} : { renditions: [rendition] }),
-        prefetchSeconds: Math.min(
-          Math.max(0, Math.trunc(this.#settings().prefetchSeconds)),
-          MAX_PREFETCH_SECONDS,
-        ),
-        // The progressive stream alone: the web player's origin is slice B's.
-        origin: false,
+        url,
+        rendition: opened.rendition,
+        renditions: opened.renditions.map((r) => ({
+          id: r.id,
+          bandwidth: r.bandwidth,
+          ...(r.resolution === undefined ? {} : { resolution: r.resolution }),
+        })),
+      };
+    };
+
+    const player = this.#o.player?.() ?? null;
+    const plan = webrtcPlan(this.#settings().nfx);
+    let session: RuntimeNfxSession | WebRtcNfxSession;
+    if (player !== null && plan !== null) {
+      const sid = (this.#o.newSid ?? randomSid)();
+      let opened;
+      try {
+        // The origin alone: the player fetches what it needs, and the progressive stream is
+        // opened only if the player fails.
+        opened = await this.#o.worker.open({ ...common, sid, progressive: false });
+      } catch (e) {
+        throw fromWorker(e);
+      }
+      const originUrl = opened.originUrl;
+      if (!isWorkerOriginUrl(originUrl)) {
+        await this.#o.worker.close(sid).catch(() => undefined);
+        fail('internal', 'the worker gave no playable origin');
+      }
+      session = new WebRtcNfxSession({
+        videoId: a,
+        manifestJson: JSON.stringify(toWire(video.event)),
+        sid,
+        originUrl,
+        renditions: opened.renditions.map((r) => ({
+          id: r.id,
+          bandwidth: r.bandwidth,
+          ...(r.resolution === undefined ? {} : { resolution: r.resolution }),
+        })),
+        pin: rendition,
+        meshRelays: plan.meshRelays,
+        iceServers: plan.iceServers,
+        player,
+        worker: this.#o.worker,
+        openProgressive,
+        onClose: (s) => {
+          this.#sessions.delete(s);
+        },
       });
-    } catch (e) {
-      throw fromWorker(e);
+    } else {
+      const p = await openProgressive();
+      session = new RuntimeNfxSession({
+        videoId: a,
+        sid: p.sid,
+        url: p.url,
+        rendition: p.rendition,
+        renditions: p.renditions,
+        worker: this.#o.worker,
+        onClose: (s) => {
+          this.#sessions.delete(s);
+        },
+      });
     }
-    const url = opened.progressiveUrl;
-    if (!isWorkerMediaUrl(url)) {
-      // The worker answered with something that is not its own loopback stream: refuse it, and
-      // close the play it opened.
-      await this.#o.worker.close(sid).catch(() => undefined);
-      fail('internal', 'the worker gave no playable stream');
-    }
-    const renditions: NfxRenditionInfo[] = opened.renditions.map((r) => ({
-      id: r.id,
-      bandwidth: r.bandwidth,
-      ...(r.resolution === undefined ? {} : { resolution: r.resolution }),
-    }));
-    const session = new RuntimeNfxSession({
-      videoId: a,
-      sid,
-      url,
-      rendition: opened.rendition,
-      renditions,
-      worker: this.#o.worker,
-      onClose: (s) => {
-        this.#sessions.delete(s);
-      },
-    });
     this.#sessions.add(session);
     if (this.#isClosed()) {
       await session.close();
