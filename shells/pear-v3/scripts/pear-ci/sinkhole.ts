@@ -19,17 +19,30 @@ import { fileURLToPath } from 'node:url';
 const HOST =
   /\b(?:wss|ws|stuns?|turns?):(?:\/\/)?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)/gi;
 
-/** The hosts named in `text`: public names only (no loopback, no reserved documentation names). */
+/** A quoted bare `host` or `host:port`: how the settings keep a STUN server (no `stun:` prefix). */
+const QUOTED_HOST =
+  /['"`]([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)(?::[0-9]{1,5})?['"`]/gi;
+
+/** A public name: not an address or a version, not loopback, not a reserved documentation name. */
+function isPublicName(h: string): boolean {
+  if (h === '' || /^[0-9.]+$/.test(h)) return false;
+  if (/(^|\.)(example|invalid|test|localhost)$/.test(h)) return false;
+  return !/(^|\.)example\.(com|org|net)$/.test(h);
+}
+
+function matches(text: string, pattern: RegExp): string[] {
+  const found = [...text.matchAll(pattern)].map((m) => (m[1] ?? '').toLowerCase());
+  return [...new Set(found.filter(isPublicName))].sort();
+}
+
+/** The hosts named by a relay or STUN URL in `text`. */
 export function hostsIn(text: string): string[] {
-  const out = new Set<string>();
-  for (const m of text.matchAll(HOST)) {
-    const h = (m[1] ?? '').toLowerCase();
-    if (h === '' || /^[0-9.]+$/.test(h)) continue;
-    if (/(^|\.)(example|invalid|test|localhost)$/.test(h)) continue;
-    if (/(^|\.)example\.(com|org|net)$/.test(h)) continue;
-    out.add(h);
-  }
-  return [...out].sort();
+  return matches(text, HOST);
+}
+
+/** The bare quoted hosts in `text`. Read only from the settings' defaults, where one is a server. */
+export function quotedHostsIn(text: string): string[] {
+  return matches(text, QUOTED_HOST);
 }
 
 function sources(dir: string): string[] {
@@ -46,7 +59,16 @@ export function publicHosts(repoRoot: string): string[] {
     ...sources(join(repoRoot, 'packages', 'renderer', 'src')),
     join(repoRoot, 'shells', 'pear-v3', 'packaging', 'update-root.ts'),
   ];
-  return [...new Set(files.flatMap((f) => hostsIn(readFileSync(f, 'utf8'))))].sort();
+  const defaults = readFileSync(
+    join(repoRoot, 'packages', 'renderer', 'src', 'settings', 'defaults.ts'),
+    'utf8',
+  );
+  return [
+    ...new Set([
+      ...files.flatMap((f) => hostsIn(readFileSync(f, 'utf8'))),
+      ...quotedHostsIn(defaults),
+    ]),
+  ].sort();
 }
 
 /** The real IPv4 addresses of `hosts`, before they are blackholed (for the tripwire to watch). */

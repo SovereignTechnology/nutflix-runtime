@@ -12,7 +12,7 @@ import { REPO_ROOT } from '../../../packaging/paths.ts';
 import { readNotice } from '../../../src/update/notice.ts';
 import { parseTrustRoot } from '../../../src/update/root.ts';
 import { NoticeRelay } from '../notice-relay.ts';
-import { hostsFile, hostsIn, publicHosts, sinkholeLines } from '../sinkhole.ts';
+import { hostsFile, hostsIn, publicHosts, quotedHostsIn, sinkholeLines } from '../sinkhole.ts';
 import {
   parsePfCounters,
   parseWindowsFirewallLog,
@@ -111,6 +111,18 @@ describe('the sinkhole', () => {
          wss://relay.example.org, https://not-a-relay.org`,
       ),
     ).toEqual(['relay.one.sample.net', 'relay.two.dev', 'stun.three.org', 'turn.four.io']);
+  });
+
+  it('finds a STUN server the settings keep as a bare host:port', () => {
+    const text = `export const NFX_NETWORK = 'nfx:testnet:1';
+      export const SCOPED = 'wss://relay.one.sample.net' as RelayUrl;
+      export const DEFAULT_STUN_SERVERS = Object.freeze([
+        'stun.two.sample.net:3478' as StunServer,
+        "stun.three.dev",
+      ]);
+      const other = ['system', '0.1.0', '127.0.0.1:3478', 'stun.four.example:3478'];`;
+    expect(hostsIn(text)).toEqual(['relay.one.sample.net']);
+    expect(quotedHostsIn(text)).toEqual(['stun.three.dev', 'stun.two.sample.net']);
   });
 
   it('covers the renderer’s default relays and every release notice relay', () => {
