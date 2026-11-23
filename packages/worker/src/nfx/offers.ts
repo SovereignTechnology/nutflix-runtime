@@ -164,6 +164,12 @@ export class SegmentOffers {
       if (key.startsWith(`${sid}:`)) this.#assembling.delete(key);
   }
 
+  /** Seeding what you watch went off: nothing handed over is kept. */
+  async clear(): Promise<void> {
+    this.#assembling.clear();
+    for (const video of [...this.#kept.keys()]) await this.drop(video);
+  }
+
   get assembling(): number {
     return this.#assembling.size;
   }

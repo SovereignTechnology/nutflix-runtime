@@ -194,7 +194,11 @@ describe('the display name', () => {
 /** A worker whose ffmpeg and ffprobe are this fake. */
 async function fakeStudio(
   ffprobeJson: unknown,
-  extra: { readonly stat?: typeof nodeFs.stat } = {},
+  extra: {
+    readonly stat?: typeof nodeFs.stat;
+    readonly sourceTtlSec?: number;
+    readonly diskCapBytes?: number;
+  } = {},
 ): Promise<{
   w: ReturnType<typeof startWorker>;
   file: string;
@@ -224,12 +228,15 @@ async function fakeStudio(
   const w = startWorker({
     runtime: extra.stat === undefined ? base : { ...base, fs: { ...nodeFs, stat: extra.stat } },
     signerCost: coreSigner.minimumCost(),
+    ...(extra.sourceTtlSec === undefined ? {} : { sourceTtlSec: extra.sourceTtlSec }),
   });
   cleanups.push(() => w.close());
   await w.client.request('init', {
     v: 1,
     storage: join(d.dir, 'storage', 'worker'),
     bootstrap: [{ host: '127.0.0.1', port: 9 }],
+    localKey: true,
+    ...(extra.diskCapBytes === undefined ? {} : { diskCapBytes: extra.diskCapBytes }),
   });
   return { w, file, dir: d.dir, calls };
 }
@@ -361,6 +368,98 @@ describe('an untrusted file, refused before anything is encoded', () => {
     // The fake ffmpeg writes nothing, so this one fails after it started.
     expect(await code(publish())).not.toBe('ok');
     expect(await code(publish())).toBe('not-found');
+  });
+
+  it('a new pick revokes the one before it', async () => {
+    const { w, file, dir } = await fakeStudio(ffprobeOf({}));
+    const other = join(dir, 'holiday.mp4');
+    await writeFile(other, new Uint8Array(16).fill(2));
+    const first = await w.client.request('studio.source', { path: file });
+    const second = await w.client.request('studio.source', { path: other });
+    expect(await code(w.client.request('studio.probe', { source: first.source }))).toBe(
+      'not-found',
+    );
+    await w.client.request('signer.local.create', { passphrase: 'a passphrase for this test' });
+    expect(
+      await code(
+        w.client.request('studio.publish', {
+          source: first.source,
+          title: 'Holiday',
+          description: '',
+          tags: [],
+          sizes: [720],
+        }),
+      ),
+    ).toBe('not-found');
+    expect(await code(w.client.request('studio.probe', { source: second.source }))).toBe('ok');
+  });
+
+  it('a pick expires', async () => {
+    const { w, file } = await fakeStudio(ffprobeOf({}), { sourceTtlSec: 0 });
+    const s = await w.client.request('studio.source', { path: file });
+    expect(await code(w.client.request('studio.probe', { source: s.source }))).toBe('not-found');
+  });
+
+  it('refuses a job that cannot fit, before anything is encoded', async () => {
+    const { w, file, calls } = await fakeStudio(ffprobeOf({}), { diskCapBytes: 1024 });
+    await w.client.request('signer.local.create', { passphrase: 'a passphrase for this test' });
+    const s = await w.client.request('studio.source', { path: file });
+    expect(
+      await code(
+        w.client.request('studio.publish', {
+          source: s.source,
+          title: 't',
+          description: '',
+          tags: [],
+          sizes: [720],
+        }),
+      ),
+    ).toBe('disk-cap');
+    expect(calls.filter((c) => c.includes('libx264'))).toEqual([]);
+  });
+
+  it('holds an output to what is left of the job’s budget', async () => {
+    const g = guardedRunner({
+      runner: {
+        run: (_f, args) => {
+          seen.push([...args]);
+          return Promise.resolve({ exitCode: 0, stdout: new Uint8Array(), stderr: '' });
+        },
+      },
+      binaries: { ffmpeg: '/usr/bin/ffmpeg', ffprobe: '/usr/bin/ffprobe' },
+      source: SOURCE,
+      workDir: WORK,
+      outputRoom: () => Promise.resolve(room),
+    });
+    const seen: string[][] = [];
+    let room = 5000;
+    await g.run('/usr/bin/ffmpeg', ['-i', SOURCE, '-f', 'mp4', `${WORK}/o.mp4`]);
+    const argv = seen[0] ?? [];
+    expect(argv[argv.indexOf('-fs') + 1]).toBe('5000');
+    room = 0;
+    await expect(
+      g.run('/usr/bin/ffmpeg', ['-i', SOURCE, '-f', 'mp4', `${WORK}/o.mp4`]),
+    ).rejects.toThrow(/budget/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('a cancel reaches a publish from its first moment', async () => {
+    const { w, file } = await fakeStudio(ffprobeOf({}));
+    await w.client.request('signer.local.create', { passphrase: 'a passphrase for this test' });
+    const s = await w.client.request('studio.source', { path: file });
+    const running = code(
+      w.client.request('studio.publish', {
+        source: s.source,
+        title: 't',
+        description: '',
+        tags: [],
+        sizes: [720],
+      }),
+    );
+    // Both frames arrive in order: the publish has begun when the cancel is handled.
+    const cancelled = await w.client.request('studio.cancel', {});
+    expect(cancelled).toEqual({ cancelled: true });
+    expect(await running).toBe('session-closed');
   });
 
   it('every call to the fake ffprobe carried the guard', async () => {

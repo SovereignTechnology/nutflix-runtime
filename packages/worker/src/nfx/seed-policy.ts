@@ -27,6 +27,8 @@ export interface SeedRecord {
   readonly root: string;
   /** The manifest's author; for `published`, `null` until the user signed it. */
   readonly author: string | null;
+  /** The user stopped serving it. The bytes stay until they delete it. */
+  readonly stopped?: true;
 }
 
 function isRecord(x: unknown): x is SeedRecord {
@@ -37,7 +39,8 @@ function isRecord(x: unknown): x is SeedRecord {
     (r['origin'] === 'published' || r['origin'] === 'watched' || r['origin'] === 'host') &&
     typeof r['root'] === 'string' &&
     SHA.test(r['root']) &&
-    (author === null || (typeof author === 'string' && SHA.test(author)))
+    (author === null || (typeof author === 'string' && SHA.test(author))) &&
+    (r['stopped'] === undefined || r['stopped'] === true)
   );
 }
 
@@ -86,9 +89,34 @@ export class SeedPolicy {
   /** Whether peers may fetch `video` from this node now. */
   served(video: string): boolean {
     const r = this.#records.get(video);
-    if (r === undefined) return false;
+    if (r === undefined || r.stopped === true) return false;
     if (r.origin === 'host') return true;
     return r.origin === 'published' ? r.author !== null : this.#watched;
+  }
+
+  /**
+   * Whether `video` is private: stored as a draft nobody has signed, or with no record of what it
+   * is. A private video is neither served to peers nor readable through a play.
+   */
+  isPrivate(video: string): boolean {
+    const r = this.#records.get(video);
+    return r === undefined || (r.origin === 'published' && r.author === null);
+  }
+
+  /** The records of unsigned drafts. */
+  drafts(): string[] {
+    return [...this.#records]
+      .filter(([, r]) => r.origin === 'published' && r.author === null)
+      .map(([video]) => video);
+  }
+
+  /** Stop or resume serving. Returns whether a record changed. */
+  async setStopped(video: string, stopped: boolean): Promise<boolean> {
+    const r = this.#records.get(video);
+    if (r === undefined || (r.stopped === true) === stopped) return false;
+    const { stopped: _was, ...rest } = r;
+    await this.set(video, stopped ? { ...rest, stopped: true } : rest);
+    return true;
   }
 
   setWatched(on: boolean): Promise<void> {

@@ -22,6 +22,7 @@ import DHT from 'hyperdht';
 import { startRenderer, type RendererClient } from '../main.js';
 import {
   BEACON_EVERY_MS,
+  PUBLISH_DECLINED,
   SERVING_EVENT,
   SeedPublish,
   type SeedPublishOptions,
@@ -63,6 +64,7 @@ const servedStatus = (over: Partial<SeedingStatusWire> = {}): SeedingStatusWire 
       bytes: 100,
       origin: 'published',
       served: true,
+      stopped: false,
     },
   ],
   listening: [{ namespace: NS, connections: 0 }],
@@ -300,12 +302,13 @@ describe('publishing', () => {
   const creator = new Key();
   const VIDEO_ID = `nutflix-${'b'.repeat(32)}`;
 
-  function stored(): StudioPublishedWire {
+  /** What the worker answers the page, and the draft it keeps to itself until main asks. */
+  function stored(): StudioPublishedWire & {
+    readonly draft: Pick<NostrEvent, 'kind' | 'created_at' | 'tags' | 'content'>;
+  } {
     const m = manifest(creator, VIDEO_ID, { createdAt: NOW, root: 'ab'.repeat(32), segs: 4 });
     return {
       video: `${NS}:${VIDEO_ID}`,
-      root: 'ab'.repeat(32),
-      segs: 4,
       files: 4,
       bytes: 100,
       draft: { kind: 38504, created_at: m.created_at, tags: m.tags, content: m.content },
@@ -328,7 +331,8 @@ describe('publishing', () => {
     const seen: string[] = [];
     const r = await w.c.publish(input, (p) => seen.push(p.stage));
     expect(r).toMatchObject({ video: s.video, relays: 2 });
-    expect(w.worker.calls.find((c) => c.m === 'app.publish.sign')?.a).toEqual({ event: s.draft });
+    // The page names the draft. What gets signed is the worker's own record of it.
+    expect(w.worker.calls.find((c) => c.m === 'app.publish.sign')?.a).toEqual({ video: s.video });
     expect(w.published[0]?.relays).toEqual([WRITE, SCOPED]);
     expect(w.published[0]?.event.id).toBe(signed.id);
   });
@@ -336,10 +340,6 @@ describe('publishing', () => {
   it.each([
     ['tampered', (e: NostrEvent) => ({ ...e, content: 'changed' })],
     ['another video', () => creator.sign({ ...manifest(creator, 'another-video-1') })],
-    [
-      'another root',
-      () => manifest(creator, VIDEO_ID, { createdAt: NOW, root: 'cc'.repeat(32), segs: 4 }),
-    ],
   ])('never publishes a signed manifest that is %s', async (_name, change) => {
     const w = world();
     const s = stored();
@@ -367,6 +367,34 @@ describe('publishing', () => {
     expect(w.worker.count('app.publish.sign')).toBe(2);
     expect(w.c.awaitingSignature).toBe(false);
     expect(w.published).toHaveLength(1);
+  });
+
+  it('a "no" in main’s dialog publishes nothing and leaves no draft to sign', async () => {
+    const w = world();
+    const s = stored();
+    w.worker.answers['studio.publish'] = () => s;
+    w.worker.answers['app.publish.sign'] = () => null;
+    expect(await w.c.publish(input, () => undefined)).toBe(PUBLISH_DECLINED);
+    expect(w.published).toEqual([]);
+    expect(w.c.awaitingSignature).toBe(false);
+    // Asking again is a new package: the old one is gone.
+    await w.c.publish(input, () => undefined);
+    expect(w.worker.count('studio.publish')).toBe(2);
+  });
+
+  it('stopping keeps the video; deleting and seeding again go through main', async () => {
+    const w = world();
+    const { video } = stored();
+    w.worker.answers['seeding.stop'] = () => ({ stopped: true });
+    w.worker.answers['app.seeding.delete'] = () => IDLE;
+    w.worker.answers['app.seeding.resume'] = () => IDLE;
+    await w.c.stopSeeding(video);
+    expect(w.worker.calls.find((c) => c.m === 'seeding.stop')?.a).toEqual({ video });
+    expect(w.worker.count('app.seeding.delete')).toBe(0);
+    await w.c.deleteVideo(video);
+    await w.c.resumeSeeding(video);
+    expect(w.worker.calls.find((c) => c.m === 'app.seeding.delete')?.a).toEqual({ video });
+    expect(w.worker.calls.find((c) => c.m === 'app.seeding.resume')?.a).toEqual({ video });
   });
 
   it('a changed title is a new package, never a re-signed old one', async () => {
@@ -603,17 +631,20 @@ describe('the Settings section', () => {
     expect(c.querySelector(`#${PANEL_ID} input[type="file"]`)).toBeNull();
   });
 
-  it('keeps secrets out of the page: masked fields, cleared when used', async () => {
+  it('has no field for a secret: the buttons ask main, with no arguments', async () => {
     const worker = new FakeControl();
     worker.answers['seeding.status'] = () => IDLE;
     worker.answers['signer.status'] = () => SIGNER;
     worker.answers['studio.ffmpeg'] = () => ({ found: true, install: 'x' });
-    worker.answers['signer.local.create'] = () => ({
+    const unlocked: SignerStatusWire = {
       kind: 'local',
       pubkey: 'ab'.repeat(32),
       locked: false,
       keyFile: true,
-    });
+    };
+    worker.answers['app.signer.create'] = () => unlocked;
+    worker.answers['app.signer.unlock'] = () => unlocked;
+    worker.answers['app.signer.connect'] = () => unlocked;
     const control = new SeedPublish({
       worker,
       pool: { publish: () => Promise.resolve([]) },
@@ -626,19 +657,63 @@ describe('the Settings section', () => {
     document.body.append(root);
     const panel = installSeedPublishPanel(root, control);
     await settle();
-    const pass = root.querySelector<HTMLInputElement>('#nutflix-passphrase');
-    expect(pass?.type).toBe('password');
-    expect(root.querySelector<HTMLInputElement>('#nutflix-bunker')?.type).toBe('password');
-    if (pass === null) throw new Error('no field');
-    pass.value = 'a passphrase to clear';
-    root.querySelector<HTMLButtonElement>('#nutflix-signer-create')?.click();
-    await settle();
-    expect(pass.value).toBe('');
-    expect(worker.calls.find((c) => c.m === 'signer.local.create')?.a).toEqual({
-      passphrase: 'a passphrase to clear',
-    });
-    expect(root.textContent).not.toContain('a passphrase to clear');
+    expect(root.querySelector('input[type="password"]')).toBeNull();
+    expect(root.querySelector('#nutflix-passphrase')).toBeNull();
+    expect(root.querySelector('#nutflix-bunker')).toBeNull();
+    for (const [id, method] of [
+      ['nutflix-signer-create', 'app.signer.create'],
+      ['nutflix-signer-unlock', 'app.signer.unlock'],
+      ['nutflix-signer-connect', 'app.signer.connect'],
+    ] as const) {
+      root.querySelector<HTMLButtonElement>(`#${id}`)?.click();
+      await settle();
+      expect(worker.calls.find((c) => c.m === method)?.a).toEqual({});
+    }
     expect(root.querySelector('#nutflix-signer-status')?.textContent).toContain('unlocked');
+    panel.stop();
+    root.remove();
+  });
+
+  it('a stored video has Stop and Delete; Stop never deletes', async () => {
+    const worker = new FakeControl();
+    const v = servedStatus().videos[0];
+    if (v === undefined) throw new Error('no video');
+    let status: SeedingStatusWire = servedStatus();
+    worker.answers['seeding.status'] = () => status;
+    worker.answers['seeding.beacons'] = () => ({ events: [] });
+    worker.answers['signer.status'] = () => SIGNER;
+    worker.answers['studio.ffmpeg'] = () => ({ found: true, install: 'x' });
+    worker.answers['seeding.stop'] = () => {
+      status = {
+        ...status,
+        videos: [{ ...v, served: false, stopped: true }],
+        listening: [],
+      };
+      return { stopped: true };
+    };
+    worker.answers['app.seeding.delete'] = () => IDLE;
+    const control = new SeedPublish({
+      worker,
+      pool: { publish: () => Promise.resolve([]) },
+      settings: { get: () => settings },
+      timers: { setInterval: () => 1, clearInterval: () => undefined },
+    });
+    const root = document.createElement('div');
+    const body = document.createElement('div');
+    body.className = 'nf-settings__body';
+    root.append(body);
+    document.body.append(root);
+    const panel = installSeedPublishPanel(root, control);
+    await settle();
+    root.querySelector<HTMLButtonElement>('#nutflix-seed-stop-0')?.click();
+    await settle();
+    expect(worker.calls.find((c) => c.m === 'seeding.stop')?.a).toEqual({ video: v.video });
+    expect(worker.count('app.seeding.delete')).toBe(0);
+    expect(root.querySelector('#nutflix-seed-stop-0')).toBeNull();
+    expect(root.querySelector('#nutflix-seed-resume-0')).not.toBeNull();
+    root.querySelector<HTMLButtonElement>('#nutflix-seed-delete-0')?.click();
+    await settle();
+    expect(worker.calls.find((c) => c.m === 'app.seeding.delete')?.a).toEqual({ video: v.video });
     panel.stop();
     root.remove();
   });

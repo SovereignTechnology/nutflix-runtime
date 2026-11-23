@@ -5,7 +5,8 @@
  * of its own, added to the Settings screen while it is shown, as `../settings/webrtc-note.ts` adds
  * its line. Every value is set with `textContent` or `.value`; nothing here parses HTML.
  *
- * The passphrase and bunker fields are `type=password` and are cleared as soon as they are used.
+ * No secret passes through here: a passphrase or a bunker link is typed in main's own prompt window
+ * (`shells/pear-v3/src/main/prompt-window.ts`), which this page cannot read.
  */
 import type {
   SeedingStatusWire,
@@ -13,12 +14,11 @@ import type {
   StudioProbeWire,
   StudioSourceWire,
 } from '@nutflix-runtime/worker';
-import { MAX_DESCRIPTION, MAX_PASSPHRASE, MAX_TITLE } from '@nutflix-runtime/worker';
+import { MAX_DESCRIPTION, MAX_TITLE } from '@nutflix-runtime/worker';
 
-import type { SeedPublish } from './controller.js';
+import { PUBLISH_DECLINED, type SeedPublish } from './controller.js';
 
 export const PANEL_ID = 'nutflix-seed-publish';
-const MAX_BUNKER_FIELD = 2048;
 
 /** The switch's plain text (ADR 0001 decision 4's disclosure, for seeding). */
 export const SEEDING_DISCLOSURE =
@@ -133,26 +133,19 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
     className: 'nf-settings__desc',
   });
   signerStatus.setAttribute('role', 'status');
-  const passphrase = make(doc, 'input');
-  passphrase.type = 'password';
-  passphrase.autocomplete = 'off';
-  passphrase.maxLength = MAX_PASSPHRASE;
-  const createKey = button(doc, 'nutflix-signer-create', 'Create a key');
-  const unlock = button(doc, 'nutflix-signer-unlock', 'Unlock');
+  const createKey = button(doc, 'nutflix-signer-create', 'Create a key…');
+  const unlock = button(doc, 'nutflix-signer-unlock', 'Unlock…');
   const lock = button(doc, 'nutflix-signer-lock', 'Lock');
-  const bunker = make(doc, 'input');
-  bunker.type = 'password';
-  bunker.autocomplete = 'off';
-  bunker.maxLength = MAX_BUNKER_FIELD;
-  bunker.placeholder = 'bunker://…';
-  const connect = button(doc, 'nutflix-signer-connect', 'Connect bunker');
+  const connect = button(doc, 'nutflix-signer-connect', 'Connect a bunker…');
   signerGroup.append(
     signerStatus,
-    field(doc, 'nutflix-passphrase', 'Passphrase (at least 8 characters)', passphrase),
+    make(doc, 'p', {
+      className: 'nf-settings__desc',
+      text: 'Your passphrase or bunker link is typed in a separate window that this page cannot read.',
+    }),
     createKey,
     unlock,
     lock,
-    field(doc, 'nutflix-bunker', 'Or a NIP-46 bunker', bunker),
     connect,
   );
 
@@ -220,18 +213,40 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
         : `Seeding ${String(served)} ${served === 1 ? 'video' : 'videos'}.`;
     seedStatus.dataset['served'] = String(served);
     seedList.replaceChildren(
-      ...s.videos.map((v) => {
-        const li = make(doc, 'li', {
-          text: `${v.video} (${v.origin}${v.served ? ', seeding' : ', not seeding'}) `,
-        });
-        const stop = button(doc, `nutflix-seed-stop-${v.root.slice(0, 16)}`, 'Stop and delete');
-        stop.addEventListener('click', () => {
-          act(seedStatus, async () => {
-            await control.stopSeeding(v.video);
-            showSeeding(await control.refreshSeeding());
-          });
-        });
-        li.append(stop);
+      ...s.videos.map((v, n) => {
+        const state = v.served ? 'seeding' : v.stopped ? 'stopped' : 'not seeding';
+        const li = make(doc, 'li', { text: `${v.video} (${v.origin}, ${state}) ` });
+        const run =
+          (f: () => Promise<SeedingStatusWire>): (() => void) =>
+          () => {
+            act(seedStatus, async () => {
+              showSeeding(await f());
+            });
+          };
+        if (v.served) {
+          const stop = button(doc, `nutflix-seed-stop-${String(n)}`, 'Stop seeding');
+          stop.addEventListener(
+            'click',
+            run(async () => {
+              await control.stopSeeding(v.video);
+              return control.refreshSeeding();
+            }),
+          );
+          li.append(stop);
+        } else if (v.stopped) {
+          const again = button(doc, `nutflix-seed-resume-${String(n)}`, 'Seed again…');
+          again.addEventListener(
+            'click',
+            run(() => control.resumeSeeding(v.video)),
+          );
+          li.append(again);
+        }
+        const del = button(doc, `nutflix-seed-delete-${String(n)}`, 'Delete…');
+        del.addEventListener(
+          'click',
+          run(() => control.deleteVideo(v.video)),
+        );
+        li.append(del);
         return li;
       }),
     );
@@ -280,17 +295,13 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
     });
   });
   createKey.addEventListener('click', () => {
-    const p = passphrase.value;
-    passphrase.value = '';
     act(signerStatus, async () => {
-      showSigner(await control.createKey(p));
+      showSigner(await control.createKey());
     });
   });
   unlock.addEventListener('click', () => {
-    const p = passphrase.value;
-    passphrase.value = '';
     act(signerStatus, async () => {
-      showSigner(await control.unlock(p));
+      showSigner(await control.unlock());
     });
   });
   lock.addEventListener('click', () => {
@@ -299,10 +310,8 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
     });
   });
   connect.addEventListener('click', () => {
-    const uri = bunker.value;
-    bunker.value = '';
     act(signerStatus, async () => {
-      showSigner(await control.connectBunker(uri));
+      showSigner(await control.connectBunker());
     });
   });
   pick.addEventListener('click', () => {
@@ -349,6 +358,12 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
                 : `${p.stage[0]?.toUpperCase() ?? ''}${p.stage.slice(1)}…`;
           },
         );
+        if (done === PUBLISH_DECLINED) {
+          publishStatus.textContent = 'Not published. The encoded copy was deleted.';
+          publishStatus.dataset['state'] = 'declined';
+          showSeeding(await control.refreshSeeding());
+          return;
+        }
         publishStatus.textContent =
           done.relays === 0
             ? 'Signed and seeding, but no relay accepted the manifest, so nobody can find it. Check your relays.'

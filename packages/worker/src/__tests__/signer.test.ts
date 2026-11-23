@@ -45,6 +45,7 @@ async function worker(): Promise<{ w: RunningWorker; dir: string }> {
     v: 1,
     storage: d.dir,
     bootstrap: [{ host: '127.0.0.1', port: 9 }],
+    localKey: true,
   });
   return { w, dir: d.dir };
 }
@@ -115,6 +116,7 @@ describe('the passphrase-sealed key', () => {
     cleanups.push(() => d.rm());
     let t = 1_000_000;
     const s = new UserSigner({
+      allowLocal: true,
       fs: nodeFs,
       system: nodeSystem(),
       dir: join(d.dir, SIGNER_DIR),
@@ -151,6 +153,7 @@ describe('the passphrase-sealed key', () => {
     const d = await tempDir('nf-signer-');
     cleanups.push(() => d.rm());
     const s = new UserSigner({
+      allowLocal: true,
       fs: nodeFs,
       system: nodeSystem(),
       dir: join(d.dir, SIGNER_DIR),
@@ -163,6 +166,27 @@ describe('the passphrase-sealed key', () => {
     await s.lock();
     expect((await running).locked).toBe(true);
     expect(await codeOf(s.sign(draft()))).toBe('no-signer');
+    await s.close();
+  });
+
+  it('refuses to lock or change the signer under a signature in flight', async () => {
+    const d = await tempDir('nf-signer-');
+    cleanups.push(() => d.rm());
+    const s = new UserSigner({
+      allowLocal: true,
+      fs: nodeFs,
+      system: nodeSystem(),
+      dir: join(d.dir, SIGNER_DIR),
+      cost,
+    });
+    await s.load();
+    await s.create(PASS);
+    const signing = s.sign(draft());
+    expect(await codeOf(s.lock())).toBe('rate-limited');
+    expect(await codeOf(s.unlock(PASS))).toBe('rate-limited');
+    expect(await codeOf(s.connect('bunker://x'))).toBe('rate-limited');
+    await signing;
+    expect((await s.lock()).locked).toBe(true);
     await s.close();
   });
 
@@ -179,23 +203,52 @@ describe('what may be signed', () => {
     async (kind) => {
       const { w } = await worker();
       await w.client.request('signer.local.create', { passphrase: PASS });
-      expect(await codeOf(w.client.request('signer.sign', { event: draft({ kind }) }))).toBe(
-        'invalid-argument',
-      );
+      const me = (await w.client.request('signer.status', {})).pubkey ?? '';
+      expect(
+        await codeOf(w.client.request('signer.sign', { event: draft({ kind }), signer: me })),
+      ).toBe('invalid-argument');
     },
   );
 
   it('refuses a manifest of a video this node did not package', async () => {
     const { w } = await worker();
+    const me = await w.client.request('signer.local.create', { passphrase: PASS });
+    const r = w.client.request('signer.sign', { event: draft(), signer: me.pubkey ?? '' });
+    await expect(r).rejects.toMatchObject({
+      code: 'invalid-argument',
+      message: expect.stringContaining('did not package') as string,
+    });
+  });
+
+  it('refuses to sign with any key but the one the user approved', async () => {
+    const { w } = await worker();
     await w.client.request('signer.local.create', { passphrase: PASS });
-    expect(await codeOf(w.client.request('signer.sign', { event: draft() }))).toBe(
-      'invalid-argument',
-    );
+    await expect(
+      w.client.request('signer.sign', { event: draft(), signer: 'ef'.repeat(32) }),
+    ).rejects.toMatchObject({
+      code: 'invalid-argument',
+      message: expect.stringContaining('signing key changed') as string,
+    });
+  });
+
+  it('a shell that did not ask for a sealed key has no path to one', async () => {
+    const d = await tempDir('nf-signer-');
+    cleanups.push(() => d.rm());
+    const w = startWorker({ runtime: nodeRuntime(nodeSystem()), signerCost: cost });
+    cleanups.push(() => w.close());
+    await w.client.request('init', {
+      v: 1,
+      storage: d.dir,
+      bootstrap: [{ host: '127.0.0.1', port: 9 }],
+    });
+    for (const m of ['signer.local.create', 'signer.local.unlock'] as const)
+      expect(await codeOf(w.client.request(m, { passphrase: PASS }))).toBe('unsupported-input');
+    expect((await w.client.request('signer.status', {})).keyFile).toBe(false);
   });
 
   it('refuses a malformed event', async () => {
     const { w } = await worker();
-    await w.client.request('signer.local.create', { passphrase: PASS });
+    const me = (await w.client.request('signer.local.create', { passphrase: PASS })).pubkey;
     const bad: unknown[] = [
       { ...draft(), extra: 1 },
       { ...draft(), pubkey: 'ab'.repeat(32) },
@@ -210,7 +263,7 @@ describe('what may be signed', () => {
     ];
     for (const event of bad)
       expect(
-        await codeOf(w.client.request('signer.sign', { event } as never)),
+        await codeOf(w.client.request('signer.sign', { event, signer: me } as never)),
         JSON.stringify(event).slice(0, 60),
       ).toBe('invalid-argument');
   });
@@ -218,7 +271,13 @@ describe('what may be signed', () => {
   it('with no signer, says so', async () => {
     const d = await tempDir('nf-signer-');
     cleanups.push(() => d.rm());
-    const s = new UserSigner({ fs: nodeFs, system: nodeSystem(), dir: join(d.dir, 's'), cost });
+    const s = new UserSigner({
+      allowLocal: true,
+      fs: nodeFs,
+      system: nodeSystem(),
+      dir: join(d.dir, 's'),
+      cost,
+    });
     await s.load();
     expect(await codeOf(s.sign(draft()))).toBe('no-signer');
   });
@@ -239,6 +298,7 @@ describe('a NIP-46 bunker on loopback', () => {
     const d = await tempDir('nf-signer-');
     cleanups.push(() => d.rm());
     const s = new UserSigner({
+      allowLocal: true,
       fs: nodeFs,
       system: nodeSystem(),
       dir: join(d.dir, 's'),

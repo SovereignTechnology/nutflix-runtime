@@ -23,7 +23,6 @@ import type {
   SignerStatusWire,
   StudioFfmpegWire,
   StudioProbeWire,
-  StudioPublishedWire,
   StudioSourceWire,
   WorkerEvent,
 } from '@nutflix-runtime/worker';
@@ -36,8 +35,6 @@ export const BEACON_EVERY_MS = 60_000;
 /** Main's event (`rpc-gate.ts` `mainEvents`): this worker has a listener up. */
 export const SERVING_EVENT = 'serving';
 
-const KDF_TIMEOUT_MS = 120_000;
-const BUNKER_TIMEOUT_MS = 180_000;
 /** The native dialogs wait on a person. */
 const DIALOG_TIMEOUT_MS = 3_600_000;
 const WATCH_TIMEOUT_MS = 3_600_000;
@@ -60,6 +57,9 @@ export interface PublishOutcome {
   /** The relays that accepted the manifest. */
   readonly relays: number;
 }
+
+/** The user answered "no" in main's dialog, and the encoded copy is gone. */
+export const PUBLISH_DECLINED = 'declined' as const;
 
 export interface SeedPublishOptions {
   readonly worker: ControlWorker;
@@ -90,7 +90,7 @@ export class SeedPublish {
    * Packaged, and not signed yet (a locked key, a bunker nobody answered): publishing the same
    * thing again goes straight to the signature instead of encoding it all again.
    */
-  #unsigned: { readonly key: string; readonly stored: StudioPublishedWire } | null = null;
+  #unsigned: { readonly key: string; readonly video: string } | null = null;
 
   constructor(o: SeedPublishOptions) {
     this.#o = o;
@@ -142,9 +142,32 @@ export class SeedPublish {
     return s;
   }
 
+  /** Stops serving a video. Its bytes stay until the user deletes it. */
   async stopSeeding(video: string): Promise<void> {
     await this.#o.worker.call('seeding.stop', { video });
     await this.refreshSeeding();
+  }
+
+  /** Main asks the user first. */
+  async resumeSeeding(video: string): Promise<SeedingStatusWire> {
+    const s = await this.#o.worker.call(
+      'app.seeding.resume',
+      { video },
+      { timeoutMs: DIALOG_TIMEOUT_MS },
+    );
+    this.#adopt(s);
+    return s;
+  }
+
+  /** Main asks the user first. */
+  async deleteVideo(video: string): Promise<SeedingStatusWire> {
+    const s = await this.#o.worker.call(
+      'app.seeding.delete',
+      { video },
+      { timeoutMs: DIALOG_TIMEOUT_MS },
+    );
+    this.#adopt(s);
+    return s;
   }
 
   /** A play started. With the switch on, the worker stores and seeds the video. */
@@ -220,24 +243,18 @@ export class SeedPublish {
     return this.#o.worker.call('signer.status', {});
   }
 
-  createKey(passphrase: string): Promise<SignerStatusWire> {
-    return this.#o.worker.call(
-      'signer.local.create',
-      { passphrase },
-      { timeoutMs: KDF_TIMEOUT_MS },
-    );
+  /** Main's own prompt window asks for the passphrase: it never enters this page. */
+  createKey(): Promise<SignerStatusWire> {
+    return this.#o.worker.call('app.signer.create', {}, { timeoutMs: DIALOG_TIMEOUT_MS });
   }
 
-  unlock(passphrase: string): Promise<SignerStatusWire> {
-    return this.#o.worker.call(
-      'signer.local.unlock',
-      { passphrase },
-      { timeoutMs: KDF_TIMEOUT_MS },
-    );
+  unlock(): Promise<SignerStatusWire> {
+    return this.#o.worker.call('app.signer.unlock', {}, { timeoutMs: DIALOG_TIMEOUT_MS });
   }
 
-  connectBunker(uri: string): Promise<SignerStatusWire> {
-    return this.#o.worker.call('signer.nip46.connect', { uri }, { timeoutMs: BUNKER_TIMEOUT_MS });
+  /** The bunker URI holds a pairing secret: main's prompt window takes it too. */
+  connectBunker(): Promise<SignerStatusWire> {
+    return this.#o.worker.call('app.signer.connect', {}, { timeoutMs: DIALOG_TIMEOUT_MS });
   }
 
   lock(): Promise<SignerStatusWire> {
@@ -275,7 +292,7 @@ export class SeedPublish {
   async publish(
     input: PublishInput,
     onProgress: (p: StudioProgressEvent) => void,
-  ): Promise<PublishOutcome> {
+  ): Promise<PublishOutcome | typeof PUBLISH_DECLINED> {
     const key = JSON.stringify([
       input.source,
       input.title,
@@ -283,15 +300,15 @@ export class SeedPublish {
       input.tags,
       input.sizes,
     ]);
-    let stored: StudioPublishedWire;
+    let video: string;
     if (this.#unsigned?.key === key) {
-      stored = this.#unsigned.stored;
+      video = this.#unsigned.video;
     } else {
       const off = this.#o.worker.onEvent((ev) => {
         if (ev.e === 'studio.progress') onProgress(ev);
       });
       try {
-        stored = await this.#o.worker.call(
+        const stored = await this.#o.worker.call(
           'studio.publish',
           {
             source: input.source,
@@ -302,26 +319,26 @@ export class SeedPublish {
           },
           { timeoutMs: PUBLISH_TIMEOUT_MS },
         );
+        video = stored.video;
       } finally {
         off();
       }
-      this.#unsigned = { key, stored };
+      this.#unsigned = { key, video };
     }
-    // Main asks the user first, in a native dialog: a video is public from here on.
+    // Main shows the user what the worker will sign, in a native dialog: public from here on.
     const event = await this.#o.worker.call(
       'app.publish.sign',
-      { event: stored.draft },
+      { video },
       { timeoutMs: DIALOG_TIMEOUT_MS },
     );
-    // The worker signs a draft once: from here on it cannot be asked again.
+    // Signed once, or declined and deleted: either way it cannot be asked for again.
     this.#unsigned = null;
+    if (event === null) {
+      await this.refreshSeeding();
+      return PUBLISH_DECLINED;
+    }
     const parsed = parseManifest(event);
-    if (
-      !parsed.ok ||
-      !isListable(parsed.value) ||
-      parsed.value.addr.toString() !== stored.video ||
-      parsed.value.root !== stored.root
-    )
+    if (!parsed.ok || !isListable(parsed.value) || parsed.value.addr.toString() !== video)
       throw new RuntimeAdapterError('internal', 'the signed manifest did not verify');
     const settings = this.#o.settings.get();
     const relays = [
@@ -332,6 +349,6 @@ export class SeedPublish {
     ];
     const results = await this.#o.pool.publish(relays, event as unknown as NostrEvent);
     await this.refreshSeeding();
-    return { video: stored.video, event, relays: results.filter((r) => r.ok).length };
+    return { video, event, relays: results.filter((r) => r.ok).length };
   }
 }

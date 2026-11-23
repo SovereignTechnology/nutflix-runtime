@@ -171,6 +171,14 @@ export class NfxSeeds {
     return { removed };
   }
 
+  /** Abandon a fetch of `video` still running. What it stored so far is not kept. */
+  async abandon(video: string): Promise<void> {
+    const running = this.starting.get(video);
+    if (running === undefined) return;
+    await running.fetcher.close();
+    await running.done.catch(() => undefined);
+  }
+
   /** `nfx.seed.list`. */
   list(): NfxSeedListResult {
     return {

@@ -37,6 +37,11 @@ export interface UserSignerDeps {
   /** `<storage>/signer`. */
   readonly dir: string;
   readonly now?: () => number;
+  /**
+   * Whether this shell may hold a sealed key. `false` (shape b): no key file is read, made or
+   * opened, and the only signer is a bunker.
+   */
+  readonly allowLocal: boolean;
   /** TESTS ONLY: the KDF's cost (default: libsodium MODERATE, core's `defaultCost`). */
   readonly cost?: coreSigner.KdfCost;
   /** TESTS ONLY: how long a bunker may take to answer. */
@@ -54,6 +59,8 @@ export class UserSigner {
   #busy = false;
   /** Bumped by `lock` and `close`: a signer still being opened then is not installed. */
   #generation = 0;
+  /** Signatures in flight: the signer cannot be changed under one. */
+  #signing = 0;
   #failures = 0;
   #notBefore = 0;
 
@@ -64,6 +71,7 @@ export class UserSigner {
 
   /** Read the key file's public header, if there is one. Never throws. */
   async load(): Promise<void> {
+    if (!this.#d.allowLocal) return;
     try {
       const file = await this.#readFile();
       this.#filePubkey = file === null ? null : coreSigner.LocalSigner.pubkeyOf(file);
@@ -94,6 +102,7 @@ export class UserSigner {
   }
 
   async create(passphrase: string): Promise<SignerStatusWire> {
+    this.#needLocal();
     return this.#once(async () => {
       const generation = this.#generation;
       if ((await this.#exists()) || this.#filePubkey !== null)
@@ -125,6 +134,7 @@ export class UserSigner {
   }
 
   async unlock(passphrase: string): Promise<SignerStatusWire> {
+    this.#needLocal();
     return this.#once(async () => {
       const generation = this.#generation;
       const now = (this.#d.now ?? Date.now)();
@@ -183,6 +193,7 @@ export class UserSigner {
 
   /** Zero a local key; close a bunker session. Idempotent. */
   async lock(): Promise<SignerStatusWire> {
+    this.#notWhileSigning();
     this.#generation += 1;
     await this.#dropSession();
     return this.status();
@@ -195,6 +206,7 @@ export class UserSigner {
   async sign(event: UnsignedEventWire): Promise<NostrEvent> {
     const signer = this.#bunker ?? this.#local;
     if (signer === null || signer.isLocked()) fail('no-signer', 'unlock or connect a signer first');
+    this.#signing += 1;
     try {
       return await signer.signEvent({
         kind: event.kind,
@@ -204,6 +216,8 @@ export class UserSigner {
       });
     } catch {
       fail('no-signer', 'the signer did not sign this event');
+    } finally {
+      this.#signing -= 1;
     }
   }
 
@@ -222,8 +236,17 @@ export class UserSigner {
     await bunker?.close().catch(() => undefined);
   }
 
-  /** One KDF or handshake at a time. */
+  #needLocal(): void {
+    if (!this.#d.allowLocal) fail('unsupported-input', 'this build signs through a bunker only');
+  }
+
+  #notWhileSigning(): void {
+    if (this.#signing > 0) fail('rate-limited', 'a signature is pending');
+  }
+
+  /** One KDF or handshake at a time, and never under a signature in flight. */
   async #once<T>(f: () => Promise<T>): Promise<T> {
+    this.#notWhileSigning();
     if (this.#busy) fail('rate-limited', 'the signer is busy');
     this.#busy = true;
     try {

@@ -44,7 +44,8 @@ A shell must serve the bundle from one origin (`'self'` in the policy), not `fil
 The pipe carries the worker's protocol, and the worker trusts its host, so a compromised renderer
 could try any method. The shell filters them on its side of the pipe (`MAIN_WINDOW_POLICY` in
 `shells/pear-v3/src/main/rpc-gate.ts`): this page cannot reach `init`, `nfx.seed.*`, `nfx.endpoint`,
-`seeding.set` or `studio.source`.
+`seeding.set`, `seeding.delete`, `studio.source`, `signer.local.*` or `signer.nip46.connect`. A
+passphrase or bunker link is typed in main's own prompt window, which this page cannot read.
 
 ## Security (ADR 0001 amendment, item 1; every shape)
 

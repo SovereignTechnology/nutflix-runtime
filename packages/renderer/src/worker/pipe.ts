@@ -65,7 +65,13 @@ export type ControlMethod =
       | 'nfx.seed.list'
       | 'nfx.endpoint'
       | 'seeding.set'
+      | 'seeding.resume'
+      | 'seeding.delete'
       | 'studio.source'
+      | 'studio.discard'
+      | 'signer.local.create'
+      | 'signer.local.unlock'
+      | 'signer.nip46.connect'
       | 'signer.check'
       | 'signer.sign'
     >

@@ -45,13 +45,16 @@ export class LoopRelay {
   readonly #wss: WebSocketServer;
   readonly #subs = new Map<WebSocket, Map<string, Filter[]>>();
   url = '';
+  /** Each connection's `Origin` header, or `null`. */
+  readonly origins: (string | null)[] = [];
 
   private constructor() {
     this.#http = createServer((_req, res) => {
       res.writeHead(404).end();
     });
     this.#wss = new WebSocketServer({ server: this.#http });
-    this.#wss.on('connection', (ws) => {
+    this.#wss.on('connection', (ws, req) => {
+      this.origins.push(req.headers.origin ?? null);
       this.#subs.set(ws, new Map());
       ws.on('close', () => this.#subs.delete(ws));
       ws.on('message', (d, isBinary) => {

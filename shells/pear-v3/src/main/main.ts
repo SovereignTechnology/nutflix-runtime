@@ -40,6 +40,8 @@ import {
   PIPE_CLOSE,
   PIPE_DATA,
   PIPE_WRITE,
+  PROMPT_CANCEL,
+  PROMPT_SUBMIT,
   SANDBOX_PREFLIGHT_SWITCH,
 } from '../shared/ids.ts';
 import {
@@ -66,14 +68,21 @@ import {
   type Probe,
 } from './page-probe.ts';
 import {
-  CONFIRM_PUBLISH_YES,
   CONFIRM_SEEDING_DIALOG,
   CONFIRM_SEEDING_YES,
+  CONFIRM_YES,
+  MainCalls,
   PICK_VIDEO_DIALOG,
-  answerMainCall,
   publishDialog,
-  type Declined,
+  videoDialog,
 } from './main-calls.ts';
+import {
+  PROMPT_PARTITION,
+  PromptHost,
+  installPromptSession,
+  openPrompt,
+  promptSender,
+} from './prompt-window.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
   BANNER_TEXT,
@@ -131,9 +140,6 @@ let updater: WorkerHandle | undefined;
 let lastUpdate: UpdateStatus | undefined;
 let mainWindow: BrowserWindow | undefined;
 let unsandboxed = false;
-let dialogOpen = false;
-/** Until when a question the user just answered "no" to is not asked again. */
-const declined: Declined = { seeding: 0, publish: 0 };
 
 const sendTo = (id: number, channel: string, ...args: unknown[]): void => {
   const wc = webContents.fromId(id);
@@ -151,34 +157,54 @@ const gate: RpcGate = new RpcGate({
   closeWindow: (id) => {
     sendTo(id, PIPE_CLOSE);
   },
-  mainCall: async (id, method, args) => {
-    const wc = webContents.fromId(id);
-    const owner = wc === undefined ? undefined : BrowserWindow.fromWebContents(wc);
-    if (owner === null || owner === undefined) throw new WorkerError('session-closed', 'no window');
-    // One native dialog at a time: a page cannot pile them up in front of the user.
-    if (dialogOpen) throw new WorkerError('rate-limited', 'a dialog is already open');
-    dialogOpen = true;
-    try {
-      return await answerMainCall(method, args, {
-        pickFile: async () => {
-          const r = await dialog.showOpenDialog(owner, PICK_VIDEO_DIALOG);
-          return r.canceled ? null : (r.filePaths[0] ?? null);
-        },
-        confirmSeeding: async () => {
-          const r = await dialog.showMessageBox(owner, CONFIRM_SEEDING_DIALOG);
-          return r.response === CONFIRM_SEEDING_YES;
-        },
-        confirmPublish: async (o) => {
-          const r = await dialog.showMessageBox(owner, publishDialog(o.title, o.signer));
-          return r.response === CONFIRM_PUBLISH_YES;
-        },
-        worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
-        declined,
-      });
-    } finally {
-      dialogOpen = false;
-    }
+  mainCall: (id, method, args) => mainCalls.answer(id, method, args),
+});
+
+/** The window a dialog belongs to. */
+function ownerOf(id: number): BrowserWindow {
+  const wc = webContents.fromId(id);
+  const owner = wc === undefined ? null : BrowserWindow.fromWebContents(wc);
+  if (owner === null) throw new WorkerError('session-closed', 'no window');
+  return owner;
+}
+
+const prompts = new PromptHost({
+  open: (windowId, spec, onGone) =>
+    openPrompt(
+      BrowserWindow,
+      ownerOf(windowId),
+      join(__dirname, 'prompt-preload.cjs'),
+      session.fromPartition(PROMPT_PARTITION, { cache: false }),
+      spec,
+      onGone,
+    ),
+});
+ipcMain.on(PROMPT_SUBMIT, (e, value: unknown) => {
+  prompts.message(promptSender(e), PROMPT_SUBMIT, value);
+});
+ipcMain.on(PROMPT_CANCEL, (e) => {
+  prompts.message(promptSender(e), PROMPT_CANCEL, undefined);
+});
+
+const mainCalls = new MainCalls({
+  pickFile: async (id) => {
+    const r = await dialog.showOpenDialog(ownerOf(id), PICK_VIDEO_DIALOG);
+    return r.canceled ? null : (r.filePaths[0] ?? null);
   },
+  confirmSeeding: async (id) => {
+    const r = await dialog.showMessageBox(ownerOf(id), CONFIRM_SEEDING_DIALOG);
+    return r.response === CONFIRM_SEEDING_YES;
+  },
+  confirmPublish: async (id, shown) => {
+    const r = await dialog.showMessageBox(ownerOf(id), publishDialog(shown));
+    return r.response === CONFIRM_YES;
+  },
+  confirmVideo: async (id, action, v) => {
+    const r = await dialog.showMessageBox(ownerOf(id), videoDialog(action, v));
+    return r.response === CONFIRM_YES;
+  },
+  askSecret: (id, spec, submit) => prompts.ask(id, spec, submit),
+  worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
 });
 
 const links = new LinkOpener({
@@ -278,6 +304,10 @@ async function main(): Promise<void> {
   const rendererDir = join(appDir, 'renderer');
   const csp = headerPolicy(readFileSync(join(rendererDir, 'index.html'), 'utf8'));
   installSessionPolicy(session.defaultSession);
+  // The prompt window's own session: in memory, every permission denied, one file on its network.
+  installPromptSession(session.fromPartition(PROMPT_PARTITION, { cache: false }), () =>
+    readFile(join(__dirname, 'prompt.html')),
+  );
   protocol.handle(
     APP_SCHEME,
     createAppProtocolHandler({
@@ -380,6 +410,8 @@ async function main(): Promise<void> {
         v: 1,
         storage: join(app.getPath('userData'), 'worker'),
         diskCapBytes: NFX_DISK_CAP_BYTES,
+        // Shape (a) has Chromium's sandbox, so it may hold a sealed key (ADR 0001 §8).
+        localKey: true,
       });
       await gate.request('status', {}, 30_000);
       state.worker = true;

@@ -240,7 +240,7 @@ describe('seeding, on a loopback testnet', () => {
     expect((await again.w.client.request('seeding.status', {})).watched).toBe(false);
   });
 
-  it('a restart with the switch on serves again; stopping a video deletes it', async () => {
+  it('a restart with the switch on serves again; deleting a video removes it', async () => {
     const v = testNfxVideo();
     const { endpoint } = await otherSeeder(v);
     const { w, dir } = await worker();
@@ -256,7 +256,7 @@ describe('seeding, on a loopback testnet', () => {
     const again = await worker(dir);
     expect((await again.w.client.request('status', {})).listening).toHaveLength(1);
     expect((await again.w.client.request('seeding.beacons', {})).events).toHaveLength(1);
-    expect(await again.w.client.request('seeding.stop', { video: v.video })).toEqual({
+    expect(await again.w.client.request('seeding.delete', { video: v.video })).toEqual({
       removed: true,
     });
     const s = await again.w.client.request('status', {});

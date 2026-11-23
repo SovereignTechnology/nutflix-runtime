@@ -1,6 +1,6 @@
 /**
  * Seed and publish, for real, on loopback (ADR 0001 decisions 3, 7 and 8). Nothing is faked but the
- * two native dialogs' answers:
+ * answers of the native dialogs and of main's prompt window, which are scripted (`bare-bridge.ts`):
  *
  *   ffmpeg     the system's, on a clip generated here
  *   worker     the BUILT worker under the REAL Bare runtime, behind the shell's real gate
@@ -15,7 +15,8 @@
  *   2. the manifest and a beacon are on strfry, they verify, and a second app instance finds the
  *      video through its own play path and plays it;
  *   3. that viewer, with its switch on, re-seeds it: a stranger fetches it from the viewer alone;
- *   4. NIP-46 signing against a throwaway bunker, and the passphrase path with a wrong passphrase.
+ *   4. NIP-46 signing against a throwaway bunker, and the passphrase path with a wrong passphrase;
+ *   5. a video that was encoded and never confirmed cannot be played, and a "no" deletes it.
  *
  * The workflow runs this in a network namespace with only a loopback interface, so a mistake here
  * cannot make a CI runner a peer of any public network.
@@ -41,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
 import DHT from 'hyperdht';
+import { npubEncode } from 'nostr-tools/nip19';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -56,7 +58,7 @@ import {
 import { dialNfx, nodeCrypto } from '@sovit/seeder';
 import type { SeedingStatusWire, SignerStatusWire, WorkerStatus } from '@nutflix-runtime/worker';
 
-import { TestBunker } from '../../../worker/src/__tests__/helpers/test-bunker.ts';
+import { LoopRelay, TestBunker } from '../../../worker/src/__tests__/helpers/test-bunker.ts';
 import { SETTINGS_KEY } from '../../src/settings/store.js';
 import { serveDir } from '../static-server.js';
 import { startBareBridge, type BareBridge } from './bare-bridge.js';
@@ -434,14 +436,16 @@ describe('seed and publish, on loopback', () => {
   it('the passphrase path: sealed 0600, a wrong passphrase refused, the right one opens', async () => {
     const { page, publisher } = w();
     const status = page.locator('#nutflix-signer-status');
-    await page.locator('#nutflix-passphrase').fill(PASS);
+    // The page has no field for it: main's prompt takes it, and this script plays the user there.
+    expect(await page.locator('#nutflix-seed-publish input[type="password"]').count()).toBe(0);
+    publisher.dialogs.secrets.push(PASS);
     await page.locator('#nutflix-signer-create').click();
     await page
       .locator('#nutflix-signer-status[data-kind="local"][data-locked="false"]')
       .waitFor({ state: 'attached', timeout: 60_000 });
     author = (await status.getAttribute('data-pubkey')) ?? '';
     expect(author).toMatch(/^[0-9a-f]{64}$/);
-    expect(await page.locator('#nutflix-passphrase').inputValue()).toBe('');
+    expect(publisher.dialogs.secrets).toEqual([]);
 
     const keyFile = join(publisher.storage, 'signer', 'user.key');
     expect(statSync(keyFile).mode & 0o777).toBe(0o600);
@@ -456,15 +460,21 @@ describe('seed and publish, on loopback', () => {
     await page
       .locator('#nutflix-signer-status[data-locked="true"]')
       .waitFor({ state: 'attached', timeout: 20_000 });
-    await page.locator('#nutflix-passphrase').fill('this is not the passphrase');
+    publisher.dialogs.secrets.push('this is not the passphrase');
     await page.locator('#nutflix-signer-unlock').click();
-    await page
-      .locator('#nutflix-signer-status[data-error="true"]')
-      .waitFor({ state: 'attached', timeout: 60_000 });
-    expect(await status.textContent()).toContain('does not open this key');
+    const refused = await until(
+      'the refusal in the prompt',
+      () => publisher.dialogs.problems[0],
+      60_000,
+    );
+    expect(refused).toContain('does not open this key');
     expect(((await publisher.request('signer.status', {})) as SignerStatusWire).locked).toBe(true);
+    await page
+      .locator('#nutflix-signer-status[data-locked="true"]')
+      .waitFor({ state: 'attached', timeout: 20_000 });
+    expect(await page.content()).not.toContain('this is not the passphrase');
 
-    await page.locator('#nutflix-passphrase').fill(PASS);
+    publisher.dialogs.secrets.push(PASS);
     await page.locator('#nutflix-signer-unlock').click();
     await page
       .locator('#nutflix-signer-status[data-locked="false"]')
@@ -502,8 +512,19 @@ describe('seed and publish, on loopback', () => {
         cause: e,
       });
     }
-    // Main asked first, with the worker's own account of what would be signed.
-    expect(publisher.dialogs.publishes).toEqual([{ title: TITLE, signer: author }]);
+    // Main asked first, with the worker's own account of the file and of what would be signed.
+    expect(publisher.dialogs.publishes).toHaveLength(1);
+    const shown = publisher.dialogs.publishes[0];
+    expect(shown).toMatchObject({
+      title: TITLE,
+      signer: author,
+      npub: npubEncode(author),
+      tags: ['proof', 'loopback'],
+      description: 'Made on a runner, for this proof.',
+      file: { name: 'a clip to publish.mp4', bytes: statSync(w().clip).size },
+    });
+    expect(shown?.file.durationSec).toBeGreaterThan(7);
+    expect(shown?.file.durationSec).toBeLessThan(9);
     video = (await page.locator('#nutflix-publish-status').getAttribute('data-video')) ?? '';
     expect(video.startsWith(`${NS}:nutflix-`)).toBe(true);
     const st = (await publisher.request('seeding.status', {})) as SeedingStatusWire;
@@ -704,34 +725,100 @@ describe('seed and publish, on loopback', () => {
       'studio.publish',
       { source: source.source, title: 'Via a bunker', description: '', tags: [], sizes: [360] },
       420_000,
-    )) as { video: string; root: string; draft: Record<string, unknown> };
+    )) as { video: string };
+    expect(Object.keys(pub).sort()).toEqual(['bytes', 'files', 'video']);
+    const check = (await b.request('signer.check', { video: pub.video }, 10_000)) as {
+      event: { kind: number; created_at: number; tags: string[][]; content: string };
+      signer: string;
+      npub: string;
+    };
+    expect(check.signer).toBe(bunker.userPubkey);
+    expect(check.npub).toBe(npubEncode(bunker.userPubkey));
+    const draft = check.event;
+    const signer = check.signer;
+    const refusedSign = (event: unknown, key = signer): Promise<unknown> =>
+      expect(b.request('signer.sign', { event, signer: key }, 10_000)).rejects.toMatchObject({
+        code: 'invalid-argument',
+      });
     // Only the worker's own draft is signed: a page cannot change a word of it.
-    await expect(
-      b.request('signer.sign', { event: { ...pub.draft, content: 'changed by a page' } }, 10_000),
-    ).rejects.toMatchObject({ code: 'invalid-argument' });
+    await refusedSign({ ...draft, content: 'changed by a page' });
+    await refusedSign({
+      ...draft,
+      tags: draft.tags.map((t) => (t[0] === 'root' ? ['root', 'cc'.repeat(32)] : t)),
+    });
+    // And only by the key the user was shown.
+    await refusedSign(draft, 'ef'.repeat(32));
     expect(bunker.signedKinds).toEqual([]);
-    const signed = (await b.request('signer.sign', { event: pub.draft }, 60_000)) as NostrEvent;
+    const signed = (await b.request('signer.sign', { event: draft, signer }, 60_000)) as NostrEvent;
     const parsed = parseManifest(signed);
     if (!parsed.ok) throw new Error(parsed.error.reason);
     expect(parsed.value.author).toBe(bunker.userPubkey);
     expect(parsed.value.addr.toString()).toBe(pub.video);
-    expect(parsed.value.root).toBe(pub.root);
+    expect(parsed.value.root).toBe(draft.tags.find((t) => t[0] === 'root')?.[1]);
     expect(bunker.signedKinds).toEqual([38504]);
-    await expect(
-      b.request('signer.sign', { event: { ...pub.draft, kind: 1 } }, 10_000),
-    ).rejects.toMatchObject({ code: 'invalid-argument' });
+    await refusedSign({ ...draft, kind: 1 });
     // And it is signed once.
-    await expect(b.request('signer.sign', { event: pub.draft }, 10_000)).rejects.toMatchObject({
-      code: 'invalid-argument',
-    });
+    await refusedSign(draft);
     expect(bunker.signedKinds).toEqual([38504]);
     report('nip46', {
       signer: 'bunker',
       kinds: bunker.signedKinds,
       manifestVerified: true,
       nonAllowListedKindRefused: true,
+      otherKeyRefused: true,
     });
-  }, 480_000);
+
+    // The real worker's relay socket says who it is, so a local service that checks origins can
+    // refuse it.
+    const loop = await LoopRelay.start();
+    cleanups.push(() => loop.close());
+    const originBunker = await TestBunker.start(loop.url, { secret: 'one-time-too' });
+    cleanups.push(() => {
+      originBunker.close();
+    });
+    const c = await startBareBridge(testnet.bootstrap);
+    cleanups.push(() => c.close());
+    await c.request('signer.nip46.connect', { uri: originBunker.uri }, 60_000);
+    expect(loop.origins).toContain('app://nutflix');
+    report('relay-origin', { origin: 'app://nutflix' });
+
+    // A real encode that nobody confirmed: it cannot be played, and declining deletes it.
+    const before = ((await b.request('status', {})) as WorkerStatus).storedVideos;
+    const again = (await b.request('studio.source', { path: clip })) as { source: string };
+    const unconfirmed = (await b.request(
+      'studio.publish',
+      { source: again.source, title: 'Never confirmed', description: '', tags: [], sizes: [360] },
+      420_000,
+    )) as { video: string };
+    const held = (await b.request('signer.check', { video: unconfirmed.video }, 10_000)) as {
+      event: { tags: string[][] };
+    };
+    const tag = (n: string): string => held.event.tags.find((t) => t[0] === n)?.[1] ?? '';
+    await expect(
+      b.request(
+        'nfx.play.open',
+        {
+          sid: 'ab'.repeat(16),
+          video: unconfirmed.video,
+          root: tag('root'),
+          segs: Number(tag('segs')),
+          peers: [],
+          progressive: false,
+        },
+        10_000,
+      ),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    const listed = (await b.request('seeding.status', {})) as SeedingStatusWire;
+    const row = listed.videos.find((v) => v.video === unconfirmed.video);
+    expect(row).toMatchObject({ served: false });
+    expect(row).not.toHaveProperty('root');
+    expect(row).not.toHaveProperty('segs');
+    expect(await b.request('studio.discard', { video: unconfirmed.video })).toEqual({
+      removed: true,
+    });
+    expect(((await b.request('status', {})) as WorkerStatus).storedVideos).toBe(before);
+    report('unconfirmed-draft', { playRefused: true, hashListHidden: true, declineDeleted: true });
+  }, 600_000);
 
   it('the publisher’s page reached nothing off loopback and broke nothing', () => {
     const { pageErrors, requests } = w();

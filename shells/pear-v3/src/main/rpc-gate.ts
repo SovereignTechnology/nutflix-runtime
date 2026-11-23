@@ -17,13 +17,15 @@
  *   6. events reach only the windows whose policy lists them, as main re-encoded them;
  *   7. a `seeding.segment` or `seeding.watch` must name a play session this window holds: what it
  *      hands over or asks to seed is checked against THAT session's video and hash list;
- *   8. `mainMethods` are answered here and never reach the worker: `app.pickVideo` (main's native
- *      file dialog, so a page never names a path), `app.seeding.set` and `app.publish.sign` (each
- *      starts sharing the user's IP address, so each takes a native confirmation).
+ *   8. `mainMethods` are answered here and never reach the worker (`main-calls.ts`): the file
+ *      picker, each thing that starts sharing the user's IP address or deletes a video (behind a
+ *      native confirmation), and the signer methods that need a secret (main's own prompt window,
+ *      so a passphrase or bunker URI never enters the page).
  *
- * What the worker checks is the arguments, strictly, for every method (`guards.ts`): the methods
- * that take a path, turn the switch or sign (`studio.source`, `seeding.set`, `signer.check`,
- * `signer.sign`) are in no window's list, and only main's own `request()` reaches them.
+ * What the worker checks is the arguments, strictly, for every method (`guards.ts`). The methods
+ * that take a path or a secret, turn the switch, sign, or delete (`studio.source`, `signer.local.*`,
+ * `signer.nip46.connect`, `seeding.set`, `seeding.resume`, `seeding.delete`, `studio.discard`,
+ * `signer.check`, `signer.sign`) are in no window's list: only main's own `request()` reaches them.
  *
  * Main itself uses the same id space through `request()` (`init`, `status`). Runtime-neutral and
  * Electron-free: bytes in, bytes out, so the tests drive it with fakes.
@@ -64,19 +66,17 @@ export interface WindowPolicy {
  * The renderer's window: what `packages/renderer` uses, each with its own guard in the worker.
  *
  *   play      `status`, `nfx.play.open`, `nfx.play.close`
- *   signer    `signer.status`, `.local.create`, `.local.unlock`, `.nip46.connect`, `.lock`: a key
- *             sealed in the worker or a bunker session held there. No key, passphrase-derived key
- *             or bunker secret ever comes back.
- *   seeding   `seeding.status`, `.watch` (its own open play, with the switch on), `.stop`,
- *             `.beacons` (the worker signs, the renderer publishes), `.segment` (a file its own
- *             play verified)
- *   Studio    `studio.ffmpeg`, `.probe`, `.publish`, `.cancel`, on a one-use token from
+ *   signer    `signer.status`, `signer.lock`. No key, passphrase, bunker secret or derived key
+ *             ever crosses this window: creating, unlocking and connecting are `app.signer.*`.
+ *   seeding   `seeding.status` (nothing of a private draft), `.watch` (its own open play, with the
+ *             switch on), `.stop` (stops serving; the bytes stay), `.beacons` (the worker signs,
+ *             the renderer publishes), `.segment` (a file its own play verified)
+ *   Studio    `studio.ffmpeg`, `.probe`, `.publish`, `.cancel`, on the one live token from
  *             `app.pickVideo`. The signature is `app.publish.sign`, after a native confirmation.
  *
  * Not here, ever: `init` (main sends it, with the storage directory), `nfx.seed.*` and
- * `nfx.endpoint` (the page would pick what this machine serves), `seeding.set`, `studio.source`,
- * `signer.check` and `signer.sign` (main's alone, below), logs, and any method that touches the
- * updater.
+ * `nfx.endpoint` (the page would pick what this machine serves), every main-only method listed
+ * at the top of this file, logs, and any method that touches the updater.
  */
 export const MAIN_WINDOW_POLICY: WindowPolicy = {
   methods: new Set([
@@ -84,9 +84,6 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
     'nfx.play.open',
     'nfx.play.close',
     'signer.status',
-    'signer.local.create',
-    'signer.local.unlock',
-    'signer.nip46.connect',
     'signer.lock',
     'seeding.status',
     'seeding.watch',
@@ -100,7 +97,16 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
   ]),
   events: new Set(['status', 'studio.progress']),
   mainEvents: new Set(['update', 'serving']),
-  mainMethods: new Set(['app.pickVideo', 'app.seeding.set', 'app.publish.sign']),
+  mainMethods: new Set([
+    'app.pickVideo',
+    'app.seeding.set',
+    'app.seeding.resume',
+    'app.seeding.delete',
+    'app.publish.sign',
+    'app.signer.create',
+    'app.signer.unlock',
+    'app.signer.connect',
+  ]),
   maxInflight: 32,
 };
 

@@ -52,6 +52,7 @@ export function guardArgv(
   args: readonly string[],
   source: string,
   workDir: string,
+  maxOutputBytes: number = MAX_OUTPUT_BYTES,
 ): string[] {
   if (kind === 'ffprobe') {
     const input = checkInput(args[args.length - 1], source, workDir);
@@ -84,14 +85,7 @@ export function guardArgv(
   const fIndex = args.lastIndexOf('-f');
   // A file can lie about its length in its header: the output is cut at the cap either way.
   if (args[fIndex + 1] !== 'hls')
-    out.splice(
-      out.length - 1,
-      0,
-      '-t',
-      String(MAX_SOURCE_SECONDS),
-      '-fs',
-      String(MAX_OUTPUT_BYTES),
-    );
+    out.splice(out.length - 1, 0, '-t', String(MAX_SOURCE_SECONDS), '-fs', String(maxOutputBytes));
   return out;
 }
 
@@ -108,22 +102,27 @@ export interface GuardedRunnerOptions {
   /** This job's directory, inside the worker's storage. */
   readonly workDir: string;
   readonly cancel?: JobSignal;
+  /**
+   * What the next output may still take of this job's budget, asked before each ffmpeg run. At
+   * zero or less the run is refused.
+   */
+  readonly outputRoom?: () => Promise<number>;
   /** TESTS ONLY. */
   readonly timeoutMs?: number;
 }
 
 export function guardedRunner(o: GuardedRunnerOptions): ProcessRunner {
   return {
-    run: (file, args, opts) => {
+    run: async (file, args, opts) => {
       const kind =
         file === o.binaries.ffmpeg ? 'ffmpeg' : file === o.binaries.ffprobe ? 'ffprobe' : null;
-      if (kind === null) return Promise.reject(new Error('internal: not ffmpeg'));
-      let argv: string[];
-      try {
-        argv = guardArgv(kind, args, o.source, o.workDir);
-      } catch (e) {
-        return Promise.reject(e instanceof Error ? e : new Error('internal: bad ffmpeg call'));
+      if (kind === null) throw new Error('internal: not ffmpeg');
+      let room = MAX_OUTPUT_BYTES;
+      if (kind === 'ffmpeg' && o.outputRoom !== undefined) {
+        room = Math.min(room, Math.floor(await o.outputRoom()));
+        if (room <= 0) throw new Error('internal: this job has used its disk budget');
       }
+      const argv = guardArgv(kind, args, o.source, o.workDir, room);
       const listeners: (() => void)[] = [];
       const signal = {
         aborted: o.cancel?.aborted === true,
@@ -138,15 +137,15 @@ export function guardedRunner(o: GuardedRunnerOptions): ProcessRunner {
       };
       o.cancel?.addEventListener('abort', abort);
       const timer = setTimeout(abort, o.timeoutMs ?? PROCESS_TIMEOUT_MS);
-      return o.runner
-        .run(file, argv, {
+      try {
+        return await o.runner.run(file, argv, {
           ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
           ...(opts?.onStderrLine === undefined ? {} : { onStderrLine: opts.onStderrLine }),
           signal,
-        })
-        .finally(() => {
-          clearTimeout(timer);
         });
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }

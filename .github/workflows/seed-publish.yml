@@ -3,8 +3,10 @@
 # Chrome, a stock strfry and a hyperdht testnet. packages/renderer/e2e/publish/ says what it proves.
 #
 # HARD CONSTRAINT, as in ci.yml: a runner is never a peer of the public network. The proofs run in
-# a network namespace that has ONE interface, loopback, and no route: nothing in them can reach
-# anything else, whatever a test or the app tries. The job checks that before and after.
+# a network namespace that has ONE interface, loopback, and no route, as an unprivileged user with
+# no_new_privs. That confines an honest mistake in a test or the app; it is not a boundary against
+# hostile code, which on a runner could still use whatever the kernel exposes to that user. The job
+# checks the namespace before and after.
 #
 # Supply chain as ci.yml: actions pinned by commit SHA, `npm ci --ignore-scripts`, no secrets, a
 # read-only token. Downloads (build tools, before the isolated step): apt packages, npm, and on a
@@ -51,9 +53,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends ffmpeg iproute2 util-linux \
             g++ make pkg-config libtool libssl-dev zlib1g-dev liblmdb-dev libflatbuffers-dev \
-            libsecp256k1-dev libzstd-dev
+            libsecp256k1-dev libzstd-dev \
+            xvfb xauth libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
       - run: npm ci --ignore-scripts
       - run: npm run build
+      # `--ignore-scripts` skipped this. It fetches the release that the package's checksums pin.
+      - name: the Electron binary, for the prompt window's proof
+        run: node node_modules/electron/install.js
       - name: Chrome's system libraries, and a Chrome that plays H.264
         run: |
           set -euo pipefail
@@ -107,13 +113,24 @@ jobs:
           set -euo pipefail
           d="$HOME/.cache/nutflix-netns"
           sudo ip netns exec nfx-publish setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
+            --no-new-privs \
             env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
               STRFRY="$d/strfry" STRFRY_CONF="$d/strfry.conf" CHROMIUM="$CHROMIUM" \
               npm run test:publish -w packages/renderer 2>&1 | tee "$RUNNER_TEMP/publish.log"
           # Every proof reported its numbers, or the job fails. The reporter's colours come off first.
           sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/publish.log" | grep '^PROOF ' > "$RUNNER_TEMP/proofs"
           tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/proofs"
-          test "$(wc -l < "$RUNNER_TEMP/proofs")" -eq 8
+          test "$(wc -l < "$RUNNER_TEMP/proofs")" -eq 10
+      # The real window, in real Electron under Xvfb, driven by a script: it proves the window's
+      # confinement and its sender check. It is not a person using it, and it opens no native dialog.
+      - name: main's prompt window, in real Electron, inside it
+        run: |
+          set -euo pipefail
+          sudo ip netns exec nfx-publish setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
+            --no-new-privs \
+            env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
+              xvfb-run -a node shells/pear-v3/scripts/prompt-proof.ts 2>&1 | tee "$RUNNER_TEMP/prompt.log"
+          grep '^PROOF prompt-modal ' "$RUNNER_TEMP/prompt.log" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: it still has nothing but loopback
         if: always()
         run: |

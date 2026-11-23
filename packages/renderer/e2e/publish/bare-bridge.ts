@@ -2,8 +2,10 @@
  * Test support: what the Electron main process does, minus Electron. The REAL worker, built, under
  * the REAL Bare runtime (`bare-sidecar`'s prebuilt, as `pear-runtime` starts it), behind the REAL
  * gate (`shells/pear-v3/src/main/rpc-gate.ts`, the window's real policy) and the real answers to
- * the two main-only methods (`main-calls.ts`). Only the native dialogs are scripted, and the page's
- * `WorkerPipe` is a Playwright bridge instead of a preload.
+ * the main-only methods (`main-calls.ts`). The native dialogs and main's prompt window are SCRIPTED
+ * here, so this says nothing about how they look or behave: `shells/pear-v3/scripts/prompt-proof.ts`
+ * drives the real prompt window, and no test drives a native message box. The page's `WorkerPipe`
+ * is a Playwright bridge instead of a preload.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +17,7 @@ import Sidecar from 'bare-sidecar';
 
 import type { BootstrapNode } from '@nutflix-runtime/worker';
 
-import { answerMainCall } from '../../../../shells/pear-v3/src/main/main-calls.ts';
+import { MainCalls, type PublishShown } from '../../../../shells/pear-v3/src/main/main-calls.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from '../../../../shells/pear-v3/src/main/rpc-gate.ts';
 import { PAGE_PIPE_SCRIPT } from '../helpers/worker-bridge.js';
 
@@ -32,9 +34,14 @@ export interface BareBridge {
     file: string | null;
     confirmSeeding: boolean;
     confirmPublish: boolean;
+    confirmVideo: boolean;
     asked: number;
-    /** What each publish confirmation showed. */
-    readonly publishes: { title: string; signer: string }[];
+    /** What each publish confirmation was given to show. */
+    readonly publishes: PublishShown[];
+    /** What the scripted prompt types next, in order; when it runs out, it cancels. */
+    readonly secrets: string[];
+    /** What the prompt would have said about a refused value. */
+    readonly problems: string[];
   };
   attach(page: Page): Promise<void>;
   /** Main's own request. */
@@ -77,10 +84,37 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
     file: null as string | null,
     confirmSeeding: false,
     confirmPublish: true,
+    confirmVideo: false,
     asked: 0,
-    publishes: [] as { title: string; signer: string }[],
+    publishes: [] as PublishShown[],
+    secrets: [] as string[],
+    problems: [] as string[],
   };
-  const declined = { seeding: 0, publish: 0 };
+  const calls = new MainCalls({
+    pickFile: () => {
+      dialogs.asked += 1;
+      return Promise.resolve(dialogs.file);
+    },
+    confirmSeeding: () => {
+      dialogs.asked += 1;
+      return Promise.resolve(dialogs.confirmSeeding);
+    },
+    confirmPublish: (_id, shown) => {
+      dialogs.publishes.push(shown);
+      return Promise.resolve(dialogs.confirmPublish);
+    },
+    confirmVideo: () => Promise.resolve(dialogs.confirmVideo),
+    askSecret: async (_id, _spec, submit) => {
+      for (;;) {
+        const value = dialogs.secrets.shift();
+        if (value === undefined) return false;
+        const problem = await submit(value);
+        if (problem === null) return true;
+        dialogs.problems.push(problem);
+      }
+    },
+    worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
+  });
   const gate: RpcGate = new RpcGate({
     toWorker: (frame) => {
       sidecar.write(frame);
@@ -89,23 +123,7 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
       toPage(frame);
     },
     closeWindow: () => undefined,
-    mainCall: (_id, method, args) =>
-      answerMainCall(method, args, {
-        pickFile: () => {
-          dialogs.asked += 1;
-          return Promise.resolve(dialogs.file);
-        },
-        confirmSeeding: () => {
-          dialogs.asked += 1;
-          return Promise.resolve(dialogs.confirmSeeding);
-        },
-        confirmPublish: (o) => {
-          dialogs.publishes.push({ ...o });
-          return Promise.resolve(dialogs.confirmPublish);
-        },
-        worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
-        declined,
-      }),
+    mainCall: (id, method, args) => calls.answer(id, method, args),
   });
   sidecar.on('data', (c: unknown) => {
     if (c instanceof Uint8Array) gate.fromWorker(c);
@@ -114,7 +132,7 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
     gate.workerGone();
   });
   // Main's `init`: the storage directory and the bootstrap are its to name, never the page's.
-  await gate.request('init', { v: 1, storage, bootstrap: [...bootstrap] }, 60_000);
+  await gate.request('init', { v: 1, storage, bootstrap: [...bootstrap], localKey: true }, 60_000);
 
   return {
     storage,

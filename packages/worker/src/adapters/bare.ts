@@ -114,8 +114,41 @@ function childEnv(): Record<string, string> {
   return out;
 }
 
+/**
+ * Linux: `setpriv --pdeathsig KILL` makes the kernel kill ffmpeg when this worker dies, however it
+ * dies (a crash, or `bare-sidecar`'s SIGTERM, which runs no handler). Absent on a system without
+ * util-linux: then only an orderly exit and a cancel reach the child.
+ */
+const SETPRIV = '/usr/bin/setpriv';
+
+/** What is running now, so an orderly exit can take it along. */
+const liveChildren = new Set<Subprocess>();
+let exitHooked = false;
+
+function killOnExit(child: Subprocess): void {
+  liveChildren.add(child);
+  if (exitHooked) return;
+  exitHooked = true;
+  Bare.on('exit', () => {
+    for (const c of liveChildren) {
+      try {
+        c.kill(constants['SIGKILL']);
+      } catch {
+        // Already gone.
+      }
+    }
+  });
+}
+
 /** `ProcessRunner` over `bare-subprocess`: argv only, no shell, bounded output. */
 function bareRunner(): ProcessRunner {
+  const wrap =
+    Bare.platform === 'linux' && fs.existsSync(SETPRIV)
+      ? (file: string, args: readonly string[]): [string, string[]] => [
+          SETPRIV,
+          ['--pdeathsig', 'KILL', '--', file, ...args],
+        ]
+      : (file: string, args: readonly string[]): [string, string[]] => [file, [...args]];
   return {
     run: (file, args, opts) =>
       new Promise((resolve, reject) => {
@@ -125,7 +158,8 @@ function bareRunner(): ProcessRunner {
         }
         let child: Subprocess;
         try {
-          child = spawn(file, [...args], {
+          const [program, argv] = wrap(file, args);
+          child = spawn(program, argv, {
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: false,
             env: childEnv(),
@@ -142,6 +176,7 @@ function bareRunner(): ProcessRunner {
           );
           return;
         }
+        killOnExit(child);
         const out: Uint8Array[] = [];
         let outBytes = 0;
         let errText = '';
@@ -184,6 +219,7 @@ function bareRunner(): ProcessRunner {
         (child as unknown as { on(e: 'close', cb: (code: number | null) => void): void }).on(
           'close',
           (code) => {
+            liveChildren.delete(child);
             if (settled) return;
             settled = true;
             if (partial !== '') opts?.onStderrLine?.(partial);
@@ -215,8 +251,26 @@ async function writePrivate(p: string, data: Uint8Array): Promise<void> {
   if (Bare.platform !== 'win32') await fs.promises.chmod(dir, 0o700);
   const tmp = `${p}.${randomHex(6)}.tmp`;
   try {
-    await fs.promises.writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
+    // On disk before the rename, and the rename on disk after it: a power cut leaves the old file
+    // or the whole new one, never an empty key file.
+    const h = await fs.promises.open(tmp, 'wx', 0o600);
+    try {
+      // bare-fs's typings say a number; its FileHandle answers `{ bytesWritten, buffer }`.
+      const wrote = (await h.write(data)) as unknown as { readonly bytesWritten: number };
+      if (wrote.bytesWritten !== data.byteLength) throw new Error('io: a short write');
+      await h.sync();
+    } finally {
+      await h.close();
+    }
     await fs.promises.rename(tmp, p);
+    if (Bare.platform !== 'win32') {
+      const d = await fs.promises.open(dir, 'r');
+      try {
+        await d.sync();
+      } finally {
+        await d.close();
+      }
+    }
   } catch (e) {
     await fs.promises.unlink(tmp).catch(() => undefined);
     throw e;
@@ -245,6 +299,8 @@ const connectRelay: RelayConnect = (url) => {
     path: m[4] ?? '/',
     maxPayload: MAX_RELAY_MESSAGE_CHARS,
     handshakeTimeout: 10_000,
+    // A local WebSocket service that checks origins sees who this is, and can refuse it.
+    headers: { Origin: 'app://nutflix' },
   });
   const text = new TextDecoder();
   // A socket error with no listener would be an uncaught exception.

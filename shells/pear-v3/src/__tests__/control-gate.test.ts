@@ -1,20 +1,38 @@
 /**
- * The gate for seeding, publishing and the signer: what the renderer's window may reach, and the
- * two things it must not do alone. It never names a path (main's native dialog does), and it
- * cannot turn seeding on (that shares the user's IP address, so it takes a native confirmation).
+ * The gate for seeding, publishing and the signer: what the renderer's window may reach, and what
+ * it must not do alone. It never names a path or holds a secret (main's picker and prompt window
+ * do), and whatever shares the user's IP address or deletes a video takes a native confirmation.
  */
 import { FrameDecoder, WorkerError, encodeFrame } from '@nutflix-runtime/worker';
+import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 
+import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../shared/ids.ts';
 import {
   CONFIRM_SEEDING_DIALOG,
+  CONNECT_BUNKER_PROMPT,
+  CREATE_KEY_PROMPT,
   DECLINED_WAIT_MS,
+  MainCalls,
   PICK_VIDEO_DIALOG,
-  answerMainCall,
+  UNLOCK_KEY_PROMPT,
   publishDialog,
-  shownTitle,
+  shownText,
+  videoDialog,
   type MainCallDeps,
+  type PublishShown,
+  type VideoShown,
 } from '../main/main-calls.ts';
+import {
+  PROMPT_CSP,
+  PROMPT_URL,
+  PromptHost,
+  allowPromptRequest,
+  createPromptProtocolHandler,
+  createPromptWindow,
+  type PromptSpec,
+  type PromptWindowCtor,
+} from '../main/prompt-window.ts';
 import { MAIN_WINDOW_POLICY, RpcGate, type RpcGateDeps } from '../main/rpc-gate.ts';
 
 type Msg = Record<string, unknown>;
@@ -69,9 +87,6 @@ const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 describe('the window’s allow-list', () => {
   it.each([
     'signer.status',
-    'signer.local.create',
-    'signer.local.unlock',
-    'signer.nip46.connect',
     'signer.lock',
     'seeding.status',
     'seeding.stop',
@@ -91,7 +106,13 @@ describe('the window’s allow-list', () => {
     // Main's own, or the host's: a page must never reach them.
     'init',
     'seeding.set',
+    'seeding.resume',
+    'seeding.delete',
     'studio.source',
+    'studio.discard',
+    'signer.local.create',
+    'signer.local.unlock',
+    'signer.nip46.connect',
     'signer.check',
     'signer.sign',
     'nfx.seed.start',
@@ -185,6 +206,20 @@ describe('what main answers itself', () => {
     ]);
   });
 
+  it.each([
+    'app.pickVideo',
+    'app.seeding.set',
+    'app.seeding.resume',
+    'app.seeding.delete',
+    'app.publish.sign',
+    'app.signer.create',
+    'app.signer.unlock',
+    'app.signer.connect',
+  ])('%s is main’s', (m) => {
+    expect(MAIN_WINDOW_POLICY.mainMethods?.has(m)).toBe(true);
+    expect(MAIN_WINDOW_POLICY.methods.has(m)).toBe(false);
+  });
+
   it('passes on only a WorkerError’s words', async () => {
     const h = harness((_w, m) =>
       Promise.reject(
@@ -251,62 +286,113 @@ describe('what main answers itself', () => {
   });
 });
 
-describe('the two native dialogs', () => {
-  function deps(
-    o: { path?: string | null; yes?: boolean; publish?: boolean } = {},
-  ): MainCallDeps & {
-    calls: [string, Record<string, unknown>][];
-    picks: () => number;
-    confirms: () => number;
-    shown: { title: string; signer: string }[];
-    clock: { t: number };
-  } {
-    const calls: [string, Record<string, unknown>][] = [];
-    const shown: { title: string; signer: string }[] = [];
-    const clock = { t: 1_000_000 };
-    let picks = 0;
-    let confirms = 0;
-    return {
-      calls,
-      shown,
-      clock,
-      now: () => clock.t,
-      declined: { seeding: 0, publish: 0 },
-      picks: () => picks,
-      confirms: () => confirms,
-      confirmPublish: (x) => {
-        shown.push({ ...x });
-        return Promise.resolve(o.publish === true);
-      },
-      pickFile: () => {
-        picks += 1;
-        return Promise.resolve(o.path === undefined ? '/home/u/clip.mp4' : o.path);
-      },
-      confirmSeeding: () => {
-        confirms += 1;
-        return Promise.resolve(o.yes === true);
-      },
-      worker: (m, a) => {
-        calls.push([m, a]);
-        return Promise.resolve(
-          m === 'signer.check'
-            ? { video: 'v', title: 'The worker’s title', signer: 'ab'.repeat(32) }
-            : { answered: m },
-        );
-      },
-    };
-  }
+const KEY = 'ab'.repeat(32);
+const VIDEO = `nfx:testnet:1:nutflix-${'a'.repeat(32)}`;
+const CHECK: PublishShown = {
+  video: VIDEO,
+  event: { kind: 38504, created_at: 1, tags: [], content: '' },
+  signer: KEY,
+  npub: 'npub1thewholekeyasthebechtext',
+  title: 'The worker’s title',
+  tags: ['cats'],
+  description: 'A line.',
+  file: { name: 'holiday.mp4', bytes: 12 * 1024 * 1024, durationSec: 83 },
+};
 
+function deps(
+  o: {
+    path?: string | null;
+    yes?: boolean;
+    publish?: boolean;
+    video?: boolean;
+    secrets?: readonly (string | null)[];
+  } = {},
+): {
+  d: MainCallDeps;
+  m: MainCalls;
+  calls: [string, Record<string, unknown>][];
+  picks: () => number;
+  confirms: () => number;
+  shown: PublishShown[];
+  videos: [string, VideoShown][];
+  specs: PromptSpec[];
+  problems: (string | null)[];
+  clock: { t: number };
+} {
+  const calls: [string, Record<string, unknown>][] = [];
+  const shown: PublishShown[] = [];
+  const videos: [string, VideoShown][] = [];
+  const specs: PromptSpec[] = [];
+  const problems: (string | null)[] = [];
+  const clock = { t: 1_000_000 };
+  let picks = 0;
+  let confirms = 0;
+  const d: MainCallDeps = {
+    now: () => clock.t,
+    pickFile: () => {
+      picks += 1;
+      return Promise.resolve(o.path === undefined ? '/home/u/clip.mp4' : o.path);
+    },
+    confirmSeeding: () => {
+      confirms += 1;
+      return Promise.resolve(o.yes === true);
+    },
+    confirmPublish: (_id, x) => {
+      shown.push(x);
+      return Promise.resolve(o.publish === true);
+    },
+    confirmVideo: (_id, action, v) => {
+      videos.push([action, v]);
+      return Promise.resolve(o.video === true);
+    },
+    askSecret: async (_id, spec, submit) => {
+      specs.push(spec);
+      for (const value of o.secrets ?? []) {
+        if (value === null) return false;
+        const problem = await submit(value);
+        problems.push(problem);
+        if (problem === null) return true;
+      }
+      return false;
+    },
+    worker: (m, a) => {
+      calls.push([m, a]);
+      if (m === 'signer.check') return Promise.resolve(CHECK);
+      if (m === 'seeding.status')
+        return Promise.resolve({
+          answered: m,
+          videos: [{ video: VIDEO, origin: 'published', bytes: 1024 }],
+        });
+      if (a['passphrase'] === 'the wrong one')
+        return Promise.reject(new WorkerError('bad-passphrase', 'that does not open this key'));
+      return Promise.resolve({ answered: m });
+    },
+  };
+  return {
+    d,
+    m: new MainCalls(d),
+    calls,
+    picks: () => picks,
+    confirms: () => confirms,
+    shown,
+    videos,
+    specs,
+    problems,
+    clock,
+  };
+}
+
+describe('the file picker', () => {
   it('a picked path goes to the worker; the page gets only the worker’s token', async () => {
-    const d = deps();
-    expect(await answerMainCall('app.pickVideo', {}, d)).toEqual({ answered: 'studio.source' });
-    expect(d.calls).toEqual([['studio.source', { path: '/home/u/clip.mp4' }]]);
+    const t = deps();
+    expect(await t.m.answer(1, 'app.pickVideo', {})).toEqual({ answered: 'studio.source' });
+    expect(t.calls).toEqual([['studio.source', { path: '/home/u/clip.mp4' }]]);
   });
 
   it('a cancelled pick reaches nothing', async () => {
-    const d = deps({ path: null });
-    expect(await answerMainCall('app.pickVideo', {}, d)).toBeNull();
-    expect(d.calls).toEqual([]);
+    const t = deps({ path: null });
+    expect(await t.m.answer(1, 'app.pickVideo', {})).toBeNull();
+    expect(t.calls).toEqual([]);
   });
 
   it.each([
@@ -315,117 +401,77 @@ describe('the two native dialogs', () => {
     [{ defaultPath: '/etc' }],
     [{ filters: [] }],
   ])('a page cannot steer the picker: %j', async (args) => {
-    const d = deps();
-    await expect(answerMainCall('app.pickVideo', args, d)).rejects.toMatchObject({
+    const t = deps();
+    await expect(t.m.answer(1, 'app.pickVideo', args)).rejects.toMatchObject({
       code: 'invalid-argument',
     });
-    expect(d.picks()).toBe(0);
-    expect(d.calls).toEqual([]);
+    expect(t.picks()).toBe(0);
+    expect(t.calls).toEqual([]);
   });
 
-  it('turning seeding on takes the user’s yes', async () => {
-    const yes = deps({ yes: true });
-    await answerMainCall('app.seeding.set', { on: true }, yes);
-    expect(yes.confirms()).toBe(1);
-    expect(yes.calls).toEqual([['seeding.set', { watched: true }]]);
+  it('opens one file and no directory', () => {
+    expect(PICK_VIDEO_DIALOG.properties).toEqual(['openFile']);
+  });
+});
+
+describe('the seeding switch', () => {
+  it('turning it on takes the user’s yes', async () => {
+    const t = deps({ yes: true });
+    await t.m.answer(1, 'app.seeding.set', { on: true });
+    expect(t.confirms()).toBe(1);
+    expect(t.calls).toEqual([['seeding.set', { watched: true }]]);
   });
 
   it('a no leaves it off, and answers with the current state', async () => {
-    const no = deps({ yes: false });
-    expect(await answerMainCall('app.seeding.set', { on: true }, no)).toEqual({
+    const t = deps({ yes: false });
+    expect(await t.m.answer(1, 'app.seeding.set', { on: true })).toMatchObject({
       answered: 'seeding.status',
     });
-    expect(no.confirms()).toBe(1);
-    expect(no.calls).toEqual([['seeding.status', {}]]);
+    expect(t.calls).toEqual([['seeding.status', {}]]);
   });
 
-  it('turning it off asks nothing', async () => {
-    const d = deps();
-    await answerMainCall('app.seeding.set', { on: false }, d);
-    expect(d.confirms()).toBe(0);
-    expect(d.calls).toEqual([['seeding.set', { watched: false }]]);
+  it('turning it off asks nothing, and works while another dialog is open', async () => {
+    let close: (yes: boolean) => void = () => undefined;
+    const t = deps();
+    const m = new MainCalls({
+      ...t.d,
+      confirmPublish: () =>
+        new Promise((r) => {
+          close = r;
+        }),
+    });
+    const open = m.answer(1, 'app.publish.sign', { video: VIDEO });
+    await flush();
+    await m.answer(1, 'app.seeding.set', { on: false });
+    expect(t.calls.at(-1)).toEqual(['seeding.set', { watched: false }]);
+    expect(t.confirms()).toBe(0);
+    close(false);
+    await open;
+  });
+
+  it('a "no" is not asked again for a minute', async () => {
+    const t = deps({ yes: false });
+    await t.m.answer(1, 'app.seeding.set', { on: true });
+    await expect(t.m.answer(1, 'app.seeding.set', { on: true })).rejects.toMatchObject({
+      code: 'rate-limited',
+    });
+    expect(t.confirms()).toBe(1);
+    t.clock.t += DECLINED_WAIT_MS;
+    await t.m.answer(1, 'app.seeding.set', { on: true });
+    expect(t.confirms()).toBe(2);
   });
 
   it.each([[{}], [{ on: 'true' }], [{ on: 1 }], [{ on: true, watched: true }]])(
     'refuses %j',
     async (args) => {
-      const d = deps({ yes: true });
-      await expect(answerMainCall('app.seeding.set', args, d)).rejects.toMatchObject({
+      const t = deps({ yes: true });
+      await expect(t.m.answer(1, 'app.seeding.set', args)).rejects.toMatchObject({
         code: 'invalid-argument',
       });
-      expect(d.confirms()).toBe(0);
-      expect(d.calls).toEqual([]);
+      expect(t.confirms()).toBe(0);
+      expect(t.calls).toEqual([]);
     },
   );
-
-  it('a "no" to seeding is not asked again for a minute', async () => {
-    const d = deps({ yes: false });
-    await answerMainCall('app.seeding.set', { on: true }, d);
-    await expect(answerMainCall('app.seeding.set', { on: true }, d)).rejects.toMatchObject({
-      code: 'rate-limited',
-    });
-    expect(d.confirms()).toBe(1);
-    await answerMainCall('app.seeding.set', { on: false }, d);
-    d.clock.t += DECLINED_WAIT_MS;
-    await answerMainCall('app.seeding.set', { on: true }, d);
-    expect(d.confirms()).toBe(2);
-  });
-
-  describe('publishing', () => {
-    const event = { kind: 38504, created_at: 1, tags: [['title', 'From the page']], content: '' };
-
-    it('signs only after the user said yes, to what the worker says it is', async () => {
-      const d = deps({ publish: true });
-      expect(await answerMainCall('app.publish.sign', { event }, d)).toEqual({
-        answered: 'signer.sign',
-      });
-      expect(d.calls.map(([m]) => m)).toEqual(['signer.check', 'signer.sign']);
-      expect(d.shown).toEqual([{ title: 'The worker’s title', signer: 'ab'.repeat(32) }]);
-    });
-
-    it('a "no" signs nothing, and is not asked again for a minute', async () => {
-      const d = deps({ publish: false });
-      await expect(answerMainCall('app.publish.sign', { event }, d)).rejects.toMatchObject({
-        code: 'invalid-argument',
-      });
-      expect(d.calls.map(([m]) => m)).toEqual(['signer.check']);
-      await expect(answerMainCall('app.publish.sign', { event }, d)).rejects.toMatchObject({
-        code: 'rate-limited',
-      });
-      expect(d.shown).toHaveLength(1);
-    });
-
-    it('asks nothing about an event the worker refuses', async () => {
-      const d = deps({ publish: true });
-      const refusing: MainCallDeps = {
-        ...d,
-        worker: () => Promise.reject(new WorkerError('invalid-argument', 'not the draft')),
-      };
-      await expect(answerMainCall('app.publish.sign', { event }, refusing)).rejects.toMatchObject({
-        code: 'invalid-argument',
-      });
-      expect(d.shown).toEqual([]);
-    });
-
-    it.each([[{}], [{ event, extra: 1 }]])('refuses %j', async (args) => {
-      const d = deps({ publish: true });
-      await expect(answerMainCall('app.publish.sign', args, d)).rejects.toMatchObject({
-        code: 'invalid-argument',
-      });
-      expect(d.calls).toEqual([]);
-    });
-
-    it('the box shows one plain line of title, and says what publishing shares', () => {
-      const b = publishDialog(`a\nb\u202Ec${'x'.repeat(500)}`, 'ab'.repeat(32));
-      expect(b.message).toMatch(/shares your IP address with viewers/);
-      expect(b.defaultId).toBe(0);
-      expect(b.buttons[0]).toBe('Do not publish');
-      const line = b.detail.split('\n')[0] ?? '';
-      expect(line.startsWith('Title: abc')).toBe(true);
-      expect(line).not.toContain('\u202E');
-      expect(shownTitle('x'.repeat(500)).length).toBe(120);
-    });
-  });
 
   it('says plainly what seeding shares, with "off" as the default answer', () => {
     expect(CONFIRM_SEEDING_DIALOG.message).toMatch(/shares your IP address with viewers/);
@@ -433,8 +479,420 @@ describe('the two native dialogs', () => {
     expect(CONFIRM_SEEDING_DIALOG.cancelId).toBe(0);
     expect(CONFIRM_SEEDING_DIALOG.buttons[0]).toBe('Keep it off');
   });
+});
 
-  it('the picker opens one file and no directory', () => {
-    expect(PICK_VIDEO_DIALOG.properties).toEqual(['openFile']);
+describe('publishing', () => {
+  it('signs after a yes, with the event and the key the worker named', async () => {
+    const t = deps({ publish: true });
+    expect(await t.m.answer(1, 'app.publish.sign', { video: VIDEO })).toEqual({
+      answered: 'signer.sign',
+    });
+    expect(t.calls).toEqual([
+      ['signer.check', { video: VIDEO }],
+      ['signer.sign', { event: CHECK.event, signer: KEY }],
+    ]);
+    expect(t.shown).toEqual([CHECK]);
+  });
+
+  it('a "no" deletes the draft, signs nothing, and is not asked again for a minute', async () => {
+    const t = deps({ publish: false });
+    expect(await t.m.answer(1, 'app.publish.sign', { video: VIDEO })).toBeNull();
+    expect(t.calls.map(([m]) => m)).toEqual(['signer.check', 'studio.discard']);
+    expect(t.calls[1]?.[1]).toEqual({ video: VIDEO });
+    await expect(t.m.answer(1, 'app.publish.sign', { video: VIDEO })).rejects.toMatchObject({
+      code: 'rate-limited',
+    });
+    expect(t.shown).toHaveLength(1);
+  });
+
+  it('a failed signature keeps the draft, for another try', async () => {
+    const t = deps({ publish: true });
+    const m = new MainCalls({
+      ...t.d,
+      worker: (name, a) => {
+        t.calls.push([name, a]);
+        return name === 'signer.check'
+          ? Promise.resolve(CHECK)
+          : Promise.reject(new WorkerError('no-signer', 'the signer did not sign this event'));
+      },
+    });
+    await expect(m.answer(1, 'app.publish.sign', { video: VIDEO })).rejects.toMatchObject({
+      code: 'no-signer',
+    });
+    expect(t.calls.map(([x]) => x)).toEqual(['signer.check', 'signer.sign']);
+  });
+
+  it('asks nothing about a video the worker has no draft for', async () => {
+    const t = deps({ publish: true });
+    const m = new MainCalls({
+      ...t.d,
+      worker: () => Promise.reject(new WorkerError('invalid-argument', 'no draft')),
+    });
+    await expect(m.answer(1, 'app.publish.sign', { video: VIDEO })).rejects.toMatchObject({
+      code: 'invalid-argument',
+    });
+    expect(t.shown).toEqual([]);
+  });
+
+  it('a page cannot change the signer under the open dialog', async () => {
+    let close: (yes: boolean) => void = () => undefined;
+    const t = deps({ secrets: ['a passphrase'] });
+    const m = new MainCalls({
+      ...t.d,
+      confirmPublish: () =>
+        new Promise((r) => {
+          close = r;
+        }),
+    });
+    const open = m.answer(1, 'app.publish.sign', { video: VIDEO });
+    await flush();
+    for (const method of ['app.signer.connect', 'app.signer.unlock', 'app.signer.create'])
+      await expect(m.answer(1, method, {})).rejects.toMatchObject({ code: 'rate-limited' });
+    expect(t.specs).toEqual([]);
+    close(true);
+    await open;
+    expect(t.calls.at(-1)).toEqual(['signer.sign', { event: CHECK.event, signer: KEY }]);
+  });
+
+  it.each([[{}], [{ video: VIDEO, event: {} }], [{ video: 7 }], [{ video: 'x'.repeat(257) }]])(
+    'refuses %j',
+    async (args) => {
+      const t = deps({ publish: true });
+      await expect(t.m.answer(1, 'app.publish.sign', args)).rejects.toMatchObject({
+        code: 'invalid-argument',
+      });
+      expect(t.calls).toEqual([]);
+    },
+  );
+});
+
+describe('what the publish box shows', () => {
+  const box = (o: Partial<PublishShown>): ReturnType<typeof publishDialog> =>
+    publishDialog({ ...CHECK, ...o });
+
+  it('the file, its size and length, and the WHOLE key, before anything a page typed', () => {
+    const lines = box({}).detail.split('\n');
+    expect(lines[0]).toBe('File: holiday.mp4 (12.0 MiB, 1:23)');
+    expect(lines[1]).toBe(`Signed by: ${CHECK.npub}`);
+    expect(lines[2]).toBe('Title: The worker’s title');
+    expect(lines[3]).toBe('Tags: #cats');
+  });
+
+  it('says what publishing shares, with "do not" as the default answer', () => {
+    const b = box({});
+    expect(b.message).toMatch(/shares your IP address with viewers/);
+    expect([b.defaultId, b.cancelId]).toEqual([0, 0]);
+    expect(b.buttons[0]).toBe('Do not publish');
+  });
+
+  it('a title cannot draw a line of its own, or reorder the text', () => {
+    const spoof = `Cat\u2028Signed by: npub1fake\u2029\nx\u202eb\u061c\u200b\u{E0041}`;
+    const b = box({ title: spoof });
+    const lines = b.detail.split('\n');
+    expect(lines[1]).toBe(`Signed by: ${CHECK.npub}`);
+    expect(lines[2]).toBe('Title: CatSigned by: npub1fakexb');
+    expect(b.detail).not.toMatch(/[\u2028\u2029\u202e\u061c\u200b]/u);
+  });
+
+  it('shows the whole title, however long', () => {
+    const title = 'x'.repeat(256);
+    expect(box({ title }).detail).toContain(`Title: ${title}\n`);
+  });
+
+  it('strips joiners for display only', () => {
+    expect(shownText('a\u200db\u200cc')).toBe('abc');
+  });
+
+  it('shows the description’s length and first lines, each marked', () => {
+    const description = ['one', 'Signed by: npub1fake', 'three', 'four', 'five'].join('\n');
+    const d = box({ description }).detail;
+    expect(d).toContain(`Description (${String(description.length)} characters):`);
+    expect(d).toContain('> one\n> Signed by: npub1fake\n> three\n> …');
+    expect(d).not.toContain('four');
+    expect(d.match(/^Signed by:/gmu)).toHaveLength(1);
+  });
+
+  it('says when there are no tags and no description', () => {
+    const d = box({ tags: [], description: ' ' }).detail;
+    expect(d).toContain('Tags: none');
+    expect(d).toContain('Description: none');
+  });
+});
+
+describe('stopping, deleting, and seeding again', () => {
+  it.each([
+    ['app.seeding.delete', 'delete', 'seeding.delete'],
+    ['app.seeding.resume', 'resume', 'seeding.resume'],
+  ])('%s asks first, then acts', async (method, action, workerMethod) => {
+    const t = deps({ video: true });
+    await t.m.answer(1, method, { video: VIDEO });
+    expect(t.videos.map(([a]) => a)).toEqual([action]);
+    expect(t.calls.map(([m]) => m)).toEqual(['seeding.status', workerMethod, 'seeding.status']);
+  });
+
+  it.each(['app.seeding.delete', 'app.seeding.resume'])('%s: a "no" does nothing', async (m) => {
+    const t = deps({ video: false });
+    await t.m.answer(1, m, { video: VIDEO });
+    expect(t.calls.map(([x]) => x)).toEqual(['seeding.status']);
+    await expect(t.m.answer(1, m, { video: VIDEO })).rejects.toMatchObject({
+      code: 'rate-limited',
+    });
+  });
+
+  it('refuses a video the worker does not list', async () => {
+    const t = deps({ video: true });
+    await expect(t.m.answer(1, 'app.seeding.delete', { video: `${VIDEO}x` })).rejects.toMatchObject(
+      { code: 'not-found' },
+    );
+    expect(t.videos).toEqual([]);
+  });
+
+  it('says what deleting does, with "keep it" as the default answer', () => {
+    const b = videoDialog('delete', { video: VIDEO, origin: 'published', bytes: 2048 });
+    expect(b.message).toContain('deletes the video');
+    expect(b.detail).toContain(VIDEO);
+    expect([b.defaultId, b.buttons[0]]).toEqual([0, 'Keep it']);
+    const r = videoDialog('resume', { video: VIDEO, origin: 'watched', bytes: 2048 });
+    expect(r.message).toMatch(/shares your IP address/);
+  });
+});
+
+describe('secrets go through main’s own prompt', () => {
+  it.each([
+    ['app.signer.create', 'signer.local.create', 'passphrase', CREATE_KEY_PROMPT],
+    ['app.signer.unlock', 'signer.local.unlock', 'passphrase', UNLOCK_KEY_PROMPT],
+    ['app.signer.connect', 'signer.nip46.connect', 'uri', CONNECT_BUNKER_PROMPT],
+  ])('%s: the value goes to the worker, and the page gets the status', async (m, w, f, spec) => {
+    const value = 'a value only the prompt window saw';
+    const t = deps({ secrets: [value] });
+    const answer = await t.m.answer(1, m, {});
+    expect(t.specs).toEqual([spec]);
+    expect(t.calls).toEqual([[w, { [f]: value }]]);
+    expect(answer).toEqual({ answered: w });
+    expect(JSON.stringify(answer)).not.toContain(value);
+  });
+
+  it.each(['app.signer.create', 'app.signer.unlock', 'app.signer.connect'])(
+    '%s takes nothing from the page',
+    async (m) => {
+      const t = deps({ secrets: ['x'] });
+      for (const args of [{ passphrase: 'from the page' }, { uri: 'bunker://x' }])
+        await expect(t.m.answer(1, m, args)).rejects.toMatchObject({ code: 'invalid-argument' });
+      expect(t.specs).toEqual([]);
+    },
+  );
+
+  it('a wrong passphrase is said in the prompt, and it can be tried again', async () => {
+    const t = deps({ secrets: ['the wrong one', 'the right one'] });
+    expect(await t.m.answer(1, 'app.signer.unlock', {})).toEqual({
+      answered: 'signer.local.unlock',
+    });
+    expect(t.problems).toEqual(['that does not open this key', null]);
+  });
+
+  it('cancelling calls nothing with a value, and answers with the status', async () => {
+    const t = deps({ secrets: [null] });
+    expect(await t.m.answer(1, 'app.signer.connect', {})).toEqual({ answered: 'signer.status' });
+    expect(t.calls).toEqual([['signer.status', {}]]);
+  });
+
+  it('a new key must be typed twice', () => {
+    expect(CREATE_KEY_PROMPT.repeatLabel).toBeDefined();
+    expect(UNLOCK_KEY_PROMPT.repeatLabel).toBeUndefined();
+  });
+});
+
+describe('the prompt window', () => {
+  const SPEC: PromptSpec = {
+    title: 't',
+    message: 'm',
+    label: 'l',
+    submit: 's',
+    minChars: 3,
+    maxChars: 10,
+  };
+  const right = { webContentsId: 7, topFrame: true, url: PROMPT_URL };
+
+  function host(): {
+    p: PromptHost;
+    closed: () => number;
+    errors: string[];
+    gone: () => void;
+    windows: number[];
+  } {
+    let closed = 0;
+    let onGone: () => void = () => undefined;
+    const errors: string[] = [];
+    const windows: number[] = [];
+    const p = new PromptHost({
+      open: (id, _spec, gone) => {
+        windows.push(id);
+        onGone = gone;
+        return {
+          id: 7,
+          error: (t) => {
+            errors.push(t);
+          },
+          close: () => {
+            closed += 1;
+          },
+        };
+      },
+    });
+    return {
+      p,
+      closed: () => closed,
+      errors,
+      gone: () => {
+        onGone();
+      },
+      windows,
+    };
+  }
+
+  it('takes a value from its own window, and closes when it is done', async () => {
+    const h = host();
+    const got: string[] = [];
+    const asked = h.p.ask(3, SPEC, (v) => {
+      got.push(v);
+      return Promise.resolve(null);
+    });
+    h.p.message(right, PROMPT_SUBMIT, 'secret');
+    expect(await asked).toBe(true);
+    expect(got).toEqual(['secret']);
+    expect(h.windows).toEqual([3]);
+    expect(h.closed()).toBe(1);
+    expect(h.p.open).toBe(false);
+  });
+
+  it.each([
+    ['another webContents', { webContentsId: 8, topFrame: true, url: PROMPT_URL }],
+    ['a subframe', { webContentsId: 7, topFrame: false, url: PROMPT_URL }],
+    ['another page', { webContentsId: 7, topFrame: true, url: 'app://nutflix/index.html' }],
+    ['no URL', { webContentsId: 7, topFrame: true, url: undefined }],
+  ])('drops a value from %s', async (_name, from) => {
+    const h = host();
+    const got: string[] = [];
+    const asked = h.p.ask(3, SPEC, (v) => {
+      got.push(v);
+      return Promise.resolve(null);
+    });
+    h.p.message(from, PROMPT_SUBMIT, 'secret');
+    h.p.message(from, PROMPT_CANCEL, undefined);
+    await flush();
+    expect(got).toEqual([]);
+    expect(h.p.open).toBe(true);
+    h.p.message(right, PROMPT_CANCEL, undefined);
+    expect(await asked).toBe(false);
+  });
+
+  it('shows a refusal and stays open for another try', async () => {
+    const h = host();
+    let tries = 0;
+    const asked = h.p.ask(3, SPEC, () => {
+      tries += 1;
+      return Promise.resolve(tries === 1 ? 'wrong' : null);
+    });
+    h.p.message(right, PROMPT_SUBMIT, 'first');
+    await flush();
+    expect(h.errors).toEqual(['wrong']);
+    expect(h.p.open).toBe(true);
+    h.p.message(right, PROMPT_SUBMIT, 'second');
+    expect(await asked).toBe(true);
+  });
+
+  it('takes one value at a time', async () => {
+    const h = host();
+    let finish: (x: string | null) => void = () => undefined;
+    const got: string[] = [];
+    const asked = h.p.ask(3, SPEC, (v) => {
+      got.push(v);
+      return new Promise((r) => {
+        finish = r;
+      });
+    });
+    h.p.message(right, PROMPT_SUBMIT, 'first');
+    h.p.message(right, PROMPT_SUBMIT, 'second');
+    expect(got).toEqual(['first']);
+    finish(null);
+    expect(await asked).toBe(true);
+  });
+
+  it.each([['ab'], ['x'.repeat(11)], [7], [null]])('refuses the value %j', async (value) => {
+    const h = host();
+    const got: unknown[] = [];
+    const asked = h.p.ask(3, SPEC, (v) => {
+      got.push(v);
+      return Promise.resolve(null);
+    });
+    h.p.message(right, PROMPT_SUBMIT, value);
+    expect(got).toEqual([]);
+    expect(h.errors).toHaveLength(1);
+    h.p.message(right, PROMPT_CANCEL, undefined);
+    await asked;
+  });
+
+  it('closing the window is a cancel', async () => {
+    const h = host();
+    const asked = h.p.ask(3, SPEC, () => Promise.resolve(null));
+    h.gone();
+    expect(await asked).toBe(false);
+  });
+
+  it('opens one at a time', async () => {
+    const h = host();
+    const asked = h.p.ask(3, SPEC, () => Promise.resolve(null));
+    await expect(h.p.ask(3, SPEC, () => Promise.resolve(null))).rejects.toThrow(/already/);
+    h.gone();
+    await asked;
+  });
+
+  it('is sandboxed, isolated, in its own session, and modal, written as literals', () => {
+    const box = { opts: {} as BrowserWindowConstructorOptions };
+    const Ctor = function (this: unknown, o: BrowserWindowConstructorOptions) {
+      box.opts = o;
+    } as unknown as PromptWindowCtor;
+    const parent = {} as BrowserWindow;
+    const session = {} as Session;
+    createPromptWindow(Ctor, parent, '/app/main/prompt-preload.cjs', session, 'A title');
+    expect(box.opts).toMatchObject({ parent, modal: true, show: false, resizable: false });
+    expect(box.opts.webPreferences).toMatchObject({
+      preload: '/app/main/prompt-preload.cjs',
+      session,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      devTools: false,
+    });
+    for (const k of ['webSecurity', 'webviewTag', 'allowRunningInsecureContent'])
+      expect(Object.keys(box.opts.webPreferences ?? {})).not.toContain(k);
+  });
+
+  it('its session reaches its one file and nothing else', () => {
+    expect(allowPromptRequest(PROMPT_URL)).toBe(true);
+    for (const u of [
+      'app://nutflix/index.html',
+      'app://prompt/other.html',
+      `${PROMPT_URL}?x=1`,
+      'https://example.com/',
+      'ws://127.0.0.1:9/',
+      'file:///etc/passwd',
+    ])
+      expect(allowPromptRequest(u), u).toBe(false);
+  });
+
+  it('serves its one file, under a policy that allows nothing', async () => {
+    const handle = createPromptProtocolHandler(() =>
+      Promise.resolve(new TextEncoder().encode('<!doctype html>')),
+    );
+    const ok = await handle(new Request(PROMPT_URL));
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-security-policy')).toBe(PROMPT_CSP);
+    expect(PROMPT_CSP).toContain("default-src 'none'");
+    expect(PROMPT_CSP).not.toMatch(/script-src|connect-src|unsafe/);
+    const refused = await handle(new Request('https://example.com/prompt.html'));
+    expect(refused.status).toBe(404);
   });
 });

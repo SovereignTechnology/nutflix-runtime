@@ -91,13 +91,71 @@ describe('signer.nip46.connect', () => {
 describe('signer.check and signer.sign', () => {
   const event = { kind: 38504, created_at: 1_800_000_000, tags: [['d', VIDEO]], content: '' };
 
-  it.each(['signer.check', 'signer.sign'])('%s takes one allow-listed event', (m) => {
-    ok(m, { event });
-    no(m, { event: { ...event, kind: 1 } });
-    no(m, { event: { ...event, kind: 20464 } });
-    no(m, { event: { ...event, pubkey: SHA } });
-    no(m, { event, extra: 1 });
-    no(m, {});
+  it('signer.check names a video, and takes no event from anyone', () => {
+    ok('signer.check', { video: VIDEO });
+    no('signer.check', { event });
+    no('signer.check', { video: 'nope' });
+    no('signer.check', { video: VIDEO, extra: 1 });
+  });
+
+  it('signer.sign takes an allow-listed event and the key the user approved', () => {
+    ok('signer.sign', { event, signer: SHA });
+    no('signer.sign', { event });
+    no('signer.sign', { event, signer: 'x' });
+    no('signer.sign', { event, signer: SHA.toUpperCase() });
+    no('signer.sign', { event: { ...event, kind: 1 }, signer: SHA });
+    no('signer.sign', { event: { ...event, kind: 20464 }, signer: SHA });
+    no('signer.sign', { event: { ...event, pubkey: SHA }, signer: SHA });
+    no('signer.sign', { event, signer: SHA, extra: 1 });
+  });
+});
+
+describe('titles and tags, as a person will read them', () => {
+  const a = { source: SID, title: 'A title', description: '', tags: [], sizes: [720] };
+  const title = (t: string): unknown => ({ ...a, title: t });
+
+  it.each([
+    ['a line separator', 'Cat\u2028Signed by: someone'],
+    ['a paragraph separator', 'Cat\u2029more'],
+    ['a newline', 'a\nb'],
+    ['a control character', 'a\u0007b'],
+    ['a C1 control', 'a\u0085b'],
+    ['the Arabic letter mark', 'a\u061cb'],
+    ['a left-to-right mark', 'a\u200eb'],
+    ['a right-to-left mark', 'a\u200fb'],
+    ['a right-to-left override', 'a\u202eb'],
+    ['a directional isolate', 'a\u2067b\u2069'],
+    ['a tag character', 'a\u{E0041}b'],
+    ['an unpaired surrogate', 'a\ud800b'],
+    ['only invisible characters', '\u200b\u200d\u2060'],
+    ['only a soft hyphen', '\u00ad'],
+    ['only spaces and a joiner', '  \u200d '],
+  ])('refuses a title with %s', (_name, t) => {
+    no('studio.publish', title(t));
+  });
+
+  it.each([
+    ['an emoji sequence', 'Family 👨\u200d👩\u200d👧'],
+    ['Persian with a zero-width non-joiner', 'می\u200cخواهم'],
+    ['Hindi with a joiner', 'क्\u200dष'],
+    ['plain accents', 'Café crème'],
+  ])('keeps a title with %s', (_name, t) => {
+    ok('studio.publish', title(t));
+  });
+
+  it('holds a tag to the same rules', () => {
+    ok('studio.publish', { ...a, tags: ['cats'] });
+    no('studio.publish', { ...a, tags: ['a\u202eb'] });
+    no('studio.publish', { ...a, tags: ['a\u2028b'] });
+    no('studio.publish', { ...a, tags: ['\u200b'] });
+  });
+});
+
+describe('init', () => {
+  it('takes whether this shell may hold a sealed key', () => {
+    ok('init', { v: 1, storage: '/home/user/worker', localKey: true });
+    ok('init', { v: 1, storage: '/home/user/worker' });
+    no('init', { v: 1, storage: '/home/user/worker', localKey: 'yes' });
   });
 });
 

@@ -108,7 +108,7 @@ export const MAX_VIDEO_TAG = 32;
 export const MAX_STUDIO_SIZES = 7;
 /** The tallest rendition (core's `MAX_UPLOAD_HEIGHT`). */
 export const MAX_STUDIO_HEIGHT = 2160;
-/** The most files picked and not yet published that the worker remembers. */
+/** The most packaged drafts waiting for a signature that the worker remembers. */
 export const MAX_STUDIO_SOURCES = 8;
 
 /** A WebRTC segment handed to the worker: the largest file, and the largest chunk of one. */
@@ -122,6 +122,12 @@ export const MAX_BEACONS = 64;
 export const MAX_WATCHED_BYTES = 16 * 1024 * 1024 * 1024;
 /** New videos "seed what you watch" may start storing in an hour. */
 export const MAX_WATCH_STARTS_PER_HOUR = 20;
+/** Bytes "seed what you watch" may fetch in an hour, however many it has deleted since. */
+export const MAX_WATCH_BYTES_PER_HOUR = MAX_WATCHED_BYTES;
+/** How long a picked file stays usable, seconds. A new pick replaces it sooner. */
+export const STUDIO_SOURCE_TTL_SEC = 30 * 60;
+/** The most one Studio job may write as encoded output, within the store's free space. */
+export const MAX_STUDIO_JOB_BYTES = 32 * 1024 * 1024 * 1024;
 
 // ---- shared wire shapes --------------------------------------------------------------------
 
@@ -169,6 +175,11 @@ export interface InitArgs {
   readonly diskCapBytes?: number;
   /** The least severe log level sent as `log` events; default `info`. */
   readonly logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Whether this shell may hold a passphrase-sealed key. Absent means NO: shape (b) has no sandbox
+   * and ADR 0001's amendment allows it no signing key on disk, so it signs through a bunker only.
+   */
+  readonly localKey?: boolean;
 }
 
 /**
@@ -284,10 +295,18 @@ export interface SignedEventWire extends UnsignedEventWire {
  */
 export type SeedOrigin = 'published' | 'watched' | 'host' | 'unknown';
 
-export interface SeedingVideoWire extends NfxStoredVideoWire {
+export interface SeedingVideoWire {
+  readonly video: string;
+  readonly files: number;
+  readonly bytes: number;
   readonly origin: SeedOrigin;
   /** Peers can fetch it from this node right now, or will as soon as a listener is up. */
   readonly served: boolean;
+  /** The user stopped serving it. Its bytes are kept until they delete it. */
+  readonly stopped: boolean;
+  /** Absent while the video is private (an unsigned draft, or one no record explains). */
+  readonly root?: string;
+  readonly segs?: number;
 }
 
 export interface SeedingStatusWire {
@@ -365,9 +384,34 @@ export interface StudioPublishArgs {
   readonly sizes: readonly number[];
 }
 
-/** A packaged, stored video and the manifest for the user's signer to sign. */
-export interface StudioPublishedWire extends NfxStoredVideoWire {
-  readonly draft: UnsignedEventWire;
+/**
+ * A packaged, stored, still private video. Its manifest draft stays in the worker: main asks for it
+ * (`signer.check`) when it asks the user.
+ */
+export interface StudioPublishedWire {
+  readonly video: string;
+  readonly files: number;
+  readonly bytes: number;
+}
+
+/** What the publish confirmation shows: the worker's own record of the draft it would sign. */
+export interface SignCheckWire {
+  readonly video: string;
+  /** The exact event `signer.sign` would sign. */
+  readonly event: UnsignedEventWire;
+  /** The key that would sign it, 64 hex: main hands it back, and a different key is refused. */
+  readonly signer: string;
+  /** The same key as an `npub`, for the user to read. */
+  readonly npub: string;
+  readonly title: string;
+  readonly tags: readonly string[];
+  readonly description: string;
+  /** The file that was encoded. */
+  readonly file: {
+    readonly name: string;
+    readonly bytes: number;
+    readonly durationSec: number;
+  };
 }
 
 export interface WorkerStatus {
@@ -403,33 +447,35 @@ export interface WorkerMethodTable {
     result: { readonly hyperdht: NfxHyperdhtEndpointWire | null },
   ];
   'signer.status': [args: Record<string, never>, result: SignerStatusWire];
-  /** Make a new key in the worker, sealed under the passphrase. Refused if one exists. */
+  /** MAIN ONLY: make a new key in the worker, sealed under the passphrase. Refused if one exists. */
   'signer.local.create': [args: { readonly passphrase: string }, result: SignerStatusWire];
+  /** MAIN ONLY: the passphrase comes from main's own prompt window, never a page. */
   'signer.local.unlock': [args: { readonly passphrase: string }, result: SignerStatusWire];
-  /** Connect a NIP-46 bunker; its session lives in the worker. */
+  /** MAIN ONLY: the URI holds a pairing secret. The session lives in the worker. */
   'signer.nip46.connect': [args: { readonly uri: string }, result: SignerStatusWire];
-  /** Zero the local key, or close the bunker session. */
+  /** Zero the local key, or close the bunker session. Refused while a signature is pending. */
   'signer.lock': [args: Record<string, never>, result: SignerStatusWire];
+  /** MAIN ONLY: the draft waiting for `video`'s signature, for the native confirmation. */
+  'signer.check': [args: { readonly video: string }, result: SignCheckWire];
   /**
-   * MAIN ONLY: what `signer.sign` would sign, for the native confirmation: refused unless it is
-   * the exact draft Studio made.
+   * MAIN ONLY, after the user confirmed: sign the draft Studio made, with exactly the key they were
+   * shown. Signing it starts serving the video, which shares the user's IP address.
    */
-  'signer.check': [
-    args: { readonly event: UnsignedEventWire },
-    result: { readonly video: string; readonly title: string; readonly signer: string },
+  'signer.sign': [
+    args: { readonly event: UnsignedEventWire; readonly signer: string },
+    result: SignedEventWire,
   ];
-  /**
-   * MAIN ONLY, after the user confirmed: sign the draft Studio made. Signing it starts serving the
-   * video, which shares the user's IP address, so a window reaches it only via `app.publish.sign`.
-   */
-  'signer.sign': [args: { readonly event: UnsignedEventWire }, result: SignedEventWire];
   'seeding.status': [args: Record<string, never>, result: SeedingStatusWire];
   /** The switch. MAIN ONLY: turning it on takes the user's answer to a native dialog. */
   'seeding.set': [args: { readonly watched: boolean }, result: SeedingStatusWire];
   /** Store and seed a video being watched. Refused while the switch is off. */
   'seeding.watch': [args: SeedingWatchArgs, result: NfxStoredVideoWire];
-  /** Stop serving a video and delete it from the store. */
-  'seeding.stop': [args: { readonly video: string }, result: { readonly removed: boolean }];
+  /** Stop serving a video. Its bytes stay: deleting them is `seeding.delete`, behind main. */
+  'seeding.stop': [args: { readonly video: string }, result: { readonly stopped: boolean }];
+  /** MAIN ONLY, after a native confirmation: serve a stopped video again. */
+  'seeding.resume': [args: { readonly video: string }, result: { readonly resumed: boolean }];
+  /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
+  'seeding.delete': [args: { readonly video: string }, result: { readonly removed: boolean }];
   /** A fresh signed kind-20464 beacon for every video served now, for the renderer to publish. */
   'seeding.beacons': [
     args: Record<string, never>,
@@ -444,6 +490,8 @@ export interface WorkerMethodTable {
   'studio.publish': [args: StudioPublishArgs, result: StudioPublishedWire];
   /** Kill the running encode, if any. */
   'studio.cancel': [args: Record<string, never>, result: { readonly cancelled: boolean }];
+  /** MAIN ONLY: the user declined to publish: the unsigned draft and its bytes are deleted. */
+  'studio.discard': [args: { readonly video: string }, result: { readonly removed: boolean }];
 }
 export type WorkerMethod = keyof WorkerMethodTable;
 export type ArgsOf<M extends WorkerMethod> = WorkerMethodTable[M][0];
@@ -469,6 +517,8 @@ export const WORKER_METHODS = [
   'seeding.set',
   'seeding.watch',
   'seeding.stop',
+  'seeding.resume',
+  'seeding.delete',
   'seeding.beacons',
   'seeding.segment',
   'studio.ffmpeg',
@@ -476,24 +526,36 @@ export const WORKER_METHODS = [
   'studio.probe',
   'studio.publish',
   'studio.cancel',
+  'studio.discard',
 ] as const satisfies readonly WorkerMethod[];
 
 /**
- * What a window may ask of main itself: answered by the shell (`rpc-gate.ts`), never forwarded to
- * the worker. `app.pickVideo` opens the native file dialog, so a page never names a path;
- * `app.seeding.set` turns the seeding switch, on only after a native confirmation;
- * `app.publish.sign` signs Studio's draft, and so starts seeding it, only after another.
+ * What a window may ask of main itself: answered by the shell (`main-calls.ts`), never forwarded to
+ * the worker. Each is something a page must not do alone, so each goes through a surface only the
+ * user can answer: the native file picker, a native confirmation, or main's own prompt window for
+ * a passphrase or a bunker URI (neither ever enters the page).
  */
 export interface WindowMethodTable {
   'app.pickVideo': [args: Record<string, never>, result: StudioSourceWire | null];
   'app.seeding.set': [args: { readonly on: boolean }, result: SeedingStatusWire];
-  'app.publish.sign': [args: { readonly event: UnsignedEventWire }, result: SignedEventWire];
+  'app.seeding.resume': [args: { readonly video: string }, result: SeedingStatusWire];
+  'app.seeding.delete': [args: { readonly video: string }, result: SeedingStatusWire];
+  /** `null`: the user declined, and the draft is gone. */
+  'app.publish.sign': [args: { readonly video: string }, result: SignedEventWire | null];
+  'app.signer.create': [args: Record<string, never>, result: SignerStatusWire];
+  'app.signer.unlock': [args: Record<string, never>, result: SignerStatusWire];
+  'app.signer.connect': [args: Record<string, never>, result: SignerStatusWire];
 }
 export type WindowMethod = keyof WindowMethodTable;
 export const WINDOW_METHODS = [
   'app.pickVideo',
   'app.seeding.set',
+  'app.seeding.resume',
+  'app.seeding.delete',
   'app.publish.sign',
+  'app.signer.create',
+  'app.signer.unlock',
+  'app.signer.connect',
 ] as const satisfies readonly WindowMethod[];
 
 // ---- events --------------------------------------------------------------------------------

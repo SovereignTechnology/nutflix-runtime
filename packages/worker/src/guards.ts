@@ -177,6 +177,7 @@ export const isInitArgs = obj<InitArgs>(
     bootstrap: union(literal(null), arrayOf(isBootstrapNode, MAX_BOOTSTRAP_NODES, 1)),
     diskCapBytes: int(0, Number.MAX_SAFE_INTEGER),
     logLevel: oneOf(['debug', 'info', 'warn', 'error'] as const),
+    localKey: bool,
   },
 );
 
@@ -313,13 +314,32 @@ export const isSeedingSegmentArgs = refine(
 
 // ---- Studio ----------------------------------------------------------------------------------
 
-/** A hashtag: one word, as NFX-02's `t` tags carry them. */
-const isVideoTag = refine(text(1, MAX_VIDEO_TAG), (t) => !/\s/.test(t));
+/**
+ * What no title or tag may hold: control and line-separator characters, unpaired surrogates, bidi
+ * controls and tag characters, each of which can make what a person reads differ from what is
+ * signed. The joiners U+200C and U+200D stay: emoji sequences, Persian and Indic text need them.
+ */
+const SPOOFING =
+  /[\p{Cc}\p{Cs}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u{E0000}-\u{E007F}]/u;
+/** Everything a dialog strips before showing text. */
+const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/** The title a person would see is not empty, and nothing in it can spoof the text around it. */
+export const isVideoTitle = refine(
+  text(1, MAX_TITLE),
+  (t) => !SPOOFING.test(t) && t.replace(INVISIBLE, '').trim() !== '',
+);
+
+/** A hashtag: one word, as NFX-02's `t` tags carry them, held to a title's rules. */
+const isVideoTag = refine(
+  text(1, MAX_VIDEO_TAG),
+  (t) => !/\s/.test(t) && !SPOOFING.test(t) && t.replace(INVISIBLE, '') !== '',
+);
 
 export const isStudioPublishArgs = refine(
   obj<StudioPublishArgs>({
     source: isSessionId,
-    title: refine(text(1, MAX_TITLE), (t) => t.trim() !== ''),
+    title: isVideoTitle,
     description: chars(MAX_DESCRIPTION),
     tags: arrayOf(isVideoTag, MAX_VIDEO_TAGS),
     sizes: arrayOf(int(2, MAX_STUDIO_HEIGHT), MAX_STUDIO_SIZES, 1),
@@ -342,12 +362,14 @@ export const validateArgs: { readonly [M in WorkerMethod]: Guard<ArgsOf<M>> } = 
   'signer.local.unlock': obj<ArgsOf<'signer.local.unlock'>>({ passphrase: isPassphrase }),
   'signer.nip46.connect': obj<ArgsOf<'signer.nip46.connect'>>({ uri: isBunkerUri }),
   'signer.lock': isEmpty,
-  'signer.check': obj<ArgsOf<'signer.check'>>({ event: isUnsignedEvent }),
-  'signer.sign': obj<ArgsOf<'signer.sign'>>({ event: isUnsignedEvent }),
+  'signer.check': obj<ArgsOf<'signer.check'>>({ video: isVideoAddr }),
+  'signer.sign': obj<ArgsOf<'signer.sign'>>({ event: isUnsignedEvent, signer: isSha256 }),
   'seeding.status': isEmpty,
   'seeding.set': obj<ArgsOf<'seeding.set'>>({ watched: bool }),
   'seeding.watch': isSeedingWatchArgs,
   'seeding.stop': obj<ArgsOf<'seeding.stop'>>({ video: isVideoAddr }),
+  'seeding.resume': obj<ArgsOf<'seeding.resume'>>({ video: isVideoAddr }),
+  'seeding.delete': obj<ArgsOf<'seeding.delete'>>({ video: isVideoAddr }),
   'seeding.beacons': isEmpty,
   'seeding.segment': isSeedingSegmentArgs,
   'studio.ffmpeg': isEmpty,
@@ -355,6 +377,7 @@ export const validateArgs: { readonly [M in WorkerMethod]: Guard<ArgsOf<M>> } = 
   'studio.probe': obj<ArgsOf<'studio.probe'>>({ source: isSessionId }),
   'studio.publish': isStudioPublishArgs,
   'studio.cancel': isEmpty,
+  'studio.discard': obj<ArgsOf<'studio.discard'>>({ video: isVideoAddr }),
 };
 
 const isMethod = oneOf<WorkerMethod>(WORKER_METHODS);

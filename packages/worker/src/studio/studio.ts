@@ -30,7 +30,9 @@ import {
   MAX_SOURCE_BYTES,
   MAX_SOURCE_DIMENSION,
   MAX_SOURCE_SECONDS,
+  MAX_STUDIO_JOB_BYTES,
   MAX_STUDIO_SOURCES,
+  STUDIO_SOURCE_TTL_SEC,
 } from '../protocol.js';
 import type { WorkerRuntime, WorkerSystem } from '../runtime.js';
 import { findFfmpeg } from './ffmpeg.js';
@@ -64,12 +66,29 @@ export interface StudioDeps {
   readonly onPackaged: (video: string, root: string) => Promise<void>;
   /** It did not get stored after all. */
   readonly onAbandoned: (video: string) => Promise<void>;
+  /** What the store can still take, in bytes; `null` when it has no cap. */
+  readonly room: () => number | null;
+  /** Unix seconds. */
   readonly now: () => number;
-  /** TESTS ONLY: x264's preset (default `medium`). */
+  /** TESTS ONLY: x264's preset (default `medium`), how long a picked file stays usable. */
   readonly preset?: string;
+  readonly sourceTtlSec?: number;
+}
+
+/** What the worker remembers of a draft until it is signed or discarded. */
+export interface StudioDraft {
+  readonly event: UnsignedEventWire;
+  readonly file: {
+    readonly name: string;
+    readonly bytes: number;
+    readonly durationSec: number;
+  };
 }
 
 interface Source {
+  readonly token: string;
+  /** Unix seconds after which the token is refused. */
+  readonly expires: number;
   readonly path: string;
   readonly name: string;
   readonly bytes: number;
@@ -83,6 +102,22 @@ export function displayName(path: string): string {
   // eslint-disable-next-line no-control-regex
   const clean = base.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, MAX_NAME);
   return clean === '' ? 'video' : clean;
+}
+
+/**
+ * What a plan may write, at each rendition's peak rate (core's `maxrate` is 1.5 times the video
+ * bitrate, plus the audio): refused up front when it cannot fit.
+ */
+export function estimateOutputBytes(
+  durationSec: number,
+  renditions: readonly {
+    readonly videoBitrateKbps: number;
+    readonly audioBitrateKbps: number;
+  }[],
+): number {
+  let kbps = 0;
+  for (const r of renditions) kbps += r.videoBitrateKbps * 1.5 + r.audioBitrateKbps;
+  return Math.ceil((kbps * 1000 * durationSec) / 8);
 }
 
 const draftKey = (e: UnsignedEventWire): string =>
@@ -113,12 +148,13 @@ function mediaFailure(e: unknown): never {
 
 export class Studio {
   readonly #d: StudioDeps;
-  readonly #sources = new Map<string, Source>();
+  /** The one live pick: a new pick revokes it, and it expires. */
+  #picked: Source | null = null;
   #cancel: (() => void) | null = null;
   #job: Promise<unknown> | null = null;
   #closed = false;
   /** video → the canonical text of the draft waiting to be signed. */
-  readonly #drafts = new Map<string, string>();
+  readonly #drafts = new Map<string, { readonly key: string; readonly draft: StudioDraft }>();
 
   constructor(d: StudioDeps) {
     this.#d = d;
@@ -139,14 +175,17 @@ export class Studio {
     if (st?.isFile !== true) fail('not-found', 'that is not a file');
     if (st.size <= 0) fail('unsupported-input', 'that file is empty');
     if (st.size > MAX_SOURCE_BYTES) fail('unsupported-input', 'that file is larger than 16 GiB');
-    while (this.#sources.size >= MAX_STUDIO_SOURCES) {
-      const oldest = this.#sources.keys().next();
-      if (oldest.done === true) break;
-      this.#sources.delete(oldest.value);
-    }
     const source = this.#d.randomHex(16);
     const name = displayName(path);
-    this.#sources.set(source, { path, name, bytes: st.size, probe: null });
+    // Whatever was picked before is no longer publishable: only what the user chose last is.
+    this.#picked = {
+      token: source,
+      expires: this.#d.now() + (this.#d.sourceTtlSec ?? STUDIO_SOURCE_TTL_SEC),
+      path,
+      name,
+      bytes: st.size,
+      probe: null,
+    };
     return { source, name, bytes: st.size };
   }
 
@@ -172,7 +211,12 @@ export class Studio {
    * or another revision of their video.
    */
   isDraft(video: string, event: UnsignedEventWire): boolean {
-    return this.#drafts.get(video) === draftKey(event);
+    return this.#drafts.get(video)?.key === draftKey(event);
+  }
+
+  /** The draft waiting for `video`'s signature. */
+  draft(video: string): StudioDraft | undefined {
+    return this.#drafts.get(video)?.draft;
   }
 
   /** The draft was signed: it is not signed twice. */
@@ -193,8 +237,22 @@ export class Studio {
     const source = this.#source(a.source);
     if (!this.#d.canSign()) fail('no-signer', 'unlock or connect a signer before publishing');
     // One pick, one publish: a page cannot loop encodes on a file the user chose once.
-    this.#sources.delete(a.source);
-    const job = this.#run(source, a);
+    this.#picked = null;
+    // Armed before anything is awaited, so a cancel at any moment reaches this job.
+    const listeners: (() => void)[] = [];
+    const cancel: JobSignal & { aborted: boolean } = {
+      aborted: false,
+      addEventListener(_t, cb) {
+        if (cancel.aborted) cb();
+        else listeners.push(cb);
+      },
+    };
+    this.#cancel = () => {
+      if (cancel.aborted) return;
+      cancel.aborted = true;
+      for (const cb of listeners.splice(0)) cb();
+    };
+    const job = this.#run(source, a, cancel);
     this.#job = job;
     try {
       return await job;
@@ -211,8 +269,12 @@ export class Studio {
   }
 
   #source(token: string): Source {
-    const s = this.#sources.get(token);
-    if (s === undefined) fail('not-found', 'pick the file again');
+    const s = this.#picked;
+    if (s?.token !== token) fail('not-found', 'pick the file again');
+    if (this.#d.now() >= s.expires) {
+      this.#picked = null;
+      fail('not-found', 'pick the file again');
+    }
     return s;
   }
 
@@ -267,35 +329,37 @@ export class Studio {
     };
   }
 
-  async #run(source: Source, a: StudioPublishArgs): Promise<StudioPublishedWire> {
+  async #run(
+    source: Source,
+    a: StudioPublishArgs,
+    cancel: JobSignal & { aborted: boolean },
+  ): Promise<StudioPublishedWire> {
     const d = this.#d;
-    const found = await findFfmpeg(d.system);
-    if (found.paths === null) fail('ffmpeg-missing', found.status.install);
-    const binaries = found.paths;
-    const workDir = d.fs.join(d.tmpDir, `studio-${d.randomHex(8)}`);
-    const listeners: (() => void)[] = [];
-    const cancel: JobSignal & { aborted: boolean } = {
-      aborted: false,
-      addEventListener(_t, cb) {
-        listeners.push(cb);
-      },
-    };
-    this.#cancel = () => {
-      if (cancel.aborted) return;
-      cancel.aborted = true;
-      for (const cb of listeners.splice(0)) cb();
-    };
     // A function, so that no check below is narrowed by the one before it.
     const stopIfCancelled = (): void => {
       if (cancel.aborted) fail('session-closed', 'the publish was cancelled');
     };
+    const found = await findFfmpeg(d.system);
+    if (found.paths === null) fail('ffmpeg-missing', found.status.install);
+    stopIfCancelled();
+    const binaries = found.paths;
+    const workDir = d.fs.join(d.tmpDir, `studio-${d.randomHex(8)}`);
     const fsa = this.#fsAdapter();
+    // The job's disk budget: what the store can still take, at most `MAX_STUDIO_JOB_BYTES`.
+    const budget = Math.min(MAX_STUDIO_JOB_BYTES, d.room() ?? MAX_STUDIO_JOB_BYTES);
+    let outputs: readonly string[] = [];
+    const outputRoom = async (): Promise<number> => {
+      let used = 0;
+      for (const p of outputs) used += (await d.fs.stat(p))?.size ?? 0;
+      return budget - used;
+    };
     const runner = guardedRunner({
       runner: d.system.runner,
       binaries,
       source: source.path,
       workDir,
       cancel,
+      outputRoom,
     });
     const emit = (p: Omit<StudioProgress, 'op' | 'e'>): void => {
       d.emit({ op: 'ev', e: 'studio.progress', ...p });
@@ -320,6 +384,9 @@ export class Studio {
       if (!addr.ok) fail('internal', 'the video address does not parse');
       try {
         const plan = pipeline.plan(probe, { sizes: a.sizes });
+        if (estimateOutputBytes(probe.durationSec, plan.renditions) > budget)
+          fail('disk-cap', 'this video in these sizes would not fit in the space left');
+        outputs = plan.renditions.map((r) => `${workDir}/${r.label}.${r.container}`);
         let last = '';
         output = await pipeline.transcode(
           source.path,
@@ -339,6 +406,9 @@ export class Studio {
           { workDir },
         );
         stopIfCancelled();
+        // ffmpeg stops quietly at its size limit: a job that reached it holds a cut-off video.
+        if ((await outputRoom()) <= budget * 0.01)
+          fail('disk-cap', 'this video in these sizes would not fit in the space left');
         emit({ stage: 'packaging' });
         const thumb = output.thumbnails[0];
         packaged = await media.packageNfx(
@@ -423,15 +493,14 @@ export class Studio {
         if (oldest.done === true) break;
         this.#drafts.delete(oldest.value);
       }
-      this.#drafts.set(video, draftKey(draft));
-      return {
-        video,
-        root: packaged.root,
-        segs: Number(packaged.segs),
-        files: put.record.files.length,
-        bytes,
-        draft,
-      };
+      this.#drafts.set(video, {
+        key: draftKey(draft),
+        draft: {
+          event: draft,
+          file: { name: source.name, bytes: source.bytes, durationSec: probe.durationSec },
+        },
+      });
+      return { video, files: put.record.files.length, bytes };
     } finally {
       await d.rmTree(workDir).catch(() => undefined);
     }

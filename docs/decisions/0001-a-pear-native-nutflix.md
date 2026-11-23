@@ -84,6 +84,15 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   §7). The app runs there only if the user chooses to, after a warning (amendment, item 2).
 - The rules nutflix-pear's own Electron main enforces (fuses, a header CSP) hold in shape (a) only.
   Shape (b) runs on Holepunch's Electron.
+- **Known limit: with "seed what you watch" on, a compromised page can choose what gets seeded.**
+  The worker checks that the video is free, that its manifest verifies, and that the same window
+  has it open in a play. It cannot tell whether the person actually watched it, because the only
+  witness is the page. So a compromised page could open a play of a video the user never saw and
+  have this computer store and serve it, sharing the user's IP address with whoever fetches it. A
+  "served enough bytes" check would not help: the page could fake it. The limits stay (the switch is
+  off by default and takes a native confirmation, 16 GiB, 20 new videos and a byte budget an hour),
+  and they bound the damage without removing it. Whether to accept this or to change how the
+  feature works is the maintainer's decision.
 
 ## Amendment, 2026-11-22
 
