@@ -58,6 +58,13 @@ export interface NfxSeedsDeps {
   readonly emit: (ev: SeedEvent) => void;
   /** What is stored or served changed. */
   readonly onChange?: () => void;
+  /**
+   * Whether peers may fetch a stored video now (`./seed-policy.ts`). Absent: every stored video,
+   * as `nfx.seed.start` has it.
+   */
+  readonly served?: (video: string) => boolean;
+  /** A file already at hand (`./offers.ts`), so it is not fetched again. The store checks it. */
+  readonly held?: (video: string, sha: string) => Promise<Uint8Array | null>;
 }
 
 interface Starting {
@@ -84,9 +91,22 @@ export class NfxSeeds {
     this.d = d;
   }
 
-  /** At start: listen on every network the store holds a video of. */
+  /** At start: listen on every network that has a video to serve, and on no other. */
   async resume(): Promise<void> {
-    await Promise.all([...this.storedNamespaces()].map((ns) => this.listener(ns).set(true)));
+    await this.refresh();
+  }
+
+  /**
+   * Bring every listener in line with what may be served now. A network with nothing to serve
+   * has none, so a launch with nothing to seed starts no DHT node.
+   */
+  async refresh(): Promise<void> {
+    const want = this.servedNamespaces();
+    await Promise.all(
+      [...new Set([...want, ...this.listeners.keys()])].map((ns) =>
+        this.listener(ns).set(want.has(ns)),
+      ),
+    );
     this.d.onChange?.();
   }
 
@@ -97,8 +117,7 @@ export class NfxSeeds {
     const known = this.d.store.get(video);
     if (known !== undefined) {
       if (known.root !== a.root) fail('exists', 'the video is stored with another hash list');
-      await this.listener(video.namespace.toString()).set(true);
-      this.d.onChange?.();
+      await this.refresh();
       return wire(known);
     }
     const running = this.starting.get(a.video);
@@ -147,10 +166,8 @@ export class NfxSeeds {
       await running.done.catch(() => undefined);
     }
     const removed = await this.d.store.removeVideo(video);
-    const ns = video.namespace.toString();
-    if (!this.storedNamespaces().has(ns)) await this.listeners.get(ns)?.set(false);
+    await this.refresh();
     if (removed) this.d.emit({ op: 'ev', e: 'nfx.seed', video: text, state: 'stopped' });
-    this.d.onChange?.();
     return { removed };
   }
 
@@ -193,8 +210,17 @@ export class NfxSeeds {
     return v.value;
   }
 
-  private storedNamespaces(): Set<string> {
-    return new Set(this.d.store.videos().map((r) => namespaceOf(r.video)));
+  private isServed(video: string): boolean {
+    return this.d.served?.(video) ?? true;
+  }
+
+  private servedNamespaces(): Set<string> {
+    return new Set(
+      this.d.store
+        .videos()
+        .filter((r) => this.isServed(r.video))
+        .map((r) => namespaceOf(r.video)),
+    );
   }
 
   /** `namespace`'s listener (created off), serving only that network's stored videos. */
@@ -202,7 +228,8 @@ export class NfxSeeds {
     let l = this.listeners.get(namespace);
     if (l === undefined) {
       const store = this.d.store;
-      const mine = (v: nfx.VideoAddr): boolean => v.namespace.toString() === namespace;
+      const mine = (v: nfx.VideoAddr): boolean =>
+        v.namespace.toString() === namespace && this.isServed(v.toString());
       const source: NfxFileSource = {
         hasVideo: (v) => mine(v) && store.hasVideo(v),
         file: (v, sha) => (mine(v) ? store.file(v, sha) : undefined),
@@ -260,7 +287,9 @@ export class NfxSeeds {
           why.tooLarge = true;
           throw new Error('nfx: a file past the cap');
         }
-        const bytes = await get(entry.sha256, Number(entry.size), true);
+        const bytes =
+          (await this.d.held?.(a.video, entry.sha256)) ??
+          (await get(entry.sha256, Number(entry.size), true));
         done++;
         progress();
         return bytes;
@@ -275,7 +304,7 @@ export class NfxSeeds {
       if (why.fetch !== null) fail('no-seeders', `no seeder served a file (${reasons(why.fetch)})`);
       fail('io', r.error === 'unavailable' ? 'the NFX store did not load' : r.message);
     }
-    await this.listener(video.namespace.toString()).set(true);
+    await this.refresh();
     this.d.emit({
       op: 'ev',
       e: 'nfx.seed',
@@ -284,7 +313,6 @@ export class NfxSeeds {
       done: total,
       total,
     });
-    this.d.onChange?.();
     return wire(r.record);
   }
 }

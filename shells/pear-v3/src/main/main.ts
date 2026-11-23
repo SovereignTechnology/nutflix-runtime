@@ -33,6 +33,8 @@ import {
   type WebContents,
 } from 'electron';
 
+import { WorkerError, type WorkerStatus } from '@nutflix-runtime/worker';
+
 import {
   OPEN_LINK,
   PIPE_CLOSE,
@@ -63,6 +65,12 @@ import {
   type NotMounted,
   type Probe,
 } from './page-probe.ts';
+import {
+  CONFIRM_SEEDING_DIALOG,
+  CONFIRM_SEEDING_YES,
+  PICK_VIDEO_DIALOG,
+  answerMainCall,
+} from './main-calls.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
   BANNER_TEXT,
@@ -78,6 +86,9 @@ import { hardenWebContents, installSessionPolicy, refusedSwitch } from './securi
 import { installedApp, startUpdater } from './update-proc.ts';
 import { startWorker, type WorkerHandle } from './worker-proc.ts';
 import { WEBRTC_IP_POLICY, createMainWindow } from './window.ts';
+
+/** The most the NFX store may hold on disk: what seeding and publishing can take. */
+const NFX_DISK_CAP_BYTES = 64 * 1024 * 1024 * 1024;
 
 /** Replaced by the bundler (`packaging/stage.ts`): this build was packaged with an upgrade link. */
 declare const __NUTFLIX_UPDATES__: boolean;
@@ -117,13 +128,14 @@ let updater: WorkerHandle | undefined;
 let lastUpdate: UpdateStatus | undefined;
 let mainWindow: BrowserWindow | undefined;
 let unsandboxed = false;
+let dialogOpen = false;
 
 const sendTo = (id: number, channel: string, ...args: unknown[]): void => {
   const wc = webContents.fromId(id);
   if (wc !== undefined && !wc.isDestroyed()) wc.send(channel, ...args);
 };
 
-const gate = new RpcGate({
+const gate: RpcGate = new RpcGate({
   toWorker: (frame) => {
     if (worker === undefined) throw new Error('no worker');
     worker.write(frame);
@@ -133,6 +145,29 @@ const gate = new RpcGate({
   },
   closeWindow: (id) => {
     sendTo(id, PIPE_CLOSE);
+  },
+  mainCall: async (id, method, args) => {
+    const wc = webContents.fromId(id);
+    const owner = wc === undefined ? undefined : BrowserWindow.fromWebContents(wc);
+    if (owner === null || owner === undefined) throw new WorkerError('session-closed', 'no window');
+    // One native dialog at a time: a page cannot pile them up in front of the user.
+    if (dialogOpen) throw new WorkerError('rate-limited', 'a dialog is already open');
+    dialogOpen = true;
+    try {
+      return await answerMainCall(method, args, {
+        pickFile: async () => {
+          const r = await dialog.showOpenDialog(owner, PICK_VIDEO_DIALOG);
+          return r.canceled ? null : (r.filePaths[0] ?? null);
+        },
+        confirmSeeding: async () => {
+          const r = await dialog.showMessageBox(owner, CONFIRM_SEEDING_DIALOG);
+          return r.response === CONFIRM_SEEDING_YES;
+        },
+        worker: (m, a) => gate.request(m, a),
+      });
+    } finally {
+      dialogOpen = false;
+    }
   },
 });
 
@@ -329,7 +364,11 @@ async function main(): Promise<void> {
   }
   void (async (): Promise<void> => {
     try {
-      await gate.request('init', { v: 1, storage: join(app.getPath('userData'), 'worker') });
+      await gate.request('init', {
+        v: 1,
+        storage: join(app.getPath('userData'), 'worker'),
+        diskCapBytes: NFX_DISK_CAP_BYTES,
+      });
       await gate.request('status', {}, 30_000);
       state.worker = true;
       maybeReady();
@@ -361,6 +400,7 @@ async function main(): Promise<void> {
     state.window = true;
     if (unsandboxed) void injectBanner(win.webContents);
     if (lastUpdate !== undefined) showUpdate(lastUpdate);
+    void tellPageIfServing();
     void showFuseNotice(win.webContents);
     void untilMounted(win.webContents).then((probe) => {
       if (probe !== null) {
@@ -375,6 +415,19 @@ async function main(): Promise<void> {
   });
   void win.loadURL(APP_URL);
   if (__NUTFLIX_UPDATES__) await startUpdates();
+}
+
+/**
+ * A stored video is served from launch, and its beacons go out through the page: the worker's own
+ * `status` was sent before the page existed, so the page is told once it has loaded.
+ */
+async function tellPageIfServing(): Promise<void> {
+  try {
+    const s = (await gate.request('status', {}, 30_000)) as WorkerStatus;
+    if (s.listening.length > 0) gate.fromMain('serving', { networks: s.listening.length });
+  } catch {
+    // No worker: nothing is served.
+  }
 }
 
 // ---- the updater (a build with an upgrade link only) ----------------------------------------

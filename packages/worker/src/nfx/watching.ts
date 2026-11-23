@@ -28,6 +28,7 @@ import type { WorkerRuntime } from '../runtime.js';
 import { NfxFallbackFetcher } from './fallback-fetcher.js';
 import type { NfxPeerPool } from './hyperdht-fetcher.js';
 import { HyperdhtFetcher } from './hyperdht-fetcher.js';
+import type { SessionListing } from './offers.js';
 import { NfxOriginFiles, NfxOriginServer } from './origin.js';
 import { NfxRangeServer } from './range-server.js';
 import { StoreFetcher } from './store-fetcher.js';
@@ -76,6 +77,9 @@ interface PlaySession {
   readonly fetcher: NfxFetcher;
   progressive: NfxWatchSession | null;
   origin: NfxOriginFiles | null;
+  /** The verified hash list's files, once `start` has it (`./offers.ts` reads it). */
+  files: ReadonlyMap<string, nfx.FileEntry> | null;
+  readonly video: string;
   closed: boolean;
 }
 
@@ -97,6 +101,14 @@ export class NfxWatching {
 
   get size(): number {
     return this.sessions.size;
+  }
+
+  /** What an open session's verified hash list says, for a file offered from WebRTC. */
+  listing(sid: string): SessionListing | null {
+    const s = this.sessions.get(sid);
+    if (s?.files === null || s === undefined || s.closed) return null;
+    const files = s.files;
+    return { video: s.video, entry: (sha) => files.get(sha) };
   }
 
   /** `nfx.play.open`. Throws `<code>: …` errors; a session that fails to open leaves nothing. */
@@ -132,6 +144,8 @@ export class NfxWatching {
       fetcher: fetchers.length === 1 ? only : new NfxFallbackFetcher(fetchers),
       progressive: null,
       origin: null,
+      files: null,
+      video: a.video,
       closed: false,
     };
     // Claimed before any await: a second open of the sid is refused, a close finds it.
@@ -177,6 +191,7 @@ export class NfxWatching {
       fail('invalid-argument', 'the hash list does not verify against its manifest');
     }
     const list = verified.value;
+    s.files = new Map(list.files.map((f) => [f.sha256, f]));
 
     // nutflix-pear #97: only renditions someone holds, the most-held first (the bandwidth breaks
     // ties), as `NfxWatchSession.open` chooses; then the host's order of preference, if any.

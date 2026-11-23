@@ -4,19 +4,29 @@
  * `WorkerClient` through the real framing and guards over an in-memory pipe (chunks delivered
  * asynchronously, as a pipe does), and HTTP helpers.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
+import { access, chmod, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
+import type { ProcessRunner } from '@sovit/core';
 import { nodeFs } from '@sovit/seeder';
+import WebSocket from 'ws';
 
 import { WorkerClient } from '../../client.js';
 import type { WorkerHostOptions } from '../../host.js';
 import { WorkerHost } from '../../host.js';
 import type { WorkerEvent } from '../../protocol.js';
 import { WorkerRpc } from '../../rpc.js';
-import type { HttpRequestHandler, HttpServerLike, WorkerRuntime } from '../../runtime.js';
+import type {
+  HttpRequestHandler,
+  HttpServerLike,
+  RelayConnect,
+  WorkerRuntime,
+  WorkerSystem,
+} from '../../runtime.js';
 
 /** `WorkerRuntime.createHttpServer` on node:http (tests; production is bare-http1). */
 export function nodeHttpServer(onRequest: HttpRequestHandler): Promise<HttpServerLike> {
@@ -27,11 +37,100 @@ export function nodeHttpServer(onRequest: HttpRequestHandler): Promise<HttpServe
   );
 }
 
-export function nodeRuntime(): WorkerRuntime {
+/** `ProcessRunner` on node:child_process: argv only, no shell. */
+export const nodeRunner: ProcessRunner = {
+  run: (file, args, opts) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(file, [...args], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+        ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
+      });
+      const out: Buffer[] = [];
+      let err = '';
+      child.stdout.on('data', (c: Buffer) => out.push(c));
+      child.stderr.on('data', (c: Buffer) => {
+        const t = c.toString('utf8');
+        err = (err + t).slice(-64 * 1024);
+        for (const l of t.split(/\r\n|\r|\n/)) if (l !== '') opts?.onStderrLine?.(l);
+      });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err });
+      });
+      opts?.signal?.addEventListener('abort', () => {
+        child.kill('SIGKILL');
+      });
+    }),
+};
+
+/** A relay socket on `ws`, as the worker's Bare adapter has on `bare-ws`. */
+export const nodeConnectRelay: RelayConnect = (url) => {
+  const ws = new WebSocket(url);
+  const queue: string[] = [];
+  ws.on('open', () => {
+    for (const m of queue.splice(0)) ws.send(m);
+  });
+  ws.on('error', () => undefined);
+  return {
+    onMessage: (cb) => {
+      ws.on('message', (d, isBinary) => {
+        if (!isBinary) cb((d as Buffer).toString('utf8'));
+      });
+    },
+    onEnd: (cb) => {
+      let ended = false;
+      const once = (): void => {
+        if (ended) return;
+        ended = true;
+        cb();
+      };
+      ws.on('close', once);
+      ws.on('error', once);
+    },
+    send: (s) => {
+      if (ws.readyState === ws.OPEN) ws.send(s);
+      else queue.push(s);
+    },
+    destroy: () => {
+      ws.terminate();
+    },
+  };
+};
+
+/** What Studio and the signer need of the machine, on Node. */
+export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
+  return {
+    os:
+      process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
+    pathEnv: process.env['PATH'],
+    runner: nodeRunner,
+    isExecutable: async (p) => {
+      try {
+        await access(p, fsConstants.X_OK);
+        return (await stat(p)).isFile();
+      } catch {
+        return false;
+      }
+    },
+    writePrivate: async (p, data) => {
+      await mkdir(dirname(p), { recursive: true, mode: 0o700 });
+      if (process.platform !== 'win32') await chmod(dirname(p), 0o700);
+      const tmp = `${p}.tmp`;
+      await writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
+      await rename(tmp, p);
+    },
+    connectRelay: nodeConnectRelay,
+    ...over,
+  };
+}
+
+export function nodeRuntime(system?: WorkerSystem): WorkerRuntime {
   return {
     fs: nodeFs,
     rmTree: (p) => rm(p, { recursive: true, force: true }),
     createHttpServer: nodeHttpServer,
+    ...(system === undefined ? {} : { system }),
   };
 }
 

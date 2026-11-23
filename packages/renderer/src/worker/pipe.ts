@@ -16,7 +16,11 @@ import {
   type ErrorCode,
   type NfxPlayOpenArgs,
   type ResultOf,
+  type WindowMethod,
+  type WindowMethodTable,
   type WorkerEvent,
+  type WorkerMethod,
+  type WorkerMethodTable,
 } from '@nutflix-runtime/worker';
 
 /** A framed byte duplex to the worker. Bytes are whole frames or any chunking of them. */
@@ -51,6 +55,24 @@ export interface PlayWorker {
   onDown(cb: () => void): () => void;
 }
 
+/** What Settings' seeding, signer and Studio panel may ask for, through the shell's gate. */
+export type ControlMethod =
+  | Exclude<WorkerMethod, 'init' | 'nfx.seed.start' | 'nfx.seed.stop' | 'nfx.seed.list'>
+  | WindowMethod;
+type ControlTable = WorkerMethodTable & WindowMethodTable;
+export type ControlArgs<M extends ControlMethod> = ControlTable[M][0];
+export type ControlResult<M extends ControlMethod> = ControlTable[M][1];
+
+export interface ControlWorker {
+  call<M extends ControlMethod>(
+    m: M,
+    a: ControlArgs<M>,
+    opts?: { readonly timeoutMs?: number },
+  ): Promise<ControlResult<M>>;
+  /** Worker events; returns the unsubscribe. */
+  onEvent(cb: (ev: WorkerEvent) => void): () => void;
+}
+
 /** How long `ready` waits for a worker that is still starting, ms. */
 export const READY_WAIT_MS = 20_000;
 /** How often `ready` asks `status` while it waits, ms. */
@@ -75,11 +97,12 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-export class WorkerLink implements PlayWorker {
+export class WorkerLink implements PlayWorker, ControlWorker {
   readonly #o: WorkerLinkOptions;
   readonly #client: WorkerClient;
   readonly #down = new Set<() => void>();
   readonly #offs: (() => void)[] = [];
+  readonly #eventListeners = new Set<(ev: WorkerEvent) => void>();
   #isDown = false;
   #ready: Promise<void> | null = null;
 
@@ -95,7 +118,16 @@ export class WorkerLink implements PlayWorker {
           throw e;
         }
       },
-      ...(o.onEvent === undefined ? {} : { onEvent: o.onEvent }),
+      onEvent: (ev) => {
+        o.onEvent?.(ev);
+        for (const cb of [...this.#eventListeners]) {
+          try {
+            cb(ev);
+          } catch {
+            // A listener's failure is its own.
+          }
+        }
+      },
       onFatal: () => {
         this.#goDown();
       },
@@ -168,6 +200,22 @@ export class WorkerLink implements PlayWorker {
 
   async close(sid: string): Promise<void> {
     await this.#client.request('nfx.play.close', { sid }, { timeoutMs: 10_000 });
+  }
+
+  /** A control call: the gate in the shell decides whether this window may make it. */
+  call<M extends ControlMethod>(
+    m: M,
+    a: ControlArgs<M>,
+    opts: { readonly timeoutMs?: number } = {},
+  ): Promise<ControlResult<M>> {
+    return this.#client.request(m as WorkerMethod, a as never, opts) as Promise<ControlResult<M>>;
+  }
+
+  onEvent(cb: (ev: WorkerEvent) => void): () => void {
+    this.#eventListeners.add(cb);
+    return () => {
+      this.#eventListeners.delete(cb);
+    };
   }
 
   /** Detaches from the pipe (the shell owns it and the worker; nothing here stops either). */

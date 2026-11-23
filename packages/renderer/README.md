@@ -5,9 +5,13 @@ UI, playing free NFX videos that the [worker](../worker/README.md) fetches over 
 
 - **The UI** is nutflix-pear's `@sovit/ui` `Shell` (from the submodule, not edited), over a
   `NetworkAdapter` of this package's own: `RuntimeNetworkAdapter`. It offers Home (the Network and
-  Tags feeds), Search, Watch, Channel and Settings. No wallet, no paid videos, no Studio, no
-  signing: those calls reject `unsupported`, and the shell's offer (`src/shell/offer.ts`) hides
-  what would call them.
+  Tags feeds), Search, Watch, Channel and Settings. No wallet and no paid videos: those calls
+  reject `unsupported`, and the shell's offer (`src/shell/offer.ts`) hides what would call them.
+- **Seeding and publishing** are this package's own section of Settings (`src/seeding/`), because
+  `@sovit/ui`'s Studio is built around priced uploads and a browser file input. The switch "Seed what
+  you watch" is off by default and says it shares the IP address with viewers. The worker holds
+  every key and does the work; this page asks, and publishes what comes back to the relays: beacons
+  to the scoped relays only, manifests to the write and scoped relays, each verified here first.
 - **Nostr** runs here, over the browser's WebSocket, with core's own catalogue (`NfxCatalog`),
   NIP-11-aware search (`RelaySearchSupport`) and live beacon watch (`NfxBeaconWatch`: beacons are
   ephemeral, so they need a live subscription). The default relays are the desktop app's:
@@ -37,10 +41,10 @@ to write.
 
 A shell must serve the bundle from one origin (`'self'` in the policy), not `file:`.
 
-The pipe carries the worker's whole protocol, and the worker trusts its host. This renderer uses
-three requests of it (`status`, `nfx.play.open`, `nfx.play.close`), but a compromised renderer
-could send any other (`nfx.seed.*`). A shell that wants a narrower window filters methods on its
-side of the pipe: that is the shells' step, not this package's.
+The pipe carries the worker's protocol, and the worker trusts its host, so a compromised renderer
+could try any method. The shell filters them on its side of the pipe (`MAIN_WINDOW_POLICY` in
+`shells/pear-v3/src/main/rpc-gate.ts`): this page cannot reach `init`, `nfx.seed.*`, `nfx.endpoint`,
+`seeding.set` or `studio.source`.
 
 ## Security (ADR 0001 amendment, item 1; every shape)
 

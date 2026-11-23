@@ -33,6 +33,9 @@ which both `pear-runtime`'s `run()` and `bare-sidecar` provide.
 | `src/nfx/origin.ts` | The loopback NFX origin and its pull-through file source | new |
 | `src/nfx/store-fetcher.ts` | A stored video as a source, hashed again on read | new |
 | `src/nfx/seeds.ts` | `nfx.seed.*`: fetch into the store, one listener per network | new |
+| `src/nfx/seed-policy.ts`, `beacons.ts`, `seeder-key.ts`, `offers.ts` | What may be served and why; kind-20464 beacons; the seeder's Nostr key; files handed over from WebRTC | new, after `host/nfx/beacons.ts` and `seeder-key.ts` |
+| `src/signer/` | The user's signer: a sealed local key or a NIP-46 session | core's `LocalSigner` and `Nip46Signer` |
+| `src/studio/` | The system's ffmpeg behind a guard, and publishing | `worker/ffmpeg.ts`, `worker/studio/nfx.ts`, adapted |
 | `src/net/dht-node.ts` | The one HyperDHT node | `worker/net/peer-node.ts` and the own-DHT part of `worker/nfx/watching.ts` |
 | `src/keys.ts` | Corestore-derived key pairs `nfx:<ns>:seeder` and `nfx:<ns>:watcher` | the names of `worker/nfx/seeding.ts` and `watching.ts` |
 | `src/adapters/bare.ts`, `src/runtime.ts` | bare-fs, bare-path and bare-http1, loaded lazily | `worker/adapters/bare.ts` and `worker/runtime.ts`, cut down |
@@ -94,6 +97,9 @@ Error codes:
 - `exists`
 - `disk-cap`
 - `io`
+- `no-signer`
+- `bad-passphrase`
+- `ffmpeg-missing`
 - `internal`
 
 ### Methods
@@ -108,6 +114,22 @@ Error codes:
 | `nfx.seed.stop` | `{ video }` | `{ removed }` |
 | `nfx.seed.list` | `{}` | `{ videos: [{ video, root, segs, files, bytes }], listening: [{ namespace, connections }] }` |
 | `nfx.endpoint` | `{ seeder, namespace }` | `{ hyperdht: { t: 'hyperdht', peer, bind } \| null }` |
+| `signer.status` | `{}` | `{ kind, pubkey, locked, keyFile }` |
+| `signer.local.create`, `signer.local.unlock` | `{ passphrase }` (8 to 1024 characters) | the status |
+| `signer.nip46.connect` | `{ uri }` (`bunker://…`) | the status |
+| `signer.lock` | `{}` | the status |
+| `signer.sign` | `{ event: { kind, created_at, tags, content } }` | the signed event |
+| `seeding.status` | `{}` | `{ watched, videos: [{ …, origin, served }], listening }` |
+| `seeding.set` (main only) | `{ watched }` | the seeding status |
+| `seeding.watch` | `{ manifest, peers }` | `{ video, root, segs, files, bytes }` |
+| `seeding.stop` | `{ video }` | `{ removed }` |
+| `seeding.beacons` | `{}` | `{ events }`: signed kind-20464 beacons |
+| `seeding.segment` | `{ sid, sha256, size, offset, data }` | `{ accepted, complete }` |
+| `studio.ffmpeg` | `{}` | `{ found, version?, install }` |
+| `studio.source` (main only) | `{ path }` | `{ source, name, bytes }` |
+| `studio.probe` | `{ source }` | `{ durationSec, width, height, sizes }` |
+| `studio.publish` | `{ source, title, description, tags, sizes }` | `{ video, root, segs, files, bytes, draft }` |
+| `studio.cancel` | `{}` | `{ cancelled }` |
 
 Every other request fails `not-ready` until `init` has answered. A second `init` fails.
 
@@ -123,7 +145,35 @@ Every other request fails `not-ready` until `init` has answered. A second `init`
 - **`diskCapBytes`** caps the store. Without it there is no cap.
 - **`logLevel`** is the least severe level sent as `log` events. The default is `info`.
 
-At start, the worker listens again for every video already in its store.
+At start, the worker listens again for the videos it may serve (see "Seeding"). With none, it
+starts no DHT node.
+
+#### The signer
+
+A key made here and sealed under a passphrase (`signer/user.key`, 0600: argon2id and
+XChaCha20-Poly1305, core's `LocalSigner`), or a NIP-46 bunker whose session this worker holds. No
+method returns a key, and none imports one. `signer.sign` signs only kinds in `SIGNABLE_KINDS`
+(kind 38504), and only the exact draft `studio.publish` made for a video this node packaged, once.
+A wrong passphrase costs a full KDF run, and from the second failure an increasing wait.
+
+#### Seeding
+
+`seeding.json` records why each video may be served. "Seed what you watch" (`seeding.set`) is off by
+default and main turns it on only after a native confirmation; a video the user published and
+signed is served regardless; one stored by `nfx.seed.start` is too. Beacons are signed here by a
+seeder key derived from the Corestore (never the user's), and the renderer publishes them.
+
+A file that reached the renderer over WebRTC (`seeding.segment`) is taken only for an open play
+session whose verified hash list names its sha256 and size, whole, and is then re-seeded without
+being fetched again.
+
+#### Studio
+
+`studio.source` takes a path from main's native dialog; the page only ever holds a token. The
+system's ffmpeg and ffprobe run from an argv, with `-protocol_whitelist file,pipe`, a demuxer
+allow-list (no HLS, DASH or concat, which would read other local files), inputs and outputs confined
+to the picked file and a job directory under `tmp/`, and caps on size, length and time. If they are
+missing, `studio.ffmpeg` says how to install them.
 
 #### `nfx.play.open`
 

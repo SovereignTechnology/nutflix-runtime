@@ -16,21 +16,43 @@ import type {
   NfxRenditionWire,
   NfxSeedStartArgs,
   RequestMsg,
+  SeedingSegmentArgs,
+  SeedingWatchArgs,
+  SignedEventWire,
+  StudioPublishArgs,
+  UnsignedEventWire,
   WireError,
   WorkerMethod,
 } from './protocol.js';
 import {
   ERROR_CODES,
   MAX_BOOTSTRAP_NODES,
+  MAX_BUNKER_URI,
+  MAX_DESCRIPTION,
   MAX_LABEL,
+  MAX_MANIFEST_CONTENT,
   MAX_MSG_ID,
   MAX_NFX_HELD_RENDITIONS,
   MAX_NFX_HELD_SEEDERS,
   MAX_NFX_PEERS,
   MAX_NFX_RENDITIONS,
+  MAX_OFFERED_CHUNK_CHARS,
+  MAX_OFFERED_FILE_BYTES,
+  MAX_PASSPHRASE,
   MAX_PATH,
   MAX_PREFETCH_SECONDS,
+  MAX_SIGN_CONTENT,
+  MAX_SIGN_TAG_CHARS,
+  MAX_SIGN_TAG_VALUES,
+  MAX_SIGN_TAGS,
+  MAX_STUDIO_HEIGHT,
+  MAX_STUDIO_SIZES,
+  MAX_TITLE,
+  MAX_VIDEO_TAG,
+  MAX_VIDEO_TAGS,
+  MIN_PASSPHRASE,
   NFX_RESOLUTION,
+  SIGNABLE_KINDS,
   WORKER_METHODS,
 } from './protocol.js';
 
@@ -223,6 +245,87 @@ export const isSeedStartArgs = refine(
   (a) => unique(a.peers.map((p) => p.peer)),
 );
 
+// ---- the signer ------------------------------------------------------------------------------
+
+/** A passphrase: no control characters, so nothing pasted with a newline seals a key. */
+export const isPassphrase = text(MIN_PASSPHRASE, MAX_PASSPHRASE);
+
+/** The shape only; `signer/bunker.ts` parses it. No control characters, no whitespace. */
+export const isBunkerUri = refine(text(10, MAX_BUNKER_URI), (u) => /^bunker:\/\/\S+$/.test(u));
+
+/** A string of at most `max` UTF-16 units; unlike `text`, newlines are fine (a description). */
+const chars =
+  (max: number): Guard<string> =>
+  (x): x is string =>
+    typeof x === 'string' && x.length <= max && !x.includes('\u0000');
+
+const isTag = arrayOf(chars(MAX_SIGN_TAG_CHARS), MAX_SIGN_TAG_VALUES, 1);
+
+const eventFields = {
+  created_at: int(0, Number.MAX_SAFE_INTEGER),
+  tags: arrayOf(isTag, MAX_SIGN_TAGS),
+  content: chars(MAX_SIGN_CONTENT),
+};
+
+/** The allow-list: a kind that is not in `SIGNABLE_KINDS` never reaches a signer. */
+const isSignableKind: Guard<number> = (x): x is number =>
+  (SIGNABLE_KINDS as readonly unknown[]).includes(x);
+
+export const isUnsignedEvent = obj<UnsignedEventWire>({ kind: isSignableKind, ...eventFields });
+
+export const isSignedManifest = obj<SignedEventWire>({
+  id: isSha256,
+  pubkey: isSha256,
+  sig: hex(128),
+  kind: literal(38504),
+  ...eventFields,
+  content: chars(MAX_MANIFEST_CONTENT),
+});
+
+// ---- seeding ---------------------------------------------------------------------------------
+
+export const isSeedingWatchArgs = refine(
+  obj<SeedingWatchArgs>({
+    manifest: isSignedManifest,
+    peers: arrayOf(isHyperdhtEndpoint, MAX_NFX_PEERS),
+  }),
+  (a) => unique(a.peers.map((p) => p.peer)),
+);
+
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+export const isSeedingSegmentArgs = refine(
+  obj<SeedingSegmentArgs>({
+    sid: isSessionId,
+    sha256: isSha256,
+    size: int(1, MAX_OFFERED_FILE_BYTES),
+    offset: int(0, MAX_OFFERED_FILE_BYTES - 1),
+    data: (x): x is string =>
+      typeof x === 'string' &&
+      x.length >= 4 &&
+      x.length <= MAX_OFFERED_CHUNK_CHARS &&
+      x.length % 4 === 0 &&
+      BASE64.test(x),
+  }),
+  (a) => a.offset < a.size,
+);
+
+// ---- Studio ----------------------------------------------------------------------------------
+
+/** A hashtag: one word, as NFX-02's `t` tags carry them. */
+const isVideoTag = refine(text(1, MAX_VIDEO_TAG), (t) => !/\s/.test(t));
+
+export const isStudioPublishArgs = refine(
+  obj<StudioPublishArgs>({
+    source: isSessionId,
+    title: refine(text(1, MAX_TITLE), (t) => t.trim() !== ''),
+    description: chars(MAX_DESCRIPTION),
+    tags: arrayOf(isVideoTag, MAX_VIDEO_TAGS),
+    sizes: arrayOf(int(2, MAX_STUDIO_HEIGHT), MAX_STUDIO_SIZES, 1),
+  }),
+  (a) => new Set(a.sizes).size === a.sizes.length && unique([...a.tags]),
+);
+
 /** Arguments of every method: a missing entry is a compile error. */
 export const validateArgs: { readonly [M in WorkerMethod]: Guard<ArgsOf<M>> } = {
   init: isInitArgs,
@@ -233,6 +336,23 @@ export const validateArgs: { readonly [M in WorkerMethod]: Guard<ArgsOf<M>> } = 
   'nfx.seed.stop': obj<ArgsOf<'nfx.seed.stop'>>({ video: isVideoAddr }),
   'nfx.seed.list': isEmpty,
   'nfx.endpoint': obj<ArgsOf<'nfx.endpoint'>>({ seeder: isSha256, namespace: isNamespace }),
+  'signer.status': isEmpty,
+  'signer.local.create': obj<ArgsOf<'signer.local.create'>>({ passphrase: isPassphrase }),
+  'signer.local.unlock': obj<ArgsOf<'signer.local.unlock'>>({ passphrase: isPassphrase }),
+  'signer.nip46.connect': obj<ArgsOf<'signer.nip46.connect'>>({ uri: isBunkerUri }),
+  'signer.lock': isEmpty,
+  'signer.sign': obj<ArgsOf<'signer.sign'>>({ event: isUnsignedEvent }),
+  'seeding.status': isEmpty,
+  'seeding.set': obj<ArgsOf<'seeding.set'>>({ watched: bool }),
+  'seeding.watch': isSeedingWatchArgs,
+  'seeding.stop': obj<ArgsOf<'seeding.stop'>>({ video: isVideoAddr }),
+  'seeding.beacons': isEmpty,
+  'seeding.segment': isSeedingSegmentArgs,
+  'studio.ffmpeg': isEmpty,
+  'studio.source': obj<ArgsOf<'studio.source'>>({ path: isAbsolutePath }),
+  'studio.probe': obj<ArgsOf<'studio.probe'>>({ source: isSessionId }),
+  'studio.publish': isStudioPublishArgs,
+  'studio.cancel': isEmpty,
 };
 
 const isMethod = oneOf<WorkerMethod>(WORKER_METHODS);

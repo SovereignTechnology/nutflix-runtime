@@ -13,32 +13,51 @@
  * sessions with their two loopback servers (`./nfx/watching.ts`) and the seeds with one NFX-12
  * listener per network (`./nfx/seeds.ts`), whose stored videos are served again at once.
  *
- * `close` takes it down in order: sessions and servers, seeds and listeners, the pool, the DHT
- * node, the keys.
+ * On top of the data plane, for the renderer's Settings (ADR 0001 §7 and §8):
+ *   - `signer/`: the user's signer, a sealed key in this process or a NIP-46 session;
+ *   - `seeding.json`: what may be served and why (`./nfx/seed-policy.ts`), off until the user says;
+ *   - the seeder's beacon key, and files handed over from WebRTC (`./nfx/offers.ts`);
+ *   - Studio (`./studio/studio.ts`), when the runtime can run the system's ffmpeg.
+ *
+ * `close` takes it down in order: Studio, sessions and servers, seeds and listeners, the pool, the
+ * DHT node, the signer, the keys.
  */
+import type { signer as coreSigner } from '@sovit/core';
+import { nfx } from '@sovit/core';
 import type { Logger } from '@sovit/seeder';
 import { DiskCap, NfxStore } from '@sovit/seeder';
 
-import { randomHex, sodiumCrypto } from './crypto.js';
+import { randomHex, sodiumCrypto, sodiumSha256 } from './crypto.js';
 import { fail } from './errors.js';
 import type { Keyring } from './keys.js';
 import { openCorestoreKeyring } from './keys.js';
 import { createWorkerLogger } from './log.js';
 import { DhtNode } from './net/dht-node.js';
+import { signBeacons, type BeaconTarget } from './nfx/beacons.js';
 import { NfxPeerPool } from './nfx/hyperdht-fetcher.js';
+import { OFFERED_DIR, SegmentOffers } from './nfx/offers.js';
+import { SeedPolicy } from './nfx/seed-policy.js';
+import { SeederKeys } from './nfx/seeder-key.js';
 import { NfxSeeds } from './nfx/seeds.js';
 import { NFX_PLAY_DIR, NfxWatching, watcherKeyName } from './nfx/watching.js';
 import type {
   ArgsOf,
   InitArgs,
   ResultOf,
+  SeedingStatusWire,
+  SeedingWatchArgs,
+  SignedEventWire,
+  UnsignedEventWire,
   WorkerEvent,
   WorkerMethod,
   WorkerStatus,
 } from './protocol.js';
-import { PROTOCOL_V } from './protocol.js';
+import { MAX_NFX_STORED_VIDEOS, PROTOCOL_V } from './protocol.js';
 import type { WorkerRpcHandler } from './rpc.js';
 import type { WorkerRuntime } from './runtime.js';
+import { checkManifestDraft, checkSignedManifest } from './signer/manifest-check.js';
+import { SIGNER_DIR, UserSigner } from './signer/user-signer.js';
+import { STUDIO_NAMESPACE, Studio } from './studio/studio.js';
 
 export const KEYS_DIR = 'keys';
 export const TMP_DIR = 'tmp';
@@ -54,6 +73,10 @@ export interface WorkerHostOptions {
   readonly dialTimeoutMs?: number;
   readonly readWaitMs?: number;
   readonly originWaitMs?: number;
+  /** TESTS ONLY: the local signer's KDF cost, a bunker's wait, x264's preset. */
+  readonly signerCost?: coreSigner.KdfCost;
+  readonly bunkerWaitMs?: number;
+  readonly studioPreset?: string;
 }
 
 /** What `init` built. */
@@ -65,7 +88,18 @@ interface Running {
   readonly pool: NfxPeerPool;
   readonly watching: NfxWatching;
   readonly seeds: NfxSeeds;
+  readonly policy: SeedPolicy;
+  readonly offers: SegmentOffers;
+  readonly seederKeys: SeederKeys;
+  /** `null`: this runtime has no `system` (a test of the data plane alone). */
+  readonly signer: UserSigner | null;
+  readonly studio: Studio | null;
 }
+
+const needs = <T>(x: T | null): T => {
+  if (x === null) fail('unsupported-input', 'this runtime has no signer or Studio');
+  return x;
+};
 
 type Call = { [M in WorkerMethod]: { readonly m: M; readonly a: ArgsOf<M> } }[WorkerMethod];
 
@@ -102,6 +136,7 @@ export class WorkerHost implements WorkerRpcHandler {
         return r.watching.open(c.a);
       case 'nfx.play.close':
         await r.watching.close(c.a.sid);
+        r.offers.endSession(c.a.sid);
         return null;
       case 'nfx.seed.start':
         return r.seeds.start(c.a);
@@ -111,6 +146,126 @@ export class WorkerHost implements WorkerRpcHandler {
         return r.seeds.list();
       case 'nfx.endpoint':
         return { hyperdht: await r.seeds.endpoint(c.a.seeder, c.a.namespace) };
+      case 'signer.status':
+        return r.signer?.status() ?? { kind: 'none', pubkey: null, locked: true, keyFile: false };
+      case 'signer.local.create':
+        return needs(r.signer).create(c.a.passphrase);
+      case 'signer.local.unlock':
+        return needs(r.signer).unlock(c.a.passphrase);
+      case 'signer.nip46.connect':
+        return needs(r.signer).connect(c.a.uri);
+      case 'signer.lock':
+        return needs(r.signer).lock();
+      case 'signer.sign':
+        return this.signManifest(r, c.a.event);
+      case 'seeding.status':
+        return this.seedingStatus(r);
+      case 'seeding.set':
+        await r.policy.setWatched(c.a.watched);
+        await r.seeds.refresh();
+        return this.seedingStatus(r);
+      case 'seeding.watch':
+        return this.seedWatched(r, c.a);
+      case 'seeding.stop': {
+        const out = await r.seeds.stop(c.a.video);
+        await r.policy.remove(c.a.video);
+        await r.offers.drop(c.a.video);
+        await r.seeds.refresh();
+        return out;
+      }
+      case 'seeding.beacons':
+        return {
+          events: await signBeacons({
+            targets: () => this.beaconTargets(r),
+            keys: r.seederKeys,
+            endpoint: (seeder, namespace) => r.seeds.endpoint(seeder, namespace),
+            now: () => Math.floor(Date.now() / 1000),
+          }),
+        };
+      case 'seeding.segment':
+        return r.offers.offer(c.a);
+      case 'studio.ffmpeg':
+        return needs(r.studio).ffmpeg();
+      case 'studio.source':
+        return needs(r.studio).addSource(c.a.path);
+      case 'studio.probe':
+        return needs(r.studio).probe(c.a.source);
+      case 'studio.publish':
+        return needs(r.studio).publish(c.a);
+      case 'studio.cancel':
+        return { cancelled: r.studio?.cancel() === true };
+    }
+  }
+
+  private seedingStatus(r: Running): SeedingStatusWire {
+    const { videos, listening } = r.seeds.list();
+    return {
+      watched: r.policy.watched,
+      videos: videos.map((v) => ({
+        ...v,
+        origin: r.policy.origin(v.video),
+        served: r.policy.served(v.video),
+      })),
+      listening,
+    };
+  }
+
+  /** Every video served now with a known author: each gets a beacon. */
+  private beaconTargets(r: Running): BeaconTarget[] {
+    const out: BeaconTarget[] = [];
+    for (const v of r.store.videos().slice(0, MAX_NFX_STORED_VIDEOS)) {
+      const author = r.policy.record(v.video)?.author ?? null;
+      if (author !== null && r.policy.served(v.video)) out.push({ video: v.video, author });
+    }
+    return out;
+  }
+
+  /** `signer.sign`: a manifest of a video this node packaged. Signing it starts seeding it. */
+  private async signManifest(r: Running, event: UnsignedEventWire): Promise<SignedEventWire> {
+    const signer = needs(r.signer);
+    const video = checkManifestDraft(event, r.policy, r.store, signer.signingKey);
+    if (r.studio?.isDraft(video, event) !== true)
+      fail('invalid-argument', 'this is not the manifest Studio made for that video');
+    const key = signer.signingKey;
+    if (key === null) fail('no-signer', 'unlock or connect a signer first');
+    const signed = await signer.sign(event);
+    checkSignedManifest(signed, video, key);
+    r.studio.forgetDraft(video);
+    const record = r.policy.record(video);
+    if (record !== undefined) {
+      await r.policy.set(video, { ...record, author: key });
+      await r.seeds.refresh();
+    }
+    return signed;
+  }
+
+  /** `seeding.watch`: only with the switch on, and only for a free manifest that verifies. */
+  private async seedWatched(r: Running, a: SeedingWatchArgs): Promise<ResultOf<'seeding.watch'>> {
+    if (!r.policy.watched) fail('invalid-argument', 'seeding what you watch is off');
+    const parsed = nfx.parseManifest(a.manifest);
+    if (!parsed.ok || !nfx.isListable(parsed.value))
+      fail('invalid-argument', 'not a free NFX manifest');
+    const m = parsed.value;
+    const video = m.addr.toString();
+    if (m.addr.namespace.toString() !== STUDIO_NAMESPACE)
+      fail('invalid-argument', 'not a network this build speaks');
+    if (m.segs > BigInt(Number.MAX_SAFE_INTEGER)) fail('invalid-argument', 'not a stored size');
+    const known = r.policy.record(video);
+    if (known === undefined)
+      await r.policy.set(video, { origin: 'watched', root: m.root, author: m.author });
+    try {
+      const stored = await r.seeds.start({
+        video,
+        root: m.root,
+        segs: Number(m.segs),
+        peers: a.peers,
+      });
+      await r.offers.drop(video);
+      return stored;
+    } catch (err) {
+      if (known === undefined && r.store.get(m.addr) === undefined)
+        await r.policy.remove(video).catch(() => undefined);
+      throw err;
     }
   }
 
@@ -181,6 +336,8 @@ export class WorkerHost implements WorkerRpcHandler {
     const onChange = (): void => {
       this.emitStatus();
     };
+    const policy = new SeedPolicy(fs, a.storage);
+    await policy.load();
     const watching = new NfxWatching({
       pool,
       store,
@@ -195,6 +352,15 @@ export class WorkerHost implements WorkerRpcHandler {
       ...(this.o.readWaitMs === undefined ? {} : { readWaitMs: this.o.readWaitMs }),
       ...(this.o.originWaitMs === undefined ? {} : { originWaitMs: this.o.originWaitMs }),
     });
+    const offers = new SegmentOffers({
+      fs,
+      dir: fs.join(a.storage, TMP_DIR, OFFERED_DIR),
+      listing: (sid) => watching.listing(sid),
+      stored: (video) => {
+        const addr = nfx.VideoAddr.parse(video);
+        return addr.ok && store.hasVideo(addr.value);
+      },
+    });
     const seeds = new NfxSeeds({
       store,
       pool,
@@ -205,9 +371,56 @@ export class WorkerHost implements WorkerRpcHandler {
         this.o.emit(ev);
       },
       onChange,
+      served: (video) => policy.served(video),
+      held: (video, sha) => offers.read(video, sha),
     });
+    const seederKeys = new SeederKeys((name) => keys.keyPair(name));
+    const system = this.o.runtime.system;
+    let signer: UserSigner | null = null;
+    let studio: Studio | null = null;
+    if (system !== undefined) {
+      const userSigner = new UserSigner({
+        fs,
+        system,
+        dir: fs.join(a.storage, SIGNER_DIR),
+        ...(this.o.signerCost === undefined ? {} : { cost: this.o.signerCost }),
+        ...(this.o.bunkerWaitMs === undefined ? {} : { bunkerWaitMs: this.o.bunkerWaitMs }),
+      });
+      await userSigner.load();
+      signer = userSigner;
+      studio = new Studio({
+        fs,
+        rmTree,
+        system,
+        store,
+        tmpDir: fs.join(a.storage, TMP_DIR),
+        sha256: sodiumSha256,
+        randomHex,
+        logger,
+        emit: (ev) => {
+          this.o.emit(ev);
+        },
+        canSign: () => userSigner.signingKey !== null,
+        onStored: (video, root) => policy.set(video, { origin: 'published', root, author: null }),
+        now: () => Math.floor(Date.now() / 1000),
+        ...(this.o.studioPreset === undefined ? {} : { preset: this.o.studioPreset }),
+      });
+    }
     await seeds.resume();
-    return { logger, keys, store, dht, pool, watching, seeds };
+    return {
+      logger,
+      keys,
+      store,
+      dht,
+      pool,
+      watching,
+      seeds,
+      policy,
+      offers,
+      seederKeys,
+      signer,
+      studio,
+    };
   }
 
   status(): WorkerStatus {
@@ -242,10 +455,14 @@ export class WorkerHost implements WorkerRpcHandler {
           r.logger.warn(`worker close: ${what} did not close cleanly`, { error: err });
         }
       };
+      await step('Studio', async () => r.studio?.close());
       await step('the play sessions', () => r.watching.shutdown());
       await step('the seeds', () => r.seeds.close());
       r.pool.close();
       await step('the DHT node', () => r.dht.destroy());
+      await step('the signer', async () => r.signer?.close());
+      await step('the beacon keys', () => r.seederKeys.close());
+      await step('the policy', () => r.policy.flush());
       await step('the keys', () => r.keys.close());
     })();
     return this.closing;

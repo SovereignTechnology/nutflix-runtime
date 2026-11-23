@@ -12,6 +12,10 @@
     "scripts",
     "e2e",
     "../worker/src/types",
+    "../worker/src/__tests__/helpers/test-bunker.ts",
+    "../../shells/pear-v3/src/main/rpc-gate.ts",
+    "../../shells/pear-v3/src/main/main-calls.ts",
+    "../../shells/pear-v3/src/shared/ids.ts",
     "../../vendor/nutflix-pear/packages/app-web/scripts/site.ts"
   ],
   "references": [

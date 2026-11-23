@@ -21,6 +21,9 @@ import { probeCapabilities, probePlayer, type CapabilityReport, type ProbeEnv } 
 import { browserSettingsStore, type SettingsStore } from './settings/store.js';
 import { webrtcStatusText } from './settings/webrtc.js';
 import { installWebRtcNote } from './settings/webrtc-note.js';
+import { SeedPublish } from './seeding/controller.js';
+import { installSeedPublishPanel } from './seeding/panel.js';
+import { SegmentTap } from './seeding/segment-tap.js';
 import { RUNTIME_OFFER } from './shell/offer.js';
 import { hashOf, routeFromLocation } from './shell/routes.js';
 import { WorkerLink, type WorkerPipe } from './worker/pipe.js';
@@ -76,6 +79,13 @@ export function startRenderer(o: RendererOptions): RendererClient {
   const settings = o.settings ?? browserSettingsStore(win);
   const pool = o.pool ?? new SimplePoolAdapter();
   const link = new WorkerLink({ pipe: o.pipe });
+  // Seeding and publishing (Settings' own section): the worker holds every key and does the work.
+  const control = new SeedPublish({ worker: link, pool, settings });
+  const tap = new SegmentTap({ worker: link, enabled: () => control.watching });
+  tap.install(
+    (win as unknown as { SourceBuffer?: { prototype: Parameters<SegmentTap['install']>[0] } })
+      .SourceBuffer?.prototype,
+  );
   const adapter = new RuntimeNetworkAdapter({
     pool,
     settings,
@@ -85,6 +95,15 @@ export function startRenderer(o: RendererOptions): RendererClient {
     createObjectURL: (blob) => URL.createObjectURL(blob),
     revokeObjectURL: (url) => {
       URL.revokeObjectURL(url);
+    },
+    onPlay: (play) => {
+      control.onPlay(play);
+    },
+    onVerified: (sha256, sid) => {
+      tap.verified(sha256, sid);
+    },
+    onPlayEnded: (sid) => {
+      tap.ended(sid);
     },
   });
   const model = createShellModel(adapter, routeFromLocation(win.location));
@@ -118,6 +137,9 @@ export function startRenderer(o: RendererOptions): RendererClient {
   const offNoteSettings = settings.onChange(() => {
     note.refresh();
   });
+  const panel = installSeedPublishPanel(o.container, control);
+  // Nothing is asked of the worker at launch: it (or the shell) says when something is served.
+  const offServing = control.listen();
 
   const probed: Promise<CapabilityReport> = (async () => {
     if (o.capabilities === undefined) {
@@ -157,6 +179,10 @@ export function startRenderer(o: RendererOptions): RendererClient {
         offSettings();
         offNoteSettings();
         note.stop();
+        panel.stop();
+        offServing();
+        control.stop();
+        tap.uninstall();
         root.unmount();
         await adapter.close();
         link.dispose();

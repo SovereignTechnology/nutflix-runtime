@@ -149,11 +149,21 @@ Every `ipcMain` message is dropped unless it came from the top frame of a window
 `app://nutflix`.
 
 **The RPC allow-list** (`MAIN_WINDOW_POLICY`, `src/main/rpc-gate.ts`): the renderer's window may call
-`status`, `nfx.play.open` and `nfx.play.close`, and hear the `status` event. Any other method,
-`init`, `nfx.seed.*`, `nfx.endpoint`, is answered `invalid-argument` in main and never reaches the
-worker. At most 32 requests in flight per window; a play session belongs to the window that opened
-it (another window's `nfx.play.close` does nothing, and a window that goes away closes its sessions).
-What the worker sees is main's own re-encoding of a checked request, with main's id.
+`status`, `nfx.play.open`, `nfx.play.close`, `signer.*`, `seeding.status`, `seeding.watch`,
+`seeding.stop`, `seeding.beacons`, `seeding.segment`, `studio.ffmpeg`, `studio.probe`,
+`studio.publish` and `studio.cancel`, and hear `status` and `studio.progress`. Any other method,
+`init`, `nfx.seed.*`, `nfx.endpoint`, `seeding.set`, `studio.source`, is answered `invalid-argument`
+in main and never reaches the worker. At most 32 requests in flight per window; a play session
+belongs to the window that opened it (another window's `nfx.play.close` does nothing, a window that
+goes away closes its sessions, and `seeding.segment` must name one of its own). What the worker sees
+is main's own re-encoding of a checked request, with main's id.
+
+Two methods are answered by main itself and never reach the worker (`src/main/main-calls.ts`), each
+behind a native dialog only the user can answer, one dialog at a time:
+- `app.pickVideo` opens the OS file picker. The path goes from main to the worker (`studio.source`);
+  the page gets a random token, the base name and the size.
+- `app.seeding.set` turns "seed what you watch" on only after a native confirmation that says it
+  shares the user's IP address with viewers (the default answer is to keep it off).
 
 ### Without Chromium's sandbox (amendment, item 2)
 
