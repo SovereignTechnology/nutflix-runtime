@@ -107,6 +107,27 @@ export function pinnedRuntime(
   return bytes;
 }
 
+/** The sizes the freedesktop `hicolor` theme has folders for. */
+const HICOLOR_SIZES: readonly number[] = [16, 24, 32, 48, 64, 128, 256, 512];
+
+/** A square PNG's side in pixels, from its header: the theme folder is named after it. */
+export function pngIconSize(bytes: Uint8Array): number {
+  const b = Buffer.from(bytes);
+  if (
+    b.length < 24 ||
+    b.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' ||
+    b.subarray(12, 16).toString('latin1') !== 'IHDR'
+  )
+    throw new AppImageError('the icon is not a PNG');
+  const width = b.readUInt32BE(16);
+  const height = b.readUInt32BE(20);
+  if (width !== height || !HICOLOR_SIZES.includes(width))
+    throw new AppImageError(
+      `the icon is ${String(width)}x${String(height)}: it must be square, one of ${HICOLOR_SIZES.join(', ')}`,
+    );
+  return width;
+}
+
 /** The AppDir's desktop entry. `Exec` is the binary itself: no wrapper, no extra switches. */
 export function desktopEntry(c: {
   productName: string;
@@ -182,6 +203,11 @@ export class MakerAppImage extends MakerBase<MakerAppImageConfig> {
     if (c.icon !== undefined) {
       copyFileSync(c.icon, join(appDir, `${c.executableName}.png`));
       symlinkSync(`${c.executableName}.png`, join(appDir, '.DirIcon'));
+      // `pear install` copies this tree into the user's icon theme; the launcher finds it there.
+      const side = String(pngIconSize(readFileSync(c.icon)));
+      const themed = join(appDir, 'usr', 'share', 'icons', 'hicolor', `${side}x${side}`, 'apps');
+      mkdirSync(themed, { recursive: true });
+      copyFileSync(c.icon, join(themed, `${c.executableName}.png`));
     }
     // The times go as flags only: mksquashfs >= 4.6 also reads SOURCE_DATE_EPOCH and refuses it
     // together with -mkfs-time/-all-time; older ones ignore it. Same image either way.
