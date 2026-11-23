@@ -31,6 +31,7 @@ import {
   desktopEntry,
   mksquashfsArgs,
   pinnedRuntime,
+  pngIconSize,
 } from '../maker-appimage.ts';
 import { copyPackage, npmFilter, workspaceFilter } from '../copy.ts';
 import { REPO_ROOT } from '../paths.ts';
@@ -131,6 +132,31 @@ describe('the AppImage maker', () => {
     const sha = createHash('sha256').update(bytes).digest('hex');
     const pins = { x64: { asset: 'runtime-x86_64', sha256: sha } };
     expect(Buffer.from(pinnedRuntime(dir, 'x64', pins))).toEqual(bytes);
+  });
+
+  it('reads the icon size for the theme folder, and refuses what has no folder', () => {
+    const png = (width: number, height: number): Buffer => {
+      const b = Buffer.alloc(24);
+      Buffer.from('89504e470d0a1a0a', 'hex').copy(b);
+      b.write('IHDR', 12, 'latin1');
+      b.writeUInt32BE(width, 16);
+      b.writeUInt32BE(height, 20);
+      return b;
+    };
+    expect(pngIconSize(png(512, 512))).toBe(512);
+    expect(
+      pngIconSize(
+        readFileSync(
+          join(REPO_ROOT, 'vendor/nutflix-pear/packages/app-desktop/packaging/icons/nutflix.png'),
+        ),
+      ),
+    ).toBe(512);
+    expect(() => pngIconSize(png(512, 256))).toThrow(AppImageError);
+    expect(() => pngIconSize(png(500, 500))).toThrow(AppImageError);
+    expect(() => pngIconSize(Buffer.from('not a png, and long enough to read'))).toThrow(
+      /not a PNG/,
+    );
+    expect(() => pngIconSize(Buffer.alloc(3))).toThrow(/not a PNG/);
   });
 
   it('writes a desktop entry whose Exec is the binary with %U and no switch', () => {

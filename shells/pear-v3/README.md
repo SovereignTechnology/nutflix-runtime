@@ -228,9 +228,8 @@ signs. No secret is used.
   `~/.local/bin` and `~/.local/share/applications` are made before the install, as on a machine that
   has Pear: `pear install` moves the app into a folder and does not make it, and the job's extra
   install into a home without the folder shows it: exit 1, `ENOENT … rename … -> ~/.local/bin/Nutflix.AppImage`
-  (on macOS the same for `~/Applications`). **No icons are installed:** `pear install` copies `usr/share/icons/hicolor` out of the
-  AppImage, and ours has only `Nutflix.png` at its root (`maker-appimage.ts`), so the launcher
-  entry names an icon the system does not have. The job notes it; it does not fail on it.
+  (on macOS the same for `~/Applications`). `pear install` copies `usr/share/icons/hicolor` out of
+  the AppImage, and the job fails unless the icon the launcher entry names was installed.
 - **macOS:** the bundle is ad-hoc signed (no certificate), as before. After the round trip through
   `pear build`, `stage` and `install`, every file, symlink and executable bit of the installed
   bundle must equal the input's, and `codesign --verify --deep --strict` must pass: **that proves
