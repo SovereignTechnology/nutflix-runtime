@@ -161,7 +161,7 @@ jobs:
   # from source on its own OS, makes its package (a TEST build: nothing is signed, no secret is
   # used), launches the PACKAGED app, and waits for the one line the app prints once the window has
   # loaded the renderer and the worker has answered `status`. The app takes no test switch: this
-  # runs the same binary a user would. Updates are off in this slice. `install`, below, takes the
+  # runs the same binary a user would, and it must say it runs no updater. `install`, below, takes the
   # packages this job uploads through `pear build`, `stage`, `seed` and `install`. What each target
   # proves is in shells/pear-v3/README.md.
   shell:
@@ -221,6 +221,10 @@ jobs:
             "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/$asset"
       - name: package (stage, Forge, fuses, layout)
         run: node shells/pear-v3/scripts/package.ts build --platform "$PLATFORM" --arch "$ARCH"
+      # No runner talks to a public Nostr relay or STUN server: the app's renderer connects to its
+      # default relays as soon as it loads, so those names point at loopback from here on.
+      - name: the app's public relay names point at loopback on this runner
+        run: node shells/pear-v3/scripts/pear-ci/sinkhole.ts
       # Stock Ubuntu 24.04, before the restriction is lifted below: what a user there gets. The
       # AppImage must reach the warning, and after "Run anyway" it must run and say the sandbox is off.
       - name: stock Ubuntu, no usable sandbox, the AppImage reaches the warning (Xvfb)
@@ -298,9 +302,15 @@ jobs:
   # repository of this account for hosting one). Everything here runs on a private HyperDHT on
   # 127.0.0.1 in this job, every Pear process is told so, and a firewall rule drops and COUNTS any
   # packet to HyperDHT's public bootstrap, so that the log says how many there were (zero). The Pear
-  # CLI is an HTTPS download of its GitHub release, pinned by sha256, not a DHT fetch. Updates stay
-  # off; no real or production link exists; no secret is used. The Windows leg signs its copy of the
-  # TEST .msix with a certificate made in the job and trusted on this runner only.
+  # CLI is an HTTPS download of its GitHub release, pinned by sha256, not a DHT fetch. The app's
+  # public relay names are blackholed and the tripwire counts their real addresses too. No real or
+  # production link exists; no secret is used. The Windows leg signs its copies of the TEST .msix
+  # with a certificate made in the job and trusted on this runner only.
+  #
+  # The same job proves the update gate: two more real builds, made here with a THROWAWAY key, a
+  # relay on 127.0.0.1 and a link on the private DHT baked in (`package.ts test-build`, which refuses
+  # the production key). The installed app must hold the second build with no notice, a wrong-hash
+  # notice and a wrong-signer notice, and apply it with a matching one.
   # shells/pear-v3/scripts/pear-ci/run.ts says what each step does; the README says what it proves.
   install:
     name: install (${{ matrix.target }})
@@ -314,11 +324,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: linux-x64, os: ubuntu-24.04, platform: linux }
-          - { target: linux-arm64, os: ubuntu-24.04-arm, platform: linux }
-          - { target: darwin-arm64, os: macos-15, platform: darwin }
-          - { target: darwin-x64, os: macos-15-intel, platform: darwin }
-          - { target: win32-x64, os: windows-2025, platform: win32 }
+          - { target: linux-x64, os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, platform: linux, arch: arm64 }
+          - { target: darwin-arm64, os: macos-15, platform: darwin, arch: arm64 }
+          - { target: darwin-x64, os: macos-15-intel, platform: darwin, arch: x64 }
+          - { target: win32-x64, os: windows-2025, platform: win32, arch: x64 }
     steps:
       # Windows runners would otherwise check text files out with CRLF.
       - run: git config --global core.autocrlf false
@@ -339,8 +349,20 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends xvfb fuse3 unzip iptables libatomic1 \
-            libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
+            squashfs-tools libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
       - run: npm ci --ignore-scripts
+      # The update gate's test builds are packaged in this job, once the private link exists.
+      - run: npm run build
+      - name: the patched AppImage runtime (this repo's release; the maker checks its sha256)
+        if: matrix.platform == 'linux'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$ARCH" in x64) asset=runtime-x86_64 ;; arm64) asset=runtime-aarch64 ;; esac
+          mkdir -p shells/pear-v3/out/appimage-runtime
+          curl --proto '=https' --tlsv1.2 -fsSL -o "shells/pear-v3/out/appimage-runtime/$asset" \
+            "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/$asset"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: shell-*

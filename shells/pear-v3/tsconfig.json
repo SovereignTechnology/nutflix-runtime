@@ -12,6 +12,7 @@
     "packaging",
     "../../packages/worker/src/types",
     "../../packages/renderer/src/links.ts",
+    "../../packages/renderer/src/update-text.ts",
     "../../packages/renderer/src/net/hosts.ts",
     "../../packages/renderer/scripts/build.ts",
     "../../packages/renderer/scripts/csp-sri.d.ts",

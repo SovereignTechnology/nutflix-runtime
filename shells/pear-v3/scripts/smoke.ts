@@ -65,6 +65,8 @@ export interface ReadyFields {
   readonly player?: unknown;
   readonly vp9?: unknown;
   readonly h264?: unknown;
+  /** Whether this build was packaged with an upgrade link, and so runs the updater. */
+  readonly updates?: unknown;
 }
 
 /** The fields of a READY line, or `null` when `line` is not one. */
@@ -79,7 +81,11 @@ export function parseReadyLine(line: string): ReadyFields | null {
 }
 
 /** What is wrong with a READY line (empty = it proves what it claims). */
-export function readyProblems(f: ReadyFields, sandbox: 'on' | 'off' = 'on'): string[] {
+export function readyProblems(
+  f: ReadyFields,
+  sandbox: 'on' | 'off' = 'on',
+  updates: 'on' | 'off' = 'off',
+): string[] {
   const want: [keyof ReadyFields, string][] = [
     ['shell', 'pear-v3'],
     ['window', 'loaded'],
@@ -88,6 +94,8 @@ export function readyProblems(f: ReadyFields, sandbox: 'on' | 'off' = 'on'): str
     ['sandbox', sandbox],
     ['pipe', 'round-trip'],
     ['rendererSandbox', sandbox === 'on' ? 'enforced' : 'absent'],
+    // A build for release has no upgrade link and starts no updater: every launch checks it.
+    ['updates', updates],
   ];
   return want
     .filter(([k, v]) => f[k] !== v)
@@ -98,6 +106,20 @@ export function readyProblems(f: ReadyFields, sandbox: 'on' | 'off' = 'on'): str
 export function eventName(line: string): string | null {
   if (!line.startsWith(`${EVENT_PREFIX} `)) return null;
   return /^\S+/.exec(line.slice(EVENT_PREFIX.length + 1))?.[0] ?? null;
+}
+
+/** The JSON fields of an `NUTFLIX_SHELL <name> {...}` line, or `null`. */
+export function eventFields(line: string): Record<string, unknown> | null {
+  const start = line.indexOf('{');
+  if (!line.startsWith(`${EVENT_PREFIX} `) || start === -1) return null;
+  try {
+    const j: unknown = JSON.parse(line.slice(start));
+    return typeof j === 'object' && j !== null && !Array.isArray(j)
+      ? (j as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** `a` against `b`, numerically by part (`1.29.4` against `1.31.0`). */
@@ -142,6 +164,8 @@ export interface LaunchResult {
   readonly ready: ReadyFields | null;
   /** The names of the events main printed. */
   readonly events: readonly string[];
+  /** Every `update` status main printed, in order. */
+  readonly updates: readonly Record<string, unknown>[];
 }
 
 export type Expect = 'ready' | 'warning';
@@ -150,6 +174,10 @@ export interface LaunchOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** What the ready line must say about the sandbox. */
   readonly sandbox?: 'on' | 'off';
+  /** What the ready line must say about the updater (default: off, a release build). */
+  readonly updates?: 'on' | 'off';
+  /** The launch also waits for an `update` status this accepts (the install job's gate proof). */
+  readonly untilUpdate?: (status: Record<string, unknown>) => boolean;
   /** An event that must also be printed before the launch counts. */
   readonly waitFor?: string;
   /** How long to keep watching after the verdict, for an event that must not come. */
@@ -193,6 +221,8 @@ export async function launch(
     exited: boolean;
     exitCode: number | null;
     events: Set<string>;
+    updates: Record<string, unknown>[];
+    updateSeen: boolean;
   } = {
     verdict: null,
     ready: null,
@@ -200,6 +230,8 @@ export async function launch(
     exited: false,
     exitCode: null,
     events: new Set(),
+    updates: [],
+    updateSeen: false,
   };
   void exited.then((c) => {
     st.exited = true;
@@ -219,7 +251,7 @@ export async function launch(
       if (f !== null) {
         st.ready = f;
         if (st.verdict === null) {
-          const bad = readyProblems(f, opts.sandbox ?? 'on');
+          const bad = readyProblems(f, opts.sandbox ?? 'on', opts.updates ?? 'off');
           st.verdict =
             expect === 'warning'
               ? { ok: false, reason: 'a window loaded although the sandbox warning was due' }
@@ -231,6 +263,13 @@ export async function launch(
       }
       const name = eventName(line);
       if (name !== null) st.events.add(name);
+      if (name === 'update') {
+        const status = eventFields(line);
+        if (status !== null) {
+          st.updates.push(status);
+          if (opts.untilUpdate?.(status) === true) st.updateSeen = true;
+        }
+      }
       if (name === 'sandbox-warning') st.warned = true;
       if (
         name !== null &&
@@ -243,7 +282,9 @@ export async function launch(
 
   const deadline = started + timeoutS * 1000;
   let warnedAt = 0;
-  const missing = (): boolean => opts.waitFor !== undefined && !st.events.has(opts.waitFor);
+  const missing = (): boolean =>
+    (opts.waitFor !== undefined && !st.events.has(opts.waitFor)) ||
+    (opts.untilUpdate !== undefined && !st.updateSeen);
   while ((st.verdict === null || (st.verdict.ok && missing())) && Date.now() < deadline) {
     if (st.exited) {
       st.verdict = {
@@ -260,7 +301,10 @@ export async function launch(
     await sleep(250);
   }
   if (st.verdict?.ok === true && missing())
-    st.verdict = { ok: false, reason: `no ${String(opts.waitFor)} in ${String(timeoutS)} s` };
+    st.verdict = {
+      ok: false,
+      reason: `no ${opts.waitFor ?? 'expected update status'} in ${String(timeoutS)} s (updates seen: ${JSON.stringify(st.updates)})`,
+    };
   const verdict = st.verdict ?? {
     ok: false,
     reason: `no ${expect === 'warning' ? 'warning' : 'ready line'} in ${String(timeoutS)} s`,
@@ -281,6 +325,7 @@ export async function launch(
     ms: Date.now() - started,
     ready: st.ready,
     events: [...st.events],
+    updates: st.updates,
   };
 }
 

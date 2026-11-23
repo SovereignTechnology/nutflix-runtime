@@ -7,6 +7,8 @@
  *                         so that Forge finds the Electron version (the packaged copy drops it)
  *   main/main.cjs         `src/main/main.ts`, bundled; `electron` and `pear-runtime` stay imports
  *   main/preload.cjs      `src/preload/preload.ts`, bundled; `electron` is its one import
+ *   main/update-worker.cjs  `src/update/update-worker.ts`, bundled with this build's trust root
+ *                         compiled in (`update-root.ts`); it runs only if that root has a link
  *   renderer/             the renderer's own build (`packages/renderer/scripts/build.ts`)
  *   node_modules/         the runtime closure of this workspace's `dependencies`, from
  *                         package-lock.json by nutflix-pear's own `runtimeClosure` (so the versions
@@ -44,6 +46,7 @@ import {
 } from './copy.ts';
 import { APP, STAGED, bareBinary, type Arch, type Platform } from './identity.ts';
 import { PKG_DIR, REPO_ROOT } from './paths.ts';
+import { encodeBakedRoot, type TrustRoot } from '../src/update/root.ts';
 
 const WORKSPACE = 'shells/pear-v3';
 
@@ -51,6 +54,10 @@ export interface StageOptions {
   readonly out: string;
   readonly platform: Platform;
   readonly arch: Arch;
+  /** What the updater trusts, compiled in (`update-root.ts` decides which roots may be used). */
+  readonly updateRoot: TrustRoot;
+  /** Instead of this package's version: the test build's. */
+  readonly version?: string;
 }
 
 export interface StageReport {
@@ -101,8 +108,23 @@ function allowedSources(): string[] {
     join(PKG_DIR, 'src') + '/',
     join(REPO_ROOT, 'packages', 'worker', 'dist') + '/',
     join(REPO_ROOT, 'packages', 'renderer', 'src', 'links.ts'),
+    join(REPO_ROOT, 'packages', 'renderer', 'src', 'update-text.ts'),
     join(REPO_ROOT, 'packages', 'renderer', 'src', 'net') + '/',
     join(REPO_ROOT, 'packages', 'renderer', 'scripts', 'policy.ts'),
+  ].map((p) => p.replaceAll('\\', '/'));
+}
+
+/**
+ * What the updater's bundle may contain: its own sources, the worker package's framing, and the
+ * pure-JavaScript signature check (`nostr-tools` and its `@noble` hashes and curves), inlined so
+ * that Bare's resolver has nothing to choose. Every addon stays an import of the closure.
+ */
+function updateSources(): string[] {
+  return [
+    join(PKG_DIR, 'src', 'update') + '/',
+    join(REPO_ROOT, 'packages', 'worker', 'dist') + '/',
+    join(REPO_ROOT, 'node_modules', 'nostr-tools') + '/',
+    join(REPO_ROOT, 'node_modules', '@noble') + '/',
   ].map((p) => p.replaceAll('\\', '/'));
 }
 
@@ -166,6 +188,8 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
     target: 'node22',
     // pear-runtime is loaded at run time from node_modules (it spawns Bare from real file paths).
     external: ['electron', 'pear-runtime'],
+    // Whether this build starts an updater. The root itself is only in the updater's bundle.
+    define: { __NUTFLIX_UPDATES__: o.updateRoot.upgrade === null ? 'false' : 'true' },
   });
   const preloadBuild = await build({
     ...common,
@@ -177,15 +201,32 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
     // A sandboxed preload gets Electron's restricted `require` and nothing else.
     external: ['electron'],
   });
-  for (const [label, meta] of [
-    ['main', mainBuild.metafile],
-    ['preload', preloadBuild.metafile],
+  const updateBuild = await build({
+    ...common,
+    entryPoints: ['src/update/update-worker.ts'],
+    outfile: join(o.out, STAGED.updateWorker),
+    platform: 'neutral',
+    format: 'cjs',
+    target: 'es2022',
+    mainFields: ['module', 'main'],
+    // Everything with an addon, and what loads one, is the closure's copy.
+    external: ['pear-runtime', 'sodium-native', 'bare-*'],
+    define: { __NUTFLIX_UPDATE_ROOT__: JSON.stringify(encodeBakedRoot(o.updateRoot)) },
+  });
+  const updateAllowed = updateSources();
+  for (const [label, meta, may] of [
+    ['main', mainBuild.metafile, allowed],
+    ['preload', preloadBuild.metafile, allowed],
+    ['updater', updateBuild.metafile, updateAllowed],
   ] as const) {
     const inputs = Object.keys(meta.inputs).map((p) => resolve(PKG_DIR, p).replaceAll('\\', '/'));
-    const stray = inputs.filter((p) => !allowed.some((a) => p.startsWith(a)));
+    const stray = inputs.filter((p) => !may.some((a) => p.startsWith(a)));
     if (stray.length > 0)
       fail(`the ${label} bundle holds sources it may not:\n  ${stray.join('\n  ')}`);
   }
+  for (const n of externalsOf(updateBuild.metafile))
+    if (!existsSync(join(o.out, 'node_modules', n, 'package.json')))
+      fail(`the updater imports ${n}, which the closure does not ship`);
   const mainExternals = externalsOf(mainBuild.metafile).filter((n) => n !== 'electron');
   const preloadExternals = externalsOf(preloadBuild.metafile);
   if (preloadExternals.some((n) => n !== 'electron'))
@@ -211,7 +252,7 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
       {
         name: APP.name,
         productName: APP.productName,
-        version: own.version,
+        version: o.version ?? own.version,
         description: APP.description,
         license: APP.license,
         author: APP.author,
@@ -230,5 +271,11 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
   if (!existsSync(join(o.out, STAGED.workerEntry))) fail('the worker entry is not staged');
 
   normalizeModes(o.out);
-  return { out: o.out, version: own.version, packages, files: stats.files, bytes: stats.bytes };
+  return {
+    out: o.out,
+    version: o.version ?? own.version,
+    packages,
+    files: stats.files,
+    bytes: stats.bytes,
+  };
 }

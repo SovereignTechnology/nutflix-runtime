@@ -15,13 +15,78 @@ five targets and CI launches the packaged app on each.
 
 The names are what `pear build` requires: `<productName>.<ext>` (S2).
 
-## Updates are OFF
+## Updates: only a build a signed notice names
 
-**This slice has no updater. Nothing in the shell calls `applyUpdate()`, constructs a `PearRuntime`
-or reads an update link, and the app never swaps itself.** The shell uses one function of
-`pear-runtime`, the static `run()`, which starts a Bare process (`src/main/worker-proc.ts`). The
-update gate (the notice check and the held builds of S2) is the next slice; it belongs in the
-worker, which owns the updater, and in this shell's relaunch.
+**A shipped build runs no updater.** It is packaged with no upgrade link (`RELEASE_UPGRADE_LINK` in
+`packaging/update-root.ts` is `null`), so main starts no updater process, joins no DHT topic and
+asks no relay, and every launch reports `updates: off`. Setting that link is the owner's step.
+
+With a link, the app applies a Pear update **only** when a kind-30071 Nostr release notice
+(`d = nutflix-runtime`), signed by the SovTech release key, names exactly that build (ADR 0001
+decision 2; the sequence is S2's):
+
+1. On `updated`, read `next`, parse `<length>.<fork>`, build `pear://<fork>.<length>.<key>`.
+2. Hash `<next>/by-arch/<host>/app/<name>`: a file's sha256, or for a macOS bundle the sha256 of a
+   sorted list of every file's hash and executable bit and every symlink's target (`src/update/hash.ts`).
+3. Ask the baked-in relays, and take the newest valid notice. Compare its link, version and hash.
+   No match, no notice or no relay: **held**, and the window says "Unverified update held".
+4. Hash again, check `next` has not moved, and call `applyUpdate()` with no `await` in between.
+5. Hash the installed app to prove the swap, because `applyUpdate()` returns quietly when it did
+   nothing. On Windows the installed package is not one file: the app reports that Windows accepted
+   the package, and CI compares what got installed.
+
+A held build fires `updated` again at the next start and is judged again. Nothing records an
+approval. A newer build with no notice holds back an older announced one (accepted, ADR amendment,
+item 4).
+
+### Where it runs, and why
+
+In **a Bare process of its own** (`src/update/update-worker.ts`), started by main only when the build
+has a link:
+
+- not the renderer, which is untrusted and only ever receives a state to display;
+- not main, because the updater replicates data from strangers, and main holds every privilege the
+  app has;
+- not the data worker, because it parses strangers' video and serves the renderer's RPC, so a bug
+  there must not be able to reach `applyUpdate()`.
+
+Main reads the process's status frames, checks each against fixed lists (`src/update/status.ts`) and
+passes the state on through `RpcGate.fromMain`. That event is on the window's `mainEvents`
+allow-list: the same name from the data worker is dropped, so a compromised worker cannot tell the
+page an update was verified. No RPC reaches the updater.
+
+### The trust root
+
+The release key, the notice relays and the link are **compiled into the updater's bundle** at package
+time (`src/update/root.ts`). No environment variable, switch, file in user data or RPC is read for
+any of them.
+
+- **The release path** (`package.ts stage|package|make|build`) always bakes in `releaseRoot()`. It has
+  no option that names another, and it reads the bundle back and refuses anything but the production
+  root.
+- **The test path** (`package.ts test-build --update-root <file>`) is what CI uses. It refuses the
+  production key, and any relay or DHT node off `127.0.0.1`. There is no such switch in the app.
+
+### What counts as a notice
+
+Every relay is untrusted. An event is read only after size bounds, shape, kind, author, a single
+`d` tag, and its id and Schnorr signature (`nostr-tools`). The shape is nutflix-pear's release
+manifest plus one tag:
+
+```
+["d", "nutflix-runtime"]  ["version", "0.1.2"]  ["verlink", "pear://<fork>.<length>.<key>"]
+["artifact", "Nutflix-<target>.<AppImage|app|msix>", "<sha256>", "<bytes>"]    one per target
+```
+
+- **The newest** is the highest `created_at`, and on a tie the lowest `id` (NIP-01). A notice more than
+  a day in the future is refused.
+- **Replays:** the newest valid notice seen is kept as a floor (`notice-floor.json` in the updater's
+  directory), and anything older is refused. The floor can only make the gate stricter: deleting it
+  loses replay protection and nothing else, and it can never make a notice valid. A fresh install
+  has no floor, so a party who controls every relay AND the DHT path could still offer it an older,
+  genuinely signed release.
+- **One reachable relay is enough** to apply, because the signature is the authority. An unreachable
+  relay only matters when no relay answers at all.
 
 ## How it runs
 
@@ -151,7 +216,8 @@ than 1.29.4 (`smoke.ts bare`).
    on macOS and Windows). Every build prints this line; no switch makes it
    print. The line also says what the packaged engine can do: whether the renderer's WebRTC player
    probe passed, and whether `MediaSource` takes VP9 or H.264 in MP4;
-4. with `--no-sandbox`, the warning comes first and no window opens.
+4. with `--no-sandbox`, the warning comes first and no window opens;
+5. every launch says `updates: off`: a package made for release starts no updater.
 
 What is launched: Linux, the `.AppImage` itself, once mounted with FUSE and once with no FUSE tools;
 macOS, the `.app`'s executable; Windows, the executable inside the
@@ -177,6 +243,7 @@ runner. It downloads the five packages the `shell` job uploaded and then, with
 | seeded | `pear seed` announces it, on the private DHT below, until the install is done |
 | installed | `pear install pear://<link>`, on the private DHT; the installed bytes are compared with the staged ones (a file's sha256; a macOS bundle's every file, symlink and executable bit) |
 | launched | the INSTALLED app is started as installed, and must print its ready line: `pipe` `round-trip`, `rendererSandbox` `enforced`, and the rest of what the `shell` job requires |
+| gate | the update gate, on two more real builds (below) |
 
 ### No peer on the public network
 
@@ -204,6 +271,11 @@ private network, and measures that it never touched the public one.
   fails unless the rule counted it. After Pear has run, the count for the public bootstrap must be
   **zero**, and it must still be zero after the installed app's launch: the app starts no DHT node
   until a play or a stored video needs one (`packages/worker/src/net/dht-node.ts`).
+- **No public Nostr relay or STUN server either.** The renderer connects to its default relays as soon
+  as it loads, and the app takes no test switch. So `scripts/pear-ci/sinkhole.ts` reads every public
+  relay and STUN host from the app's sources, points those names at loopback in the runner's hosts
+  file before the first launch (in the `shell` job too), and proves that they resolve there. In the
+  install job the tripwire also counts their real addresses, and that count must stay zero.
 - **The Pear CLI is not fetched from the DHT.** `npx pear` bootstraps by downloading the platform
   drive over the public HyperDHT. This job downloads the platform's GitHub release asset instead
   (`https://github.com/holepunchto/pear/releases/download/v3.7.0/pear-<target>.zip`, an ordinary
@@ -215,8 +287,27 @@ private network, and measures that it never touched the public one.
   the log: a public key that no one outside the runner can fetch, and whose write key never leaves
   the runner's throwaway home directory.
 
-Updates stay off: nothing here constructs a `PearRuntime`, calls `applyUpdate()`, provisions or
-signs. No secret is used.
+Nothing here provisions or uses a real key or link, and no secret is used.
+
+### The update gate, on every target
+
+`scripts/pear-ci/update-proof.ts` runs after the steps above, on a second private DHT, with a relay
+on `127.0.0.1` in the job (`notice-relay.ts`, which ignores subscription filters on purpose, so that
+a forged notice really reaches the app):
+
+| Step | What happens | Must be true after it |
+| --- | --- | --- |
+| builds | `package.ts test-build` makes A and B, with a throwaway key, that relay and a private link baked in | the two digests differ |
+| installed | `pear install` of A | installed = A |
+| staged | B goes onto the same link | |
+| (a) no notice | the installed app starts, mirrors B | `held/no-notice`, the window shows it, installed = A |
+| (b) wrong hash | a notice signed by the right key, naming B with another hash | `held/hash-mismatch`, installed = A |
+| (b) wrong signer | B's right hash, signed by another key, and again claiming the release key | `held/no-notice`, 2 refused, installed = A |
+| (c) matching | a notice naming B exactly | `applied`; the job's own hash of the installed app = B |
+| restart | the app starts again | it reports B's version, and is not holding anything |
+
+On Windows the proof of the swap is the installed package's version plus every file under `app\\`
+compared with B's `.msix`, because `applyUpdate()` hands the package to Windows.
 
 ### What is, and is not, proved per platform
 
@@ -272,6 +363,7 @@ The AppImage carries this repository's patched type-2 runtime
 | --- | --- |
 | `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `app-protocol.ts`, `rpc-gate.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
 | `src/preload/preload.ts` | the preload |
+| `src/update/` | the update gate: `gate.ts`, `notice.ts`, `root.ts`, `relays.ts`, `hash.ts`, and its Bare entry `update-worker.ts` |
 | `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check |
 | `scripts/package.ts`, `scripts/smoke.ts` | the packaging driver; the launcher CI runs |
 
@@ -290,8 +382,12 @@ is imported from there unchanged. The MSIX settings and the Windows SDK lookup a
 - **Bundle id** `xyz.sovit.nutflix.runtime`, **MSIX identity** `SovereignTechnology.Nutflix` and
   **publisher** `CN=Sovereign Technology (TEST)`: the publisher must equal the signing certificate's
   subject and then never change.
-- The MSIX manifest has none of the template's `packageManagement`, `unvirtualizedResources` or
-  write-virtualization-off settings, which the update slice will need. It does have the `Nutflix.exe`
+- **Turning updates on** takes: a `pear multisig` production link, set as `RELEASE_UPGRADE_LINK`; each
+  release notice signed with the SovTech key; and `nutflix-runtime` added to `RELEASE_D_TAGS` in
+  nutflix-pear's release scripts, whose artifact-name rules must also learn this app's names.
+- The MSIX manifest gets `packageManagement`, `unvirtualizedResources` and write virtualization off
+  **only in a build with a link** (an in-app MSIX update needs all three, and Holepunch's template has
+  them). A shipped build today does not ask for them. It does have the `Nutflix.exe`
   execution alias, which the install job needs and which also lets a person run the packaged app
   from a terminal and read its output (the app has no switch of its own for that).
 - The worker is not restarted if it exits; the window's pipe closes and playing fails.
