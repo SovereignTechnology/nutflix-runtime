@@ -241,6 +241,12 @@ describe('the whole probe', () => {
     expect((await probePlayer(env())).report.missing).toEqual(['library']);
   });
 
+  it('a load that never ends is a reason and no player, not a hang', async () => {
+    const r = await probePlayer(env(), () => new Promise(() => undefined), 5);
+    expect(r.player).toBeNull();
+    expect(r.report.missing).toEqual(['library']);
+  });
+
   it('a pinned WASM this runtime will not validate is a reason and no player', async () => {
     const r = await probePlayer(
       env((b) => b !== WASM),

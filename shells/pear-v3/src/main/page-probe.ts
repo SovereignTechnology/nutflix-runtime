@@ -8,6 +8,13 @@
  * play. Whether a video plays needs a seeder and a relay, and is not asserted here (README).
  */
 
+/** Which part of the page's start is missing, read once when `PROBE_CODE` never answered. */
+export const NOT_MOUNTED_CODE =
+  "(() => { const r = document.getElementById('root');" +
+  " if (r === null) return { root: false, children: 0, player: 'none', workerLink: 'none' };" +
+  ' return { root: true, children: r.childElementCount,' +
+  " player: r.dataset.webrtcPlayer ?? 'none', workerLink: r.dataset.workerLink ?? 'none' }; })()";
+
 /** The page's side: null until `startRenderer` has run and rendered, and null after a failed start. */
 export const PROBE_CODE =
   "(() => { const r = document.getElementById('root');" +
@@ -23,6 +30,25 @@ export interface Probe {
   readonly player: 'available' | 'unavailable';
   readonly vp9: boolean;
   readonly h264: boolean;
+}
+
+export interface NotMounted {
+  readonly root: boolean;
+  readonly children: number;
+  readonly player: 'available' | 'unavailable' | 'none';
+  readonly workerLink: 'up' | 'down' | 'none';
+}
+
+/** `NOT_MOUNTED_CODE`'s answer as fixed values for the log: the page chooses none of the text. */
+export function parseNotMounted(x: unknown): NotMounted {
+  const o = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {};
+  const { player, workerLink, children } = o;
+  return {
+    root: o['root'] === true,
+    children: typeof children === 'number' && Number.isSafeInteger(children) ? children : 0,
+    player: player === 'available' || player === 'unavailable' ? player : 'none',
+    workerLink: workerLink === 'up' || workerLink === 'down' ? workerLink : 'none',
+  };
 }
 
 /** The probe's answer as main will use it, or `null` when the renderer has not mounted. Never throws. */

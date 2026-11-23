@@ -48,7 +48,14 @@ import {
   shouldShowFuseNotice,
 } from './fuse-notice.ts';
 import { event, readyLine } from './log.ts';
-import { PROBE_CODE, parseProbe, type Probe } from './page-probe.ts';
+import {
+  NOT_MOUNTED_CODE,
+  PROBE_CODE,
+  parseNotMounted,
+  parseProbe,
+  type NotMounted,
+  type Probe,
+} from './page-probe.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
   BANNER_TEXT,
@@ -343,7 +350,9 @@ async function main(): Promise<void> {
         state.renderer = probe;
         maybeReady();
       } else {
-        event('renderer-not-mounted');
+        void whyNotMounted(win.webContents).then((why) => {
+          event('renderer-not-mounted', { ...why });
+        });
       }
     });
   });
@@ -385,6 +394,17 @@ async function untilMounted(wc: WebContents): Promise<Probe | null> {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return null;
+}
+
+/** What the page had when `untilMounted` gave up, for the log. */
+async function whyNotMounted(wc: WebContents): Promise<NotMounted> {
+  try {
+    return parseNotMounted(
+      await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: NOT_MOUNTED_CODE }]),
+    );
+  } catch {
+    return parseNotMounted(null);
+  }
 }
 
 let fuseNoticeDone = false;

@@ -179,6 +179,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          sudo bash packages/renderer/e2e/netns/topology.sh who
           sudo bash packages/renderer/e2e/netns/topology.sh counts | tee "$RUNNER_TEMP/counts"
           awk '$2 != 1 { bad = 1 } END { exit bad }' "$RUNNER_TEMP/counts"
           echo "each namespace counted exactly its canary: 0 packets tried to leave"

@@ -4,11 +4,11 @@
  * namespace of its own with a global-looking address, because the player's candidate filter
  * refuses loopback, private, link-local and mDNS candidates and is not weakened for a test.
  *
- *   1. Two viewers. A's seeder holds the whole video; B's holds the first segments only. B can get
- *      the rest from nobody but A, over WebRTC. It must play past them, and the sha256 of every
- *      byte it appended to its SourceBuffers must be a file of the package.
- *   2. nfxd at the pinned commit (`--mesh-relay`, a stock strfry) and one viewer holding the first
- *      segments only: the same, with nfxd as the peer.
+ *   1. Two viewers, on the player's default scheduling. B must play past at least three segments
+ *      its own seeder was never asked for: those can have come only from A, over WebRTC. The
+ *      sha256 of everything B appended to its SourceBuffers must be a file of the package.
+ *   2. nfxd at the pinned commit (`--mesh-relay`, a stock strfry) and one viewer: the same, with
+ *      nfxd as the peer.
  *   4. The candidate filter: the pinned library's own `filterRemoteSdp`, in this browser, on nfx's
  *      vectors (read from the pinned source, its sha256 checked) and on this app's.
  *
@@ -50,9 +50,10 @@ const HUB = '11.77.0.1';
 const ADDR_A = '11.77.0.2';
 const ADDR_B = '11.77.0.3';
 const STUN_PORT = 3478;
-/** The viewers' own seeders hold this many segments; the rest must come over WebRTC. */
-const HELD = 5;
-const SECONDS = 40;
+/** Segments a viewer must play that its own seeder was never asked for. */
+const FROM_PEERS = 3;
+/** Long enough that the first viewer is still playing when the second has played past those. */
+const SECONDS = 90;
 /** nfx's `web/player/test-vectors/remote-sdp.json` at the pinned commit. */
 const SDP_VECTORS_SHA256 = '6c2c929d990d6fd0291bff8007b2040f28a7b2276331728293fa491bf1064bb4';
 
@@ -322,7 +323,21 @@ function queryOne(url: string, filter: unknown): Promise<NostrEvent> {
 
 const sha = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 
-/** What every proof demands of a viewer that played `pkg` holding only its first `HELD` segments. */
+/** The segments `s` appended that its own seeder was never asked for, as playlist indexes. */
+function onlyFromPeers(pkg: Vp9Package, s: PeerStatus): number[] {
+  const played = new Set(s.observed.appended.map((a) => a.sha256));
+  const asked = new Set(s.seederAsked);
+  return pkg.segments.flatMap((h, i) => (played.has(h) && !asked.has(h) ? [i] : []));
+}
+
+/** Whether `s` has played past `FROM_PEERS` segments that can only have come from a peer. */
+function playedPastPeerSegments(pkg: Vp9Package, s: PeerStatus): boolean {
+  const third = onlyFromPeers(pkg, s)[FROM_PEERS - 1];
+  if (third === undefined) return false;
+  return s.t > ((third + 1) * pkg.durationSec) / pkg.segments.length;
+}
+
+/** What every proof demands of a viewer that played `pkg`. */
 function judge(
   pkg: Vp9Package,
   s: PeerStatus,
@@ -338,15 +353,17 @@ function judge(
 
   // What played: every appended byte string is a file of the package.
   const played = new Set(s.observed.appended.map((a) => a.sha256));
-  expect(s.observed.appended.length).toBeGreaterThan(HELD);
+  expect(s.observed.appended.length).toBeGreaterThan(FROM_PEERS);
   const strangers = [...played].filter((h) => !pkg.files.has(h));
   expect(strangers).toEqual([]);
 
-  // Of those, the ones this viewer's own seeder never had: they can have come only from a peer.
-  const onlyFromPeers = pkg.segments.slice(HELD).filter((h) => played.has(h));
-  expect(onlyFromPeers.length).toBeGreaterThanOrEqual(3);
+  // Of those, the ones this viewer's own seeder was never asked for: only a peer can have sent them.
+  const fromPeers = onlyFromPeers(pkg, s);
+  expect(fromPeers.length).toBeGreaterThanOrEqual(FROM_PEERS);
+  expect(playedPastPeerSegments(pkg, s)).toBe(true);
   let bytesFromPeers = 0;
-  for (const h of onlyFromPeers) bytesFromPeers += pkg.files.get(h)?.byteLength ?? 0;
+  for (const i of fromPeers)
+    bytesFromPeers += pkg.files.get(pkg.segments[i] ?? '')?.byteLength ?? 0;
   expect(s.observed.dcIn).toBeGreaterThanOrEqual(bytesFromPeers);
 
   // The wire: a connected ICE pair to that peer's global-looking address, carrying those bytes.
@@ -362,7 +379,7 @@ function judge(
   expect(candidates.length).toBeGreaterThan(0);
   for (const a of candidates) expect(a).toMatch(/^11\.77\.0\.[0-9]+$/);
 
-  return { fromPeers: onlyFromPeers.length, bytesFromPeers, pair: best, candidates };
+  return { fromPeers: fromPeers.length, bytesFromPeers, pair: best, candidates };
 }
 
 describe('the WebRTC player on an isolated network', () => {
@@ -382,7 +399,6 @@ describe('the WebRTC player on an isolated network', () => {
     store: storeDir,
     video: pkg.video,
     segments: pkg.segments,
-    holds: pkg.segments.length,
     manifest: manifest(creator, VIDEO_ID, {
       title: TITLE,
       root: pkg.root,
@@ -417,7 +433,7 @@ describe('the WebRTC player on an isolated network', () => {
     });
 
     pkg = makeVp9Package(`${NS}:${VIDEO_ID}`, SECONDS);
-    expect(pkg.segments.length).toBeGreaterThan(HELD + 5);
+    expect(pkg.segments.length).toBeGreaterThan(30);
     storeDir = join(work, 'pkg', 'store');
     mkdirSync(storeDir, { recursive: true });
     for (const [name, bytes] of pkg.files) writeFileSync(join(storeDir, name), bytes);
@@ -471,20 +487,25 @@ describe('the WebRTC player on an isolated network', () => {
   it('proof 1: a viewer plays segments it can only have got from another viewer, over WebRTC', async () => {
     const a = await Peer.start('nfx-a', config({}));
     cleanups.push(() => a.stop());
-    // A has fetched well past what B holds before B arrives.
-    await a.until('A buffers', (s) => s.observed.appended.length >= HELD + 6, 150_000);
+    // A has fetched well ahead before B arrives, so it has segments to offer.
+    await a.until('A buffers', (s) => s.observed.appended.length >= 12, 150_000);
 
-    const b = await Peer.start('nfx-b', config({ holds: HELD }));
+    const b = await Peer.start('nfx-b', config({}));
     cleanups.push(() => b.stop());
-    const past = (HELD + 3) * 2;
-    await b.until('B plays past what it holds', (x) => x.t > past, 240_000);
+    await b.until(
+      'B plays past segments only A can have sent',
+      (x) => playedPastPeerSegments(pkg, x),
+      300_000,
+    );
+    // The ICE counters are sampled once a second: let them catch up with what was appended.
+    await new Promise((r) => setTimeout(r, 1500));
     const s = await b.until('B hashed what it appended', (x) => x.observed.pending === 0, 20_000);
     const verdict = judge(pkg, s, ADDR_A);
     const sa = await a.status();
     expect(sa.observed.dcOut).toBeGreaterThanOrEqual(verdict.bytesFromPeers);
     report('PROOF1', {
       segments: pkg.segments.length,
-      heldByB: HELD,
+      askedOfBsSeeder: s.seederAsked.length,
       playedTo: s.t,
       appended: s.observed.appended.length,
       segmentsOnlyFromPeer: verdict.fromPeers,
@@ -569,10 +590,14 @@ describe('the WebRTC player on an isolated network', () => {
     );
     const event = await queryOne(embedded, { kinds: [38504], authors: [pubkey], limit: 1 });
 
-    const b = await Peer.start('nfx-b', config({ holds: HELD, manifest: event, addr, title }));
+    const b = await Peer.start('nfx-b', config({ manifest: event, addr, title }));
     cleanups.push(() => b.stop());
-    const past = (HELD + 3) * 2;
-    await b.until('the viewer plays past what it holds', (x) => x.t > past, 240_000);
+    await b.until(
+      'the viewer plays past segments only nfxd can have sent',
+      (x) => playedPastPeerSegments(pkg, x),
+      300_000,
+    );
+    await new Promise((r) => setTimeout(r, 1500));
     const s = await b.until('it hashed what it appended', (x) => x.observed.pending === 0, 20_000);
     const verdict = judge(pkg, s, HUB);
 
@@ -584,7 +609,7 @@ describe('the WebRTC player on an isolated network', () => {
     report('PROOF2', {
       nfxCommitBinary: process.env['NFX_COMMIT'] ?? null,
       segments: pkg.segments.length,
-      heldByViewer: HELD,
+      askedOfViewersSeeder: s.seederAsked.length,
       playedTo: s.t,
       appended: s.observed.appended.length,
       segmentsOnlyFromNfxd: verdict.fromPeers,
@@ -668,17 +693,19 @@ describe('the WebRTC player on an isolated network', () => {
     const page = await (await browser.newContext()).newPage();
     // No worker pipe here: the page stops at "no worker", with its policy in force.
     await page.goto(`${site.origin}/`);
-    const result = await page.evaluate(async (list) => {
-      const url = new URL('nfx/player.js', document.baseURI).href;
-      const lib = (await import(/* @vite-ignore */ url)) as {
-        filterRemoteSdp(sdp: string, mode: 'all' | 'global'): string;
-        MAX_REMOTE_CANDIDATES: number;
-      };
+    // A string, so that the test runner's transform leaves its `import()` to the browser.
+    const run = `(async (list) => {
+      const lib = await import(new URL('nfx/player.js', document.baseURI).href);
       const failed = list
         .filter((c) => lib.filterRemoteSdp(c.input, c.mode) !== c.want)
         .map((c) => c.name);
       return { failed, ran: list.length, max: lib.MAX_REMOTE_CANDIDATES };
-    }, cases);
+    })(${JSON.stringify(cases)})`;
+    const result = await page.evaluate<{
+      readonly failed: readonly string[];
+      readonly ran: number;
+      readonly max: number;
+    }>(run);
     expect(result.failed).toEqual([]);
     expect(result.max).toBe(v.max_kept);
     expect(result.ran).toBe(v.cases.length + drop.length + keep.length);

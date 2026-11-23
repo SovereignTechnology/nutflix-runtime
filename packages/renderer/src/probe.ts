@@ -108,6 +108,9 @@ export function probeCapabilities(
   };
 }
 
+/** How long the library may take to load and start before the probe answers without it. */
+export const PROBE_TIMEOUT_MS = 20_000;
+
 export interface PlayerProbe {
   readonly report: CapabilityReport;
   /** The library, loaded and started; `null` unless `report.player`. */
@@ -116,12 +119,13 @@ export interface PlayerProbe {
 
 /**
  * The whole probe: the three runtime checks, then the pinned library. It is loaded only when
- * they pass, its verifier must validate in this runtime, and any failure is a `library` (or
- * `wasm`) line in the report, never a rejection.
+ * they pass, its verifier must validate in this runtime, and any failure, a load that never ends
+ * included, is a `library` (or `wasm`) line in the report, never a rejection or a hang.
  */
 export async function probePlayer(
   env: ProbeEnv = globalThis,
   load?: PlayerLoader,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
 ): Promise<PlayerProbe> {
   const base = probeCapabilities(env);
   const unusable = (add: Capability): PlayerProbe => {
@@ -140,10 +144,20 @@ export async function probePlayer(
   if (load === undefined) return unusable('library');
   if (!base.player) return { report: base, player: null };
   let player: LoadedPlayer;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    player = await load();
+    player = await Promise.race([
+      load(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('the library did not load in time'));
+        }, timeoutMs);
+      }),
+    ]);
   } catch {
     return unusable('library');
+  } finally {
+    clearTimeout(timer);
   }
   if (!probeCapabilities(env, { wasmModule: player.wasm }).wasm) return unusable('wasm');
   return { report: base, player };

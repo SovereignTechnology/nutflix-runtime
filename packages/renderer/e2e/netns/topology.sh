@@ -15,9 +15,14 @@
 #     `default_public_interface_only` needs a default route to pick an interface;
 #   - the tripwire: in each namespace the last OUTPUT rule DROPs and COUNTS anything not bound for
 #     loopback or 11.77.0.0/24. `check` proves the counter counts (one canary datagram to an RFC
-#     5737 address per namespace) and `counts` prints what it caught.
+#     5737 address per namespace), `counts` prints what it caught and `who` where it was going.
 #
-#   topology.sh up | check | counts | down
+# Each viewer also has a private address on a dummy interface, reachable only from itself: its
+# worker and its seeder share a private HyperDHT testnet on this namespace, and HyperDHT takes its
+# same-host shortcut only between private addresses. The default route, which is all WebRTC uses
+# under `default_public_interface_only`, does not lead there.
+#
+#   topology.sh up | check | counts | who | down
 set -euo pipefail
 
 NET=11.77.0
@@ -36,6 +41,10 @@ tripwire() {
     local ns=$1
     in_ns "$ns" iptables -w 10 -A OUTPUT -o lo -j ACCEPT
     in_ns "$ns" iptables -w 10 -A OUTPUT -d "$NET.0/24" -j ACCEPT
+    # Only says where a dropped packet was going; the DROP below is the rule, and is what counts.
+    if ! in_ns "$ns" iptables -w 10 -A OUTPUT -m limit --limit 50/second -j LOG --log-prefix "$COMMENT $ns: "; then
+        echo "no LOG target in $ns: the count stands, without destinations"
+    fi
     in_ns "$ns" iptables -w 10 -A OUTPUT -m comment --comment "$COMMENT" -j DROP
 }
 
@@ -46,6 +55,9 @@ count() {
 
 case ${1:-} in
     up)
+        if ! sysctl -q -w net.netfilter.nf_log_all_netns=1; then
+            echo "kernel log from namespaces is off: the count stands, without destinations"
+        fi
         for ns in "${SPACES[@]}"; do
             ip netns add "$ns"
             in_ns "$ns" ip link set lo up
@@ -64,6 +76,9 @@ case ${1:-} in
             ip -n "nfx-$x" addr add "$NET.$n/24" dev "veth-$x"
             ip -n "nfx-$x" link set "veth-$x" up
             ip -n "nfx-$x" route add default via "$HUB"
+            ip -n "nfx-$x" link add dummy0 type dummy
+            ip -n "nfx-$x" addr add "10.77.$n.1/32" dev dummy0
+            ip -n "nfx-$x" link set dummy0 up
             n=$((n + 1))
         done
         for ns in "${SPACES[@]}"; do tripwire "$ns"; done
@@ -99,6 +114,14 @@ case ${1:-} in
         ;;
     counts)
         for ns in "${SPACES[@]}"; do echo "$ns $(count "$ns")"; done
+        ;;
+    who)
+        # Fields of the kernel's LOG line that name the packet; nothing else is printed.
+        dmesg | awk -v c="$COMMENT" 'index($0, c) {
+            line = ""
+            for (i = 1; i <= NF; i++) if ($i ~ /^(nfx-[a-z]+:|SRC=|DST=|PROTO=|SPT=|DPT=)/) line = line " " $i
+            print line
+        }' | sort | uniq -c
         ;;
     down)
         for ns in "${SPACES[@]}"; do

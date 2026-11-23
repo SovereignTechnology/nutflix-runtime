@@ -4,8 +4,11 @@
  * on it, and a local relay for the manifest and the beacons. What it shares with the other viewer
  * is only what a viewer would: the signaling relay and the wire between their ICE agents.
  *
- * `holds` is how many of the video's segments this viewer's own seeder has. A viewer that holds
- * fewer can get the rest only from a peer: that is how a proof knows bytes came over WebRTC.
+ * Its seeder holds the whole video and records every file it is asked for (`seederAsked`). The
+ * worker's origin fetches a file from it only when the player requests that file over HTTP, so a
+ * segment that was appended to a SourceBuffer and never asked of the seeder can have come only
+ * from a peer: that is how a proof knows bytes came over WebRTC, with the player on its own
+ * default scheduling.
  *
  * Driven over stdio by `webrtc.netns.ts`: JSON lines in (`status`, `stop`), `PEER <json>` out.
  * Bundled by that file (esbuild) and run as a plain node script.
@@ -38,8 +41,6 @@ export interface PeerConfig {
   readonly video: string;
   /** Segment content names in playlist order. */
   readonly segments: readonly string[];
-  /** How many of `segments` this viewer's own seeder holds. */
-  readonly holds: number;
   readonly manifest: NostrEvent;
   /** `38504:<creator>:<namespace>:<id>`. */
   readonly addr: string;
@@ -53,6 +54,8 @@ export interface PeerConfig {
 
 export interface PeerStatus {
   readonly seederKey: string;
+  /** Every file this viewer's own seeder was asked for, by sha256. */
+  readonly seederAsked: readonly string[];
   readonly player: string | null;
   readonly src: string | null;
   readonly t: number;
@@ -60,6 +63,9 @@ export interface PeerStatus {
   readonly error: number | null;
   readonly cspViolations: readonly string[];
   readonly pageErrors: readonly string[];
+  /** What the watch screen says, and the page's last console lines: for a failure's message. */
+  readonly stage: string | null;
+  readonly console: readonly string[];
   readonly offLoopback: readonly string[];
   readonly observed: Observed;
 }
@@ -95,9 +101,10 @@ async function forward(host: string, port: number): Promise<{ port: number; serv
 
 async function main(cfg: PeerConfig): Promise<void> {
   const files = new Map<string, Uint8Array>();
-  const withheld = new Set(cfg.segments.slice(cfg.holds));
-  for (const name of readdirSync(cfg.store)) {
-    if (!withheld.has(name)) files.set(name, readFileSync(join(cfg.store, name)));
+  const asked = new Set<string>();
+  // Files by sha256 only: nfxd keeps a working directory of its own in the same store.
+  for (const name of readdirSync(cfg.store).filter((n) => /^[0-9a-f]{64}$/.test(n))) {
+    files.set(name, readFileSync(join(cfg.store, name)));
   }
   const source: NfxFileSource = {
     hasVideo: (v) => v.toString() === cfg.video,
@@ -106,7 +113,10 @@ async function main(cfg: PeerConfig): Promise<void> {
       if (data === undefined) return undefined;
       return {
         size: data.byteLength,
-        read: (offset, length) => Promise.resolve(data.subarray(offset, offset + length)),
+        read: (offset, length) => {
+          asked.add(sha);
+          return Promise.resolve(data.subarray(offset, offset + length));
+        },
       };
     },
   };
@@ -184,6 +194,15 @@ async function main(cfg: PeerConfig): Promise<void> {
   page.on('request', (r) => requests.push(r.url()));
   page.on('websocket', (w) => requests.push(w.url()));
   page.on('pageerror', (e) => pageErrors.push(e.message));
+  const consoleLines: string[] = [];
+  page.on('console', (m) => {
+    consoleLines.push(`${m.type()}: ${m.text().slice(0, 200)}`);
+    if (consoleLines.length > 30) consoleLines.shift();
+  });
+  const stageText = async (): Promise<string | null> =>
+    page.evaluate(
+      () => document.querySelector('.nf-nfxwatch__stage')?.textContent.slice(0, 400) ?? null,
+    );
   await bridge.attach(page);
   await page.goto(`${site.origin}/#/watch/${cfg.addr}`);
   await page.waitForFunction(
@@ -197,7 +216,15 @@ async function main(cfg: PeerConfig): Promise<void> {
     { timeout: 30_000 },
   );
   await page.getByRole('button', { name: /^Play — free$/ }).click();
-  await page.locator('video').first().waitFor({ state: 'attached', timeout: 60_000 });
+  try {
+    await page.locator('video').first().waitFor({ state: 'attached', timeout: 60_000 });
+  } catch (e) {
+    const worker: unknown = await bridge.host.handle('status', {});
+    throw new Error(
+      `no <video>: ${JSON.stringify({ stage: await stageText(), worker, pageErrors, console: consoleLines })}`,
+      { cause: e },
+    );
+  }
   say({ ev: 'playing', seederKey: seederKey.pubkey });
 
   const status = async (): Promise<PeerStatus> => {
@@ -217,7 +244,10 @@ async function main(cfg: PeerConfig): Promise<void> {
     return {
       ...inPage,
       seederKey: seederKey.pubkey,
+      seederAsked: [...asked],
       pageErrors,
+      stage: await stageText(),
+      console: consoleLines,
       offLoopback: requests.filter(
         (u) =>
           !/^(http|ws):\/\/127\.0\.0\.1:/.test(u) &&

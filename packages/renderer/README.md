@@ -117,9 +117,9 @@ as root). It runs with `RTCPeerConnection` and WebAssembly removed: the fallback
 own job.
 
 `npm run test:netns` (`e2e/netns/`, the `webrtc` workflow) is the real WebRTC path: two viewers,
-then a viewer and `nfxd --mesh-relay`, through a stock strfry, each holding only part of the video
-so that the rest can have come only over WebRTC, with a sha256 check on what reached the
-`SourceBuffer`s. The candidate filter refuses loopback, so these run in three Linux network
+then a viewer and `nfxd --mesh-relay`, through a stock strfry, on the player's default scheduling.
+A viewer must play past segments its own seeder was never asked for, which can have come only over
+WebRTC, with a sha256 check on what reached the `SourceBuffer`s. The candidate filter refuses loopback, so these run in three Linux network
 namespaces joined by a bridge, with global-looking addresses and no way out; a firewall rule in
 each one counts anything that tries to leave, and the job fails unless that is zero. No switch in
 the product exists for this.
