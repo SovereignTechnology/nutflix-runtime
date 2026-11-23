@@ -182,9 +182,14 @@ describe('the passphrase-sealed key', () => {
     await s.load();
     await s.create(PASS);
     const signing = s.sign(draft());
-    expect(await codeOf(s.lock())).toBe('rate-limited');
-    expect(await codeOf(s.unlock(PASS))).toBe('rate-limited');
-    expect(await codeOf(s.connect('bunker://x'))).toBe('rate-limited');
+    // All asked before anything is awaited: a local signature can finish on the next tick.
+    const asked = [s.lock(), s.unlock(PASS), s.create(PASS), s.connect('bunker://x')];
+    expect(await Promise.all(asked.map(codeOf))).toEqual([
+      'rate-limited',
+      'rate-limited',
+      'rate-limited',
+      'rate-limited',
+    ]);
     await signing;
     expect((await s.lock()).locked).toBe(true);
     await s.close();
