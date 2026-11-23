@@ -221,6 +221,15 @@ jobs:
             "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/$asset"
       - name: package (stage, Forge, fuses, layout)
         run: node shells/pear-v3/scripts/package.ts build --platform "$PLATFORM" --arch "$ARCH"
+      # A build with an upgrade link starts an updater on the public DHT at launch, so it must never
+      # be launched here. This reads the packaged bytes, before the first launch.
+      - name: this build starts no updater
+        run: |
+          case "$PLATFORM" in
+            darwin) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/Resources/app" ;;
+            *) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
+          esac
+          node shells/pear-v3/scripts/pear-ci/no-updater.ts "$app"
       # No runner talks to a public Nostr relay or STUN server: the app's renderer connects to its
       # default relays as soon as it loads, so those names point at loopback from here on.
       - name: the app's public relay names point at loopback on this runner

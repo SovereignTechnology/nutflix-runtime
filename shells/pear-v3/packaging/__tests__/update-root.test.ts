@@ -9,6 +9,10 @@ import { join } from 'node:path';
 import { decode } from 'nostr-tools/nip19';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  DEFAULT_SETTINGS,
+  SCOPED_RELAY,
+} from '../../../../packages/renderer/src/settings/defaults.ts';
 import { parseCli } from '../../scripts/cli-options.ts';
 import { encodeBakedRoot, parseTrustRoot, type TrustRoot } from '../../src/update/root.ts';
 import { STAGED } from '../identity.ts';
@@ -18,6 +22,7 @@ import {
   RELEASE_NOTICE_RELAYS,
   RELEASE_PUBKEY,
   RELEASE_UPGRADE_LINK,
+  assertNoUpgradeLink,
   assertReleaseRoot,
   assertStagedRoot,
   assertTestRoot,
@@ -45,8 +50,6 @@ const vendored = (): string =>
     join(REPO_ROOT, 'vendor', 'nutflix-pear', 'scripts', 'release-manifest.mjs'),
     'utf8',
   );
-const vendoredPublish = (): string =>
-  readFileSync(join(REPO_ROOT, 'vendor', 'nutflix-pear', 'scripts', 'release-publish.mjs'), 'utf8');
 
 describe('the production root', () => {
   it('is the SovTech release key nutflix-pear signs with', () => {
@@ -57,11 +60,21 @@ describe('the production root', () => {
     expect(d.data).toBe(RELEASE_PUBKEY);
   });
 
-  it('reads every relay nutflix-pear publishes notices to', () => {
-    const block = /RELEASE_RELAYS = Object\.freeze\(\[([\s\S]*?)\]\)/.exec(vendoredPublish())?.[1];
-    const relays = [...(block ?? '').matchAll(/'(wss:\/\/[^']+)'/g)].map((m) => m[1]);
-    expect(relays.length).toBeGreaterThan(0);
-    for (const r of relays) expect(RELEASE_NOTICE_RELAYS).toContain(r);
+  it("reads notices from the app's own default relays, the network's first", () => {
+    expect(RELEASE_NOTICE_RELAYS).toEqual([
+      SCOPED_RELAY,
+      ...DEFAULT_SETTINGS.relays.map((r) => r.url),
+    ]);
+  });
+
+  it('refuses to let a runner launch a build that would start an updater', () => {
+    const bundle = (r: TrustRoot): string => `var root = "${encodeBakedRoot(r)}";`;
+    expect(() => {
+      assertNoUpgradeLink(bundle(releaseRoot()));
+    }).not.toThrow();
+    expect(() => {
+      assertNoUpgradeLink(bundle(parseTrustRoot(testRoot())));
+    }).toThrow(/public DHT/);
   });
 
   it('is inert: no upgrade link until the owner has provisioned one', () => {

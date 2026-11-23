@@ -25,14 +25,15 @@ import { STAGED } from './identity.ts';
 export const RELEASE_PUBKEY = '83d8bce2f7d6966f306e6f1a712497cf0a2c77d073923136a0e2bb54963b3434';
 
 /**
- * Where a notice is read from: nutflix-pear's `RELEASE_RELAYS` (where its publish script sends
- * every notice; a test pins them), after this network's own relay.
+ * Where a notice is read from: the app's own default relays, the network's first (a test pins them
+ * to `packages/renderer/src/settings/defaults.ts`). The maintainer took `relay.damus.io` and
+ * `nos.lol` out of the client defaults, so no install dials them for this either. A release notice
+ * must be published to these.
  */
 export const RELEASE_NOTICE_RELAYS: readonly string[] = [
   'wss://relay.nutflix.xyz',
-  'wss://relay.damus.io',
-  'wss://nos.lol',
   'wss://relay.primal.net',
+  'wss://relay.ditto.pub',
 ];
 
 /** The production upgrade link. `null` until the owner has provisioned one: no updater runs. */
@@ -79,6 +80,17 @@ export function bakedRootIn(bundle: string): TrustRoot {
   if (found.size !== 1) throw new Error(`the bundle holds ${String(found.size)} update roots`);
   const [only] = found;
   return decodeBakedRoot(only ?? '');
+}
+
+/**
+ * Throws if this bundle would start an updater. CI launches packaged builds on GitHub runners, and
+ * an updater joins the public DHT at launch, which a runner must never do.
+ */
+export function assertNoUpgradeLink(bundle: string): void {
+  if (bakedRootIn(bundle).upgrade !== null)
+    throw new Error(
+      'this build has an upgrade link, so launching it would join the public DHT from this runner',
+    );
 }
 
 /** Reads the staged updater back and refuses a root that is not what this build is allowed. */
