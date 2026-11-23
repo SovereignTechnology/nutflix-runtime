@@ -210,7 +210,7 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
     target: 'es2022',
     mainFields: ['module', 'main'],
     // Everything with an addon, and what loads one, is the closure's copy.
-    external: ['pear-runtime', 'sodium-native', 'bare-*'],
+    external: ['pear-runtime-updater', 'corestore', 'hyperswarm', 'sodium-native', 'bare-*'],
     define: { __NUTFLIX_UPDATE_ROOT__: JSON.stringify(encodeBakedRoot(o.updateRoot)) },
   });
   const updateAllowed = updateSources();

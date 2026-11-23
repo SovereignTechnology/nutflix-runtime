@@ -1,7 +1,11 @@
 /**
  * The updater process: a Bare process of its own (`pear-runtime`'s `run()`), started by main only
- * when this build was packaged with an upgrade link. It owns `PearRuntime` and the gate
- * (`gate.ts`), and nothing else runs in it.
+ * when this build was packaged with an upgrade link. It owns the updater and the gate (`gate.ts`),
+ * and nothing else runs in it.
+ *
+ * It builds `pear-runtime-updater`, its store and its swarm itself, the three things a `PearRuntime`
+ * wraps. Under Bare, `pear-runtime` also loads `bare-worker`, whose `bare-thread` needs Bare 1.33
+ * or later; the shipped `bare-sidecar` is Bare 1.31.
  *
  * Why here: not the renderer (untrusted), not main (the updater replicates data from strangers,
  * and main holds every privilege the app has), and not the data worker (it parses strangers'
@@ -20,7 +24,9 @@ import { FrameDecoder, encodeFrame } from '@nutflix-runtime/worker';
 import fs from 'bare-fs';
 import path from 'bare-path';
 import { Socket as WebSocket } from 'bare-ws';
-import PearRuntime from 'pear-runtime';
+import Corestore from 'corestore';
+import Hyperswarm from 'hyperswarm';
+import PearRuntimeUpdater from 'pear-runtime-updater';
 import sodium from 'sodium-native';
 
 import { UpdateGate, artifactName } from './gate.ts';
@@ -81,6 +87,12 @@ function relayTarget(url: string): { secure: boolean; host: string; port: number
   };
 }
 
+/** A `127.0.0.1:<port>` node of a test root, already checked by its parser. */
+function dhtNode(node: string): { host: string; port: number } {
+  const [host = '', port = ''] = node.split(':');
+  return { host, port: Number(port) };
+}
+
 const connect: RelayConnect = (url) => {
   const t = relayTarget(url);
   const ws = new WebSocket({
@@ -118,20 +130,22 @@ async function run(
   await fs.promises.mkdir(start.dir, { recursive: true });
   const floorFile = path.join(start.dir, 'notice-floor.json');
 
-  const pear = new PearRuntime({
+  const store = new Corestore(path.join(start.dir, 'pear-runtime', 'corestore'));
+  await store.ready();
+  const updater = new PearRuntimeUpdater({
     dir: start.dir,
     app: start.app,
     updates: true,
     version: start.version,
     upgrade: root.upgrade,
     name: start.name,
-    ...(root.dht === null ? {} : { bootstrap: [...root.dht] }),
+    store,
     ...(root.delayMs === null ? {} : { delay: root.delayMs }),
   });
 
   const gate = new UpdateGate({
     root,
-    updater: pear.updater,
+    updater,
     host: start.host,
     name: start.name,
     artifact: artifactName(start.host, start.name),
@@ -156,15 +170,28 @@ async function run(
     basename: (p) => path.basename(p),
   });
 
-  pear.updater.on('updated', () => {
+  updater.on('updated', () => {
     void gate.onUpdated();
   });
-  pear.updater.on('error', () => {
+  updater.on('error', () => {
     send({ state: 'watching', reason: 'updater-error' });
   });
-  await pear.ready();
+  await updater.ready();
+  // A client of this one drive: it announces nothing and serves no topic of its own.
+  const swarm = new Hyperswarm({
+    keyPair: await store.createKeyPair('pear-runtime'),
+    ...(root.dht === null ? {} : { bootstrap: root.dht.map(dhtNode) }),
+  });
+  swarm.on('connection', (connection) => {
+    store.replicate(connection);
+  });
+  swarm.join(updater.drive.core.discoveryKey, { client: true, server: false });
   send({ state: 'watching' });
-  return () => pear.close();
+  return async () => {
+    await swarm.destroy();
+    await updater.close();
+    await store.close();
+  };
 }
 
 const ipc = Bare.IPC;

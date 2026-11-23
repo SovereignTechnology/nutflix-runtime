@@ -164,6 +164,18 @@ function iptables(ips: readonly string[]): Tripwire {
   };
 }
 
+/**
+ * One rule per address, and the optimizer off: from six addresses pfctl folds such rules into one
+ * rule over a table, whose counter cannot say which address was hit.
+ */
+export function pfRules(ips: readonly string[]): string {
+  return (
+    `# ${COMMENT}: drop and count the public addresses and one canary\n` +
+    'set ruleset-optimization none\n' +
+    ips.map((ip) => `block drop out quick inet from any to ${ip}\n`).join('')
+  );
+}
+
 function pf(work: string, ips: readonly string[]): Tripwire {
   const rules = join(work, 'tripwire-pf.conf');
   const pfctl = (...args: string[]): Ran => run('sudo', ['-n', 'pfctl', ...args]);
@@ -182,11 +194,7 @@ function pf(work: string, ips: readonly string[]): Tripwire {
   return {
     kind: 'pf',
     arm() {
-      writeFileSync(
-        rules,
-        `# ${COMMENT}: drop and count; the addresses are HyperDHT's public bootstrap and one canary\n` +
-          ips.map((ip) => `block drop out quick inet from any to ${ip}\n`).join(''),
-      );
+      writeFileSync(rules, pfRules(ips));
       // -E takes a reference ("Token : n") and enables pf when it was off; -X n drops it again.
       // Enable first, then load: what is loaded last is what runs.
       const e = must('pfctl -E', pfctl('-E'));

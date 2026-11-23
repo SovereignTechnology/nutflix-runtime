@@ -1,7 +1,6 @@
 /**
  * pear-runtime 1.3.1 ships no types (its package.json lists `index.d.ts`; the tarball has none).
- * Main uses the static `run()`. The constructor and the updater are for `src/update/update-worker.ts`
- * alone, the one module that builds a `PearRuntime`.
+ * Main uses only the static `run()`.
  */
 declare module 'pear-runtime' {
   /** The Bare sidecar `run()` returns: a Duplex (the worker's `Bare.IPC`) plus the child's stdio. */
@@ -15,30 +14,41 @@ declare module 'pear-runtime' {
     readonly stderr?: { on(event: 'data', cb: (chunk: Uint8Array) => void): unknown } | undefined;
     destroy(): unknown;
   }
-  /** `pear-runtime-updater` 3.4.0, as far as the gate uses it (S2 measured each field). */
-  export interface PearUpdater {
-    readonly next: string | null;
-    readonly nextVersion: string | null;
-    readonly app?: string | undefined;
-    applyUpdate(): Promise<void>;
-    on(event: 'updated', cb: () => void): unknown;
-    on(event: 'error', cb: (err: Error) => void): unknown;
-  }
-  export interface PearRuntimeOptions {
+  const PearRuntime: {
+    run(entrypoint: string, args?: readonly string[], opts?: object): SidecarLike;
+  };
+  export default PearRuntime;
+}
+
+/**
+ * `pear-runtime-updater` 3.4.0 (its own `index.d.ts` declares nothing), as far as the updater
+ * process uses it (`src/update/update-worker.ts`, the one module that builds one). S2 measured each
+ * field.
+ */
+declare module 'pear-runtime-updater' {
+  import type Corestore from 'corestore';
+
+  export interface PearRuntimeUpdaterOptions {
     readonly dir: string;
     readonly app: string;
     readonly updates: boolean;
     readonly version: string;
     readonly upgrade: string;
     readonly name: string;
-    readonly bootstrap?: readonly string[];
+    readonly store: Corestore;
     readonly delay?: number;
   }
-  export default class PearRuntime {
-    constructor(opts: PearRuntimeOptions);
-    readonly updater: PearUpdater;
+
+  export default class PearRuntimeUpdater {
+    constructor(opts: PearRuntimeUpdaterOptions);
+    readonly next: string | null;
+    readonly nextVersion: string | null;
+    readonly app?: string | undefined;
+    readonly drive: { readonly core: { readonly discoveryKey: Uint8Array } };
+    applyUpdate(): Promise<void>;
     ready(): Promise<void>;
     close(): Promise<void>;
-    static run(entrypoint: string, args?: readonly string[], opts?: object): SidecarLike;
+    on(event: 'updated', cb: () => void): unknown;
+    on(event: 'error', cb: (err: Error) => void): unknown;
   }
 }

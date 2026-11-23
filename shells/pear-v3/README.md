@@ -42,7 +42,8 @@ item 4).
 ### Where it runs, and why
 
 In **a Bare process of its own** (`src/update/update-worker.ts`), started by main only when the build
-has a link:
+has a link. It builds `pear-runtime-updater`, a store and a swarm itself rather than a `PearRuntime`,
+whose Bare path loads `bare-thread`, which needs a newer Bare (1.33) than the shipped one (1.31):
 
 - not the renderer, which is untrusted and only ever receives a state to display;
 - not main, because the updater replicates data from strangers, and main holds every privilege the

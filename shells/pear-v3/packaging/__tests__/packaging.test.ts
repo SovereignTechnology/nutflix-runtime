@@ -367,12 +367,14 @@ describe('updates: only the gate can apply one, and a shipped build has no link'
   ];
   const rel = (f: string): string => f.slice(pkg.length + 1).replaceAll('\\', '/');
 
-  it('only the gate calls applyUpdate, and only the updater process builds a PearRuntime', () => {
+  it('only the gate calls applyUpdate, and only the updater process builds an updater', () => {
     const files = all();
     expect(files.length).toBeGreaterThan(10);
     const applies = files.filter((f) => code(readFileSync(f, 'utf8')).includes('.applyUpdate('));
     expect(applies.map(rel)).toEqual(['src/update/gate.ts']);
-    const builds = files.filter((f) => /new\s+PearRuntime\b/.test(code(readFileSync(f, 'utf8'))));
+    const builds = files.filter((f) =>
+      /new\s+PearRuntime(Updater)?\b/.test(code(readFileSync(f, 'utf8'))),
+    );
     expect(builds.map(rel)).toEqual(['src/update/update-worker.ts']);
   });
 

@@ -13,7 +13,12 @@ import { readNotice } from '../../../src/update/notice.ts';
 import { parseTrustRoot } from '../../../src/update/root.ts';
 import { NoticeRelay } from '../notice-relay.ts';
 import { hostsFile, hostsIn, publicHosts, sinkholeLines } from '../sinkhole.ts';
-import { parsePfCounters, parseWindowsFirewallLog, publicBootstrapHits } from '../tripwire.ts';
+import {
+  parsePfCounters,
+  parseWindowsFirewallLog,
+  pfRules,
+  publicBootstrapHits,
+} from '../tripwire.ts';
 import { CANARY_IP } from '../pins.ts';
 import { forgedNotice, noticeTemplate, patchVersion, type NoticeFields } from '../update-proof.ts';
 
@@ -130,6 +135,14 @@ describe('the tripwire, over more addresses than the bootstrap', () => {
     const hits = parseWindowsFirewallLog(log, ips);
     expect(hits['104.16.0.1']).toBe(1);
     expect(publicBootstrapHits(hits)).toBe(1);
+  });
+
+  it('keeps one pf rule per address, with the optimizer that would fold them off', () => {
+    const many = ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4', '5.5.5.5', '6.6.6.6', CANARY_IP];
+    const text = pfRules(many);
+    expect(text).toContain('set ruleset-optimization none\n');
+    expect(text.indexOf('set ruleset')).toBeLessThan(text.indexOf('block drop'));
+    expect(text.match(/^block drop out quick inet from any to /gm)).toHaveLength(many.length);
   });
 
   it('does not count the canary as public', () => {
