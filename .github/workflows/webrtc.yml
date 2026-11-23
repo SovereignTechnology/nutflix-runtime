@@ -6,6 +6,9 @@
 #            pinned commit, on a loopback-free network of three namespaces with no way out
 #            (packages/renderer/e2e/netns/topology.sh), and the candidate filter's vectors.
 #
+# The unit tests and the fallback proof (RTCPeerConnection and WASM removed, playing over hyper)
+# are not repeated here: ci.yml's `test` and `renderer-e2e` jobs run them, and block.
+#
 # HARD CONSTRAINT, as in ci.yml: a runner is never a peer of the public network. The viewers, nfxd,
 # strfry and the STUN server run only inside those namespaces. There is no public DHT, relay,
 # tracker or STUN server anywhere in a test's configuration, and a firewall rule in each namespace
@@ -21,7 +24,7 @@ name: webrtc
 
 on:
   push:
-    branches: [main, feat/webrtc-player]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -119,19 +122,10 @@ jobs:
             libsecp256k1-dev libzstd-dev
       - run: npm ci --ignore-scripts
       - run: npm run build
-      # Until the branch's draft PR: the unit tests and the hyper-only e2e, without the whole matrix.
-      - name: unit tests
-        if: github.ref == 'refs/heads/feat/webrtc-player'
-        continue-on-error: true
-        run: npm test
       - name: playwright-core's Chromium
         run: npx --no-install playwright-core install --with-deps chromium
       - name: allow Chromium's user-namespace sandbox on this runner
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: proof 3, the fallback (RTCPeerConnection and WASM removed, plays over hyper)
-        if: github.ref == 'refs/heads/feat/webrtc-player'
-        continue-on-error: true
-        run: npm run test:e2e -w packages/renderer
       - name: the pinned nfx source (sha256 from the lock)
         env:
           NFX_COMMIT: ${{ steps.lock.outputs.NFX_COMMIT }}

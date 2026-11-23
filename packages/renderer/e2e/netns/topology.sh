@@ -79,7 +79,11 @@ case ${1:-} in
                 exit 1
             fi
             before=$(count "$ns")
-            in_ns "$ns" bash -c "exec 3<>/dev/udp/$CANARY/9; printf canary >&3" 2>/dev/null || true
+            # The DROP rule refuses this send, so its exit status proves nothing either way: the
+            # counter, checked next, is the test.
+            sent=0
+            in_ns "$ns" bash -c "exec 3<>/dev/udp/$CANARY/9; printf canary >&3" 2>/dev/null || sent=$?
+            echo "canary send exited $sent"
             after=$(count "$ns")
             if [ "$after" -ne $((before + 1)) ]; then
                 echo "::error::the tripwire in $ns did not count its canary ($before -> $after)"
@@ -97,7 +101,9 @@ case ${1:-} in
         for ns in "${SPACES[@]}"; do echo "$ns $(count "$ns")"; done
         ;;
     down)
-        for ns in "${SPACES[@]}"; do ip netns del "$ns" 2>/dev/null || true; done
+        for ns in "${SPACES[@]}"; do
+            if [ -e "/var/run/netns/$ns" ]; then ip netns del "$ns"; fi
+        done
         ;;
     *)
         sed -n '2,20p' "$0" >&2
