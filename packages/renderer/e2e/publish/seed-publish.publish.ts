@@ -228,7 +228,7 @@ async function fetchEverything(
         const r = await files.fetch({
           sha,
           size,
-          ...(exact ? {} : { maxSize: size }),
+          exact,
           sink: { write: (c) => void chunks.push(c) },
         });
         if (!r.ok) throw new Error(`no file ${sha.slice(0, 8)}: ${JSON.stringify(r)}`);

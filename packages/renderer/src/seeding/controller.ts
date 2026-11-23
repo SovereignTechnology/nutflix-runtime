@@ -22,6 +22,7 @@ import type {
   SignerStatusWire,
   StudioFfmpegWire,
   StudioProbeWire,
+  StudioPublishedWire,
   StudioSourceWire,
   WorkerEvent,
 } from '@nutflix-runtime/worker';
@@ -84,6 +85,11 @@ export class SeedPublish {
   #round: Promise<number> | null = null;
   #seeding: SeedingStatusWire = { watched: false, videos: [], listening: [] };
   #stopped = false;
+  /**
+   * Packaged, and not signed yet (a locked key, a bunker nobody answered): publishing the same
+   * thing again goes straight to the signature instead of encoding it all again.
+   */
+  #unsigned: { readonly key: string; readonly stored: StudioPublishedWire } | null = null;
 
   constructor(o: SeedPublishOptions) {
     this.#o = o;
@@ -247,6 +253,11 @@ export class SeedPublish {
     return this.#o.worker.call('studio.probe', { source });
   }
 
+  /** A video is packaged and waits for a signature. */
+  get awaitingSignature(): boolean {
+    return this.#unsigned !== null;
+  }
+
   async cancelPublish(): Promise<void> {
     await this.#o.worker.call('studio.cancel', {});
   }
@@ -259,30 +270,44 @@ export class SeedPublish {
     input: PublishInput,
     onProgress: (p: StudioProgressEvent) => void,
   ): Promise<PublishOutcome> {
-    const off = this.#o.worker.onEvent((ev) => {
-      if (ev.e === 'studio.progress') onProgress(ev);
-    });
-    let stored;
-    try {
-      stored = await this.#o.worker.call(
-        'studio.publish',
-        {
-          source: input.source,
-          title: input.title,
-          description: input.description,
-          tags: [...input.tags],
-          sizes: [...input.sizes],
-        },
-        { timeoutMs: PUBLISH_TIMEOUT_MS },
-      );
-    } finally {
-      off();
+    const key = JSON.stringify([
+      input.source,
+      input.title,
+      input.description,
+      input.tags,
+      input.sizes,
+    ]);
+    let stored: StudioPublishedWire;
+    if (this.#unsigned?.key === key) {
+      stored = this.#unsigned.stored;
+    } else {
+      const off = this.#o.worker.onEvent((ev) => {
+        if (ev.e === 'studio.progress') onProgress(ev);
+      });
+      try {
+        stored = await this.#o.worker.call(
+          'studio.publish',
+          {
+            source: input.source,
+            title: input.title,
+            description: input.description,
+            tags: [...input.tags],
+            sizes: [...input.sizes],
+          },
+          { timeoutMs: PUBLISH_TIMEOUT_MS },
+        );
+      } finally {
+        off();
+      }
+      this.#unsigned = { key, stored };
     }
     const event = await this.#o.worker.call(
       'signer.sign',
       { event: stored.draft },
       { timeoutMs: BUNKER_TIMEOUT_MS },
     );
+    // The worker signs a draft once: from here on it cannot be asked again.
+    this.#unsigned = null;
     const parsed = parseManifest(event);
     if (
       !parsed.ok ||

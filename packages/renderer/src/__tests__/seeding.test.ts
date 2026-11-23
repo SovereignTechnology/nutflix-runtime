@@ -348,6 +348,41 @@ describe('publishing', () => {
     expect(w.published).toEqual([]);
   });
 
+  it('a signature that failed is asked for again without encoding again', async () => {
+    const w = world();
+    const s = stored();
+    let tries = 0;
+    w.worker.answers['studio.publish'] = () => s;
+    w.worker.answers['signer.sign'] = () => {
+      tries += 1;
+      if (tries === 1) throw new Error('no-signer: the bunker did not answer');
+      return creator.sign(s.draft);
+    };
+    await expect(w.c.publish(input, () => undefined)).rejects.toThrow(/bunker/);
+    expect(w.c.awaitingSignature).toBe(true);
+    expect(w.published).toEqual([]);
+    await w.c.publish(input, () => undefined);
+    expect(w.worker.count('studio.publish')).toBe(1);
+    expect(w.worker.count('signer.sign')).toBe(2);
+    expect(w.c.awaitingSignature).toBe(false);
+    expect(w.published).toHaveLength(1);
+  });
+
+  it('a changed title is a new package, never a re-signed old one', async () => {
+    const w = world();
+    const s = stored();
+    let tries = 0;
+    w.worker.answers['studio.publish'] = () => s;
+    w.worker.answers['signer.sign'] = () => {
+      tries += 1;
+      if (tries === 1) throw new Error('no-signer: locked');
+      return creator.sign(s.draft);
+    };
+    await expect(w.c.publish(input, () => undefined)).rejects.toThrow();
+    await w.c.publish({ ...input, title: 'Another title' }, () => undefined);
+    expect(w.worker.count('studio.publish')).toBe(2);
+  });
+
   it('progress reaches the caller only during its own publish', async () => {
     const w = world();
     const s = stored();

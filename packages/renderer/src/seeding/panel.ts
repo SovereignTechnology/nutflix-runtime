@@ -349,12 +349,20 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
                 : `${p.stage[0]?.toUpperCase() ?? ''}${p.stage.slice(1)}…`;
           },
         );
-        publishStatus.textContent = `Published. ${String(done.relays)} relays have it, and this computer is seeding it.`;
-        publishStatus.dataset['state'] = 'done';
+        publishStatus.textContent =
+          done.relays === 0
+            ? 'Signed and seeding, but no relay accepted the manifest, so nobody can find it. Check your relays.'
+            : `Published. ${String(done.relays)} relays have it, and this computer is seeding it.`;
+        publishStatus.dataset['state'] = done.relays === 0 ? 'no-relay' : 'done';
         publishStatus.dataset['video'] = done.video;
         showSeeding(await control.refreshSeeding());
       } catch (e) {
         publishStatus.dataset['state'] = 'failed';
+        if (control.awaitingSignature)
+          throw new Error(
+            `no-signer: packaged, but not signed: ${message(e)}. Unlock your key or approve it in your bunker, then press Publish again.`,
+            { cause: e },
+          );
         throw e;
       } finally {
         publishing = false;
