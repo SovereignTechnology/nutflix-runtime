@@ -66,10 +66,13 @@ import {
   type Probe,
 } from './page-probe.ts';
 import {
+  CONFIRM_PUBLISH_YES,
   CONFIRM_SEEDING_DIALOG,
   CONFIRM_SEEDING_YES,
   PICK_VIDEO_DIALOG,
   answerMainCall,
+  publishDialog,
+  type Declined,
 } from './main-calls.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
@@ -129,6 +132,8 @@ let lastUpdate: UpdateStatus | undefined;
 let mainWindow: BrowserWindow | undefined;
 let unsandboxed = false;
 let dialogOpen = false;
+/** Until when a question the user just answered "no" to is not asked again. */
+const declined: Declined = { seeding: 0, publish: 0 };
 
 const sendTo = (id: number, channel: string, ...args: unknown[]): void => {
   const wc = webContents.fromId(id);
@@ -163,7 +168,12 @@ const gate: RpcGate = new RpcGate({
           const r = await dialog.showMessageBox(owner, CONFIRM_SEEDING_DIALOG);
           return r.response === CONFIRM_SEEDING_YES;
         },
-        worker: (m, a) => gate.request(m, a),
+        confirmPublish: async (o) => {
+          const r = await dialog.showMessageBox(owner, publishDialog(o.title, o.signer));
+          return r.response === CONFIRM_PUBLISH_YES;
+        },
+        worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
+        declined,
       });
     } finally {
       dialogOpen = false;
@@ -217,6 +227,8 @@ app.on('before-quit', (e) => {
   quitReady = true;
   mainWindow?.hide();
   for (const id of [...windowIds]) gate.detach(id);
+  // A running encode ends with the app: stopping the worker alone would orphan ffmpeg.
+  void gate.request('studio.cancel', {}, QUIT_GRACE_MS).catch(() => undefined);
   void gate.drained(QUIT_GRACE_MS).finally(() => {
     app.quit();
   });

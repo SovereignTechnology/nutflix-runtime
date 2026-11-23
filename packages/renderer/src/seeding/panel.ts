@@ -367,6 +367,15 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
       } finally {
         publishing = false;
         cancel.hidden = true;
+        // A pick is good for one publish; one that waits for its signature is still this one.
+        if (!control.awaitingSignature) {
+          source = null;
+          probe = null;
+          for (const el of [...sizes.querySelectorAll('label')]) el.remove();
+          sizes.hidden = true;
+          picked.textContent = '';
+          delete picked.dataset['ready'];
+        }
         canPublish();
       }
     });

@@ -52,7 +52,12 @@ import type {
   WorkerMethod,
   WorkerStatus,
 } from './protocol.js';
-import { MAX_NFX_STORED_VIDEOS, PROTOCOL_V } from './protocol.js';
+import {
+  MAX_NFX_STORED_VIDEOS,
+  MAX_WATCHED_BYTES,
+  MAX_WATCH_STARTS_PER_HOUR,
+  PROTOCOL_V,
+} from './protocol.js';
 import type { WorkerRpcHandler } from './rpc.js';
 import type { WorkerRuntime } from './runtime.js';
 import { checkManifestDraft, checkSignedManifest } from './signer/manifest-check.js';
@@ -77,6 +82,7 @@ export interface WorkerHostOptions {
   readonly signerCost?: coreSigner.KdfCost;
   readonly bunkerWaitMs?: number;
   readonly studioPreset?: string;
+  readonly maxWatchedBytes?: number;
 }
 
 /** What `init` built. */
@@ -94,6 +100,8 @@ interface Running {
   /** `null`: this runtime has no `system` (a test of the data plane alone). */
   readonly signer: UserSigner | null;
   readonly studio: Studio | null;
+  /** What "seed what you watch" has started lately, and holds in flight. */
+  readonly watchBudget: { starts: number[]; reserved: number };
 }
 
 const needs = <T>(x: T | null): T => {
@@ -139,9 +147,9 @@ export class WorkerHost implements WorkerRpcHandler {
         r.offers.endSession(c.a.sid);
         return null;
       case 'nfx.seed.start':
-        return r.seeds.start(c.a);
+        return this.seedFromHost(r, c.a);
       case 'nfx.seed.stop':
-        return r.seeds.stop(c.a.video);
+        return this.stopSeeding(r, c.a.video);
       case 'nfx.seed.list':
         return r.seeds.list();
       case 'nfx.endpoint':
@@ -156,6 +164,8 @@ export class WorkerHost implements WorkerRpcHandler {
         return needs(r.signer).connect(c.a.uri);
       case 'signer.lock':
         return needs(r.signer).lock();
+      case 'signer.check':
+        return this.checkSignable(r, c.a.event);
       case 'signer.sign':
         return this.signManifest(r, c.a.event);
       case 'seeding.status':
@@ -166,13 +176,8 @@ export class WorkerHost implements WorkerRpcHandler {
         return this.seedingStatus(r);
       case 'seeding.watch':
         return this.seedWatched(r, c.a);
-      case 'seeding.stop': {
-        const out = await r.seeds.stop(c.a.video);
-        await r.policy.remove(c.a.video);
-        await r.offers.drop(c.a.video);
-        await r.seeds.refresh();
-        return out;
-      }
+      case 'seeding.stop':
+        return this.stopSeeding(r, c.a.video);
       case 'seeding.beacons':
         return {
           events: await signBeacons({
@@ -183,6 +188,8 @@ export class WorkerHost implements WorkerRpcHandler {
           }),
         };
       case 'seeding.segment':
+        // With the switch off, nothing is kept for re-seeding.
+        if (!r.policy.watched) return { accepted: false, complete: false };
         return r.offers.offer(c.a);
       case 'studio.ffmpeg':
         return needs(r.studio).ffmpeg();
@@ -220,17 +227,48 @@ export class WorkerHost implements WorkerRpcHandler {
     return out;
   }
 
-  /** `signer.sign`: a manifest of a video this node packaged. Signing it starts seeding it. */
-  private async signManifest(r: Running, event: UnsignedEventWire): Promise<SignedEventWire> {
-    const signer = needs(r.signer);
-    const video = checkManifestDraft(event, r.policy, r.store, signer.signingKey);
+  /** `nfx.seed.start` is the host's: what it stores it means to serve, and the record says so. */
+  private async seedFromHost(
+    r: Running,
+    a: ArgsOf<'nfx.seed.start'>,
+  ): Promise<ResultOf<'nfx.seed.start'>> {
+    const known = r.policy.record(a.video);
+    if (known === undefined || known.origin === 'watched')
+      await r.policy.set(a.video, { origin: 'host', root: a.root, author: known?.author ?? null });
+    try {
+      return await r.seeds.start(a);
+    } catch (err) {
+      const addr = nfx.VideoAddr.parse(a.video);
+      if (known === undefined && addr.ok && r.store.get(addr.value) === undefined)
+        await r.policy.remove(a.video).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  private async stopSeeding(r: Running, video: string): Promise<{ readonly removed: boolean }> {
+    const out = await r.seeds.stop(video);
+    await r.policy.remove(video);
+    await r.offers.drop(video);
+    await r.seeds.refresh();
+    return out;
+  }
+
+  /** The exact draft Studio made, and what the user is shown before it is signed. */
+  private checkSignable(r: Running, event: UnsignedEventWire): ResultOf<'signer.check'> {
+    const signer = needs(r.signer).signingKey;
+    if (signer === null) fail('no-signer', 'unlock or connect a signer first');
+    const video = checkManifestDraft(event, r.policy, r.store, signer);
     if (r.studio?.isDraft(video, event) !== true)
       fail('invalid-argument', 'this is not the manifest Studio made for that video');
-    const key = signer.signingKey;
-    if (key === null) fail('no-signer', 'unlock or connect a signer first');
-    const signed = await signer.sign(event);
+    return { video, title: event.tags.find((t) => t[0] === 'title')?.[1] ?? '', signer };
+  }
+
+  /** `signer.sign`, from main after the user confirmed. Signing a manifest starts seeding it. */
+  private async signManifest(r: Running, event: UnsignedEventWire): Promise<SignedEventWire> {
+    const { video, signer: key } = this.checkSignable(r, event);
+    const signed = await needs(r.signer).sign(event);
     checkSignedManifest(signed, video, key);
-    r.studio.forgetDraft(video);
+    r.studio?.forgetDraft(video);
     const record = r.policy.record(video);
     if (record !== undefined) {
       await r.policy.set(video, { ...record, author: key });
@@ -250,10 +288,16 @@ export class WorkerHost implements WorkerRpcHandler {
     if (m.addr.namespace.toString() !== STUDIO_NAMESPACE)
       fail('invalid-argument', 'not a network this build speaks');
     if (m.segs > BigInt(Number.MAX_SAFE_INTEGER)) fail('invalid-argument', 'not a stored size');
+    // A video the viewer is watching: this window's open play of exactly this hash list.
+    const listing = r.watching.listing(a.sid);
+    if (listing === null) fail('session-closed', 'that play session is not open');
+    if (listing.video !== video || listing.root !== m.root)
+      fail('invalid-argument', 'the manifest is not the video of that play');
+    const reserved = r.store.get(m.addr) === undefined ? this.admitWatch(r, listing.bytes) : 0;
     const known = r.policy.record(video);
-    if (known === undefined)
-      await r.policy.set(video, { origin: 'watched', root: m.root, author: m.author });
     try {
+      if (known === undefined)
+        await r.policy.set(video, { origin: 'watched', root: m.root, author: m.author });
       const stored = await r.seeds.start({
         video,
         root: m.root,
@@ -266,7 +310,31 @@ export class WorkerHost implements WorkerRpcHandler {
       if (known === undefined && r.store.get(m.addr) === undefined)
         await r.policy.remove(video).catch(() => undefined);
       throw err;
+    } finally {
+      r.watchBudget.reserved -= reserved;
     }
+  }
+
+  /**
+   * A new video for "seed what you watch": within the hourly rate and the bytes it may keep, so a
+   * compromised page cannot fill the disk with what it likes. Returns the bytes it reserved.
+   */
+  private admitWatch(r: Running, bytes: number): number {
+    const b = r.watchBudget;
+    const now = Date.now();
+    b.starts = b.starts.filter((t) => now - t < 3_600_000);
+    if (b.starts.length >= MAX_WATCH_STARTS_PER_HOUR)
+      fail('rate-limited', 'too many new videos to seed this hour');
+    let used = b.reserved;
+    for (const v of r.store.videos()) {
+      if (r.policy.origin(v.video) !== 'watched') continue;
+      for (const f of v.files) used += f.size;
+    }
+    if (used + bytes > (this.o.maxWatchedBytes ?? MAX_WATCHED_BYTES))
+      fail('disk-cap', 'seeding this would pass what watched videos may keep');
+    b.starts.push(now);
+    b.reserved += bytes;
+    return bytes;
   }
 
   private async init(a: InitArgs): Promise<ResultOf<'init'>> {
@@ -401,7 +469,8 @@ export class WorkerHost implements WorkerRpcHandler {
           this.o.emit(ev);
         },
         canSign: () => userSigner.signingKey !== null,
-        onStored: (video, root) => policy.set(video, { origin: 'published', root, author: null }),
+        onPackaged: (video, root) => policy.set(video, { origin: 'published', root, author: null }),
+        onAbandoned: (video) => policy.remove(video),
         now: () => Math.floor(Date.now() / 1000),
         ...(this.o.studioPreset === undefined ? {} : { preset: this.o.studioPreset }),
       });
@@ -420,6 +489,7 @@ export class WorkerHost implements WorkerRpcHandler {
       seederKeys,
       signer,
       studio,
+      watchBudget: { starts: [], reserved: 0 },
     };
   }
 

@@ -269,7 +269,7 @@ describe('seed what you watch', () => {
   it('off: a play asks the worker for nothing', async () => {
     const w = world();
     await w.c.refreshSeeding();
-    w.c.onPlay({ video: video(), peers: [] });
+    w.c.onPlay({ sid: SID, video: video(), peers: [] });
     await settle();
     expect(w.worker.count('seeding.watch')).toBe(0);
   });
@@ -280,10 +280,11 @@ describe('seed what you watch', () => {
     w.worker.answers['seeding.watch'] = () => ({});
     await w.c.refreshSeeding();
     const v = video();
-    w.c.onPlay({ video: v, peers: [] });
+    w.c.onPlay({ sid: SID, video: v, peers: [] });
     await settle();
     const call = w.worker.calls.find((c) => c.m === 'seeding.watch');
     expect((call?.a as { manifest: { id: string } }).manifest.id).toBe(v.event.id);
+    expect((call?.a as { sid: string }).sid).toBe(SID);
   });
 
   it('the switch goes through main, which asks the user', async () => {
@@ -323,11 +324,11 @@ describe('publishing', () => {
     const s = stored();
     const signed = creator.sign(s.draft);
     w.worker.answers['studio.publish'] = () => s;
-    w.worker.answers['signer.sign'] = () => signed;
+    w.worker.answers['app.publish.sign'] = () => signed;
     const seen: string[] = [];
     const r = await w.c.publish(input, (p) => seen.push(p.stage));
     expect(r).toMatchObject({ video: s.video, relays: 2 });
-    expect(w.worker.calls.find((c) => c.m === 'signer.sign')?.a).toEqual({ event: s.draft });
+    expect(w.worker.calls.find((c) => c.m === 'app.publish.sign')?.a).toEqual({ event: s.draft });
     expect(w.published[0]?.relays).toEqual([WRITE, SCOPED]);
     expect(w.published[0]?.event.id).toBe(signed.id);
   });
@@ -343,7 +344,7 @@ describe('publishing', () => {
     const w = world();
     const s = stored();
     w.worker.answers['studio.publish'] = () => s;
-    w.worker.answers['signer.sign'] = () => change(creator.sign(s.draft));
+    w.worker.answers['app.publish.sign'] = () => change(creator.sign(s.draft));
     await expect(w.c.publish(input, () => undefined)).rejects.toThrow();
     expect(w.published).toEqual([]);
   });
@@ -353,7 +354,7 @@ describe('publishing', () => {
     const s = stored();
     let tries = 0;
     w.worker.answers['studio.publish'] = () => s;
-    w.worker.answers['signer.sign'] = () => {
+    w.worker.answers['app.publish.sign'] = () => {
       tries += 1;
       if (tries === 1) throw new Error('no-signer: the bunker did not answer');
       return creator.sign(s.draft);
@@ -363,7 +364,7 @@ describe('publishing', () => {
     expect(w.published).toEqual([]);
     await w.c.publish(input, () => undefined);
     expect(w.worker.count('studio.publish')).toBe(1);
-    expect(w.worker.count('signer.sign')).toBe(2);
+    expect(w.worker.count('app.publish.sign')).toBe(2);
     expect(w.c.awaitingSignature).toBe(false);
     expect(w.published).toHaveLength(1);
   });
@@ -373,7 +374,7 @@ describe('publishing', () => {
     const s = stored();
     let tries = 0;
     w.worker.answers['studio.publish'] = () => s;
-    w.worker.answers['signer.sign'] = () => {
+    w.worker.answers['app.publish.sign'] = () => {
       tries += 1;
       if (tries === 1) throw new Error('no-signer: locked');
       return creator.sign(s.draft);
@@ -390,7 +391,7 @@ describe('publishing', () => {
       w.worker.emit({ op: 'ev', e: 'studio.progress', stage: 'encoding', percent: 50 });
       return s;
     };
-    w.worker.answers['signer.sign'] = () => creator.sign(s.draft);
+    w.worker.answers['app.publish.sign'] = () => creator.sign(s.draft);
     const seen: number[] = [];
     await w.c.publish(input, (p) => seen.push(p.percent ?? -1));
     w.worker.emit({ op: 'ev', e: 'studio.progress', stage: 'encoding', percent: 99 });

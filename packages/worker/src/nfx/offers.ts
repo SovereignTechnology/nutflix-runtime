@@ -27,6 +27,10 @@ export const MAX_OFFERED_BYTES = 2 * 1024 * 1024 * 1024;
 /** What a play session knows of a file: from its verified hash list. */
 export interface SessionListing {
   readonly video: string;
+  /** The manifest `root` the session was opened with. */
+  readonly root: string;
+  /** What every file of the hash list adds up to. */
+  readonly bytes: number;
   entry(sha: string): nfx.FileEntry | undefined;
 }
 

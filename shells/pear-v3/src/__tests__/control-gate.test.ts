@@ -8,8 +8,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CONFIRM_SEEDING_DIALOG,
+  DECLINED_WAIT_MS,
   PICK_VIDEO_DIALOG,
   answerMainCall,
+  publishDialog,
+  shownTitle,
   type MainCallDeps,
 } from '../main/main-calls.ts';
 import { MAIN_WINDOW_POLICY, RpcGate, type RpcGateDeps } from '../main/rpc-gate.ts';
@@ -70,9 +73,7 @@ describe('the window’s allow-list', () => {
     'signer.local.unlock',
     'signer.nip46.connect',
     'signer.lock',
-    'signer.sign',
     'seeding.status',
-    'seeding.watch',
     'seeding.stop',
     'seeding.beacons',
     'studio.ffmpeg',
@@ -91,6 +92,8 @@ describe('the window’s allow-list', () => {
     'init',
     'seeding.set',
     'studio.source',
+    'signer.check',
+    'signer.sign',
     'nfx.seed.start',
     'nfx.seed.stop',
     'nfx.seed.list',
@@ -135,7 +138,7 @@ describe('the window’s allow-list', () => {
   });
 });
 
-describe('seeding.segment', () => {
+describe.each(['seeding.segment', 'seeding.watch'])('%s', (method) => {
   const offer = (sid: string): object => ({
     sid,
     sha256: 'ef'.repeat(32),
@@ -152,9 +155,9 @@ describe('seeding.segment', () => {
     h.answer({ op: 'res', id: h.toWorker[0]?.['id'], ok: true, r: {} });
     h.toWorker.length = 0;
 
-    h.ask(2, req(1, 'seeding.segment', offer(SID)));
-    h.ask(1, req(2, 'seeding.segment', offer(SID2)));
-    h.ask(1, req(3, 'seeding.segment', { ...offer(SID), sid: 42 }));
+    h.ask(2, req(1, method, offer(SID)));
+    h.ask(1, req(2, method, offer(SID2)));
+    h.ask(1, req(3, method, { ...offer(SID), sid: 42 }));
     expect(h.toWorker).toEqual([]);
     for (const list of [h.toWindow.get(2), h.toWindow.get(1)?.slice(1)])
       for (const m of list ?? [])
@@ -163,8 +166,8 @@ describe('seeding.segment', () => {
           message: 'invalid-argument: not a play session of this window',
         });
 
-    h.ask(1, req(4, 'seeding.segment', offer(SID)));
-    expect(h.toWorker.map((m) => m['m'])).toEqual(['seeding.segment']);
+    h.ask(1, req(4, method, offer(SID)));
+    expect(h.toWorker.map((m) => m['m'])).toEqual([method]);
   });
 });
 
@@ -249,18 +252,32 @@ describe('what main answers itself', () => {
 });
 
 describe('the two native dialogs', () => {
-  function deps(o: { path?: string | null; yes?: boolean } = {}): MainCallDeps & {
+  function deps(
+    o: { path?: string | null; yes?: boolean; publish?: boolean } = {},
+  ): MainCallDeps & {
     calls: [string, Record<string, unknown>][];
     picks: () => number;
     confirms: () => number;
+    shown: { title: string; signer: string }[];
+    clock: { t: number };
   } {
     const calls: [string, Record<string, unknown>][] = [];
+    const shown: { title: string; signer: string }[] = [];
+    const clock = { t: 1_000_000 };
     let picks = 0;
     let confirms = 0;
     return {
       calls,
+      shown,
+      clock,
+      now: () => clock.t,
+      declined: { seeding: 0, publish: 0 },
       picks: () => picks,
       confirms: () => confirms,
+      confirmPublish: (x) => {
+        shown.push({ ...x });
+        return Promise.resolve(o.publish === true);
+      },
       pickFile: () => {
         picks += 1;
         return Promise.resolve(o.path === undefined ? '/home/u/clip.mp4' : o.path);
@@ -271,7 +288,11 @@ describe('the two native dialogs', () => {
       },
       worker: (m, a) => {
         calls.push([m, a]);
-        return Promise.resolve({ answered: m });
+        return Promise.resolve(
+          m === 'signer.check'
+            ? { video: 'v', title: 'The worker’s title', signer: 'ab'.repeat(32) }
+            : { answered: m },
+        );
       },
     };
   }
@@ -336,6 +357,75 @@ describe('the two native dialogs', () => {
       expect(d.calls).toEqual([]);
     },
   );
+
+  it('a "no" to seeding is not asked again for a minute', async () => {
+    const d = deps({ yes: false });
+    await answerMainCall('app.seeding.set', { on: true }, d);
+    await expect(answerMainCall('app.seeding.set', { on: true }, d)).rejects.toMatchObject({
+      code: 'rate-limited',
+    });
+    expect(d.confirms()).toBe(1);
+    await answerMainCall('app.seeding.set', { on: false }, d);
+    d.clock.t += DECLINED_WAIT_MS;
+    await answerMainCall('app.seeding.set', { on: true }, d);
+    expect(d.confirms()).toBe(2);
+  });
+
+  describe('publishing', () => {
+    const event = { kind: 38504, created_at: 1, tags: [['title', 'From the page']], content: '' };
+
+    it('signs only after the user said yes, to what the worker says it is', async () => {
+      const d = deps({ publish: true });
+      expect(await answerMainCall('app.publish.sign', { event }, d)).toEqual({
+        answered: 'signer.sign',
+      });
+      expect(d.calls.map(([m]) => m)).toEqual(['signer.check', 'signer.sign']);
+      expect(d.shown).toEqual([{ title: 'The worker’s title', signer: 'ab'.repeat(32) }]);
+    });
+
+    it('a "no" signs nothing, and is not asked again for a minute', async () => {
+      const d = deps({ publish: false });
+      await expect(answerMainCall('app.publish.sign', { event }, d)).rejects.toMatchObject({
+        code: 'invalid-argument',
+      });
+      expect(d.calls.map(([m]) => m)).toEqual(['signer.check']);
+      await expect(answerMainCall('app.publish.sign', { event }, d)).rejects.toMatchObject({
+        code: 'rate-limited',
+      });
+      expect(d.shown).toHaveLength(1);
+    });
+
+    it('asks nothing about an event the worker refuses', async () => {
+      const d = deps({ publish: true });
+      const refusing: MainCallDeps = {
+        ...d,
+        worker: () => Promise.reject(new WorkerError('invalid-argument', 'not the draft')),
+      };
+      await expect(answerMainCall('app.publish.sign', { event }, refusing)).rejects.toMatchObject({
+        code: 'invalid-argument',
+      });
+      expect(d.shown).toEqual([]);
+    });
+
+    it.each([[{}], [{ event, extra: 1 }]])('refuses %j', async (args) => {
+      const d = deps({ publish: true });
+      await expect(answerMainCall('app.publish.sign', args, d)).rejects.toMatchObject({
+        code: 'invalid-argument',
+      });
+      expect(d.calls).toEqual([]);
+    });
+
+    it('the box shows one plain line of title, and says what publishing shares', () => {
+      const b = publishDialog(`a\nb\u202Ec${'x'.repeat(500)}`, 'ab'.repeat(32));
+      expect(b.message).toMatch(/shares your IP address with viewers/);
+      expect(b.defaultId).toBe(0);
+      expect(b.buttons[0]).toBe('Do not publish');
+      const line = b.detail.split('\n')[0] ?? '';
+      expect(line.startsWith('Title: abc')).toBe(true);
+      expect(line).not.toContain('\u202E');
+      expect(shownTitle('x'.repeat(500)).length).toBe(120);
+    });
+  });
 
   it('says plainly what seeding shares, with "off" as the default answer', () => {
     expect(CONFIRM_SEEDING_DIALOG.message).toMatch(/shares your IP address with viewers/);

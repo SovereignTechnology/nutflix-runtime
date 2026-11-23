@@ -17,6 +17,7 @@ import { ffmpegCandidates, findFfmpeg, siblingFfprobe } from '../studio/ffmpeg.j
 import {
   INPUT_PROTOCOLS,
   MAX_OUTPUT_BYTES,
+  MAX_SOURCE_PIXELS,
   SOURCE_FORMATS,
   guardArgv,
   guardedRunner,
@@ -58,6 +59,7 @@ describe('what ffmpeg is told', () => {
     expect(opts[opts.indexOf('-protocol_whitelist') + 1]).toBe(INPUT_PROTOCOLS);
     expect(INPUT_PROTOCOLS).toBe('file,pipe');
     expect(opts[opts.indexOf('-format_whitelist') + 1]).toBe(SOURCE_FORMATS);
+    expect(opts[opts.indexOf('-max_pixels') + 1]).toBe(String(MAX_SOURCE_PIXELS));
     for (const banned of ['hls', 'dash', 'concat', 'http', 'tcp', 'rtmp', 'data', 'lavfi'])
       expect(SOURCE_FORMATS.split(','), banned).not.toContain(banned);
     expect(argv[argv.length - 1]).toBe(`${WORK}/720p.mp4`);
@@ -80,6 +82,7 @@ describe('what ffmpeg is told', () => {
       const opts = inputOptions(guardArgv('ffmpeg', a, SOURCE, WORK));
       expect(opts).toContain('-protocol_whitelist');
       expect(opts).toContain('-format_whitelist');
+      expect(opts).toContain('-max_pixels');
     }
   });
 
@@ -99,6 +102,7 @@ describe('what ffmpeg is told', () => {
   it('guards ffprobe of the picked file, and of this job’s own outputs', () => {
     const src = guardArgv('ffprobe', media.ffprobeArgv(SOURCE), SOURCE, WORK);
     expect(src).toContain('-format_whitelist');
+    expect(src).toContain('-max_pixels');
     expect(src.filter((x) => x === '-protocol_whitelist')).toHaveLength(1);
     expect(src[src.length - 1]).toBe(SOURCE);
     // A JPEG this job wrote is no container: it is read without the container list.
@@ -340,6 +344,23 @@ describe('an untrusted file, refused before anything is encoded', () => {
       ),
     ).toBe('no-signer');
     expect(calls).toEqual([]);
+  });
+
+  it('one pick is good for one publish', async () => {
+    const { w, file } = await fakeStudio(ffprobeOf({}));
+    await w.client.request('signer.local.create', { passphrase: 'a passphrase for this test' });
+    const s = await w.client.request('studio.source', { path: file });
+    const publish = (): Promise<unknown> =>
+      w.client.request('studio.publish', {
+        source: s.source,
+        title: 't',
+        description: '',
+        tags: [],
+        sizes: [720],
+      });
+    // The fake ffmpeg writes nothing, so this one fails after it started.
+    expect(await code(publish())).not.toBe('ok');
+    expect(await code(publish())).toBe('not-found');
   });
 
   it('every call to the fake ffprobe carried the guard', async () => {

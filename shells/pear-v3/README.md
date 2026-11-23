@@ -149,21 +149,26 @@ Every `ipcMain` message is dropped unless it came from the top frame of a window
 `app://nutflix`.
 
 **The RPC allow-list** (`MAIN_WINDOW_POLICY`, `src/main/rpc-gate.ts`): the renderer's window may call
-`status`, `nfx.play.open`, `nfx.play.close`, `signer.*`, `seeding.status`, `seeding.watch`,
+`status`, `nfx.play.open`, `nfx.play.close`, `signer.status`, `signer.local.create`,
+`signer.local.unlock`, `signer.nip46.connect`, `signer.lock`, `seeding.status`, `seeding.watch`,
 `seeding.stop`, `seeding.beacons`, `seeding.segment`, `studio.ffmpeg`, `studio.probe`,
 `studio.publish` and `studio.cancel`, and hear `status` and `studio.progress`. Any other method,
-`init`, `nfx.seed.*`, `nfx.endpoint`, `seeding.set`, `studio.source`, is answered `invalid-argument`
-in main and never reaches the worker. At most 32 requests in flight per window; a play session
+`init`, `nfx.seed.*`, `nfx.endpoint`, `seeding.set`, `studio.source`, `signer.check`, `signer.sign`,
+is answered `invalid-argument` in main and never reaches the worker. At most 32 requests in flight per window; a play session
 belongs to the window that opened it (another window's `nfx.play.close` does nothing, a window that
-goes away closes its sessions, and `seeding.segment` must name one of its own). What the worker sees
+goes away closes its sessions, and `seeding.segment` and `seeding.watch` must name one of its own). What the worker sees
 is main's own re-encoding of a checked request, with main's id.
 
-Two methods are answered by main itself and never reach the worker (`src/main/main-calls.ts`), each
-behind a native dialog only the user can answer, one dialog at a time:
+Three methods are answered by main itself and never reach the worker (`src/main/main-calls.ts`),
+each behind a native dialog only the user can answer, one dialog at a time. A "no" is not asked
+again for a minute:
 - `app.pickVideo` opens the OS file picker. The path goes from main to the worker (`studio.source`);
   the page gets a random token, the base name and the size.
 - `app.seeding.set` turns "seed what you watch" on only after a native confirmation that says it
   shares the user's IP address with viewers (the default answer is to keep it off).
+- `app.publish.sign` has the user's signer sign Studio's draft, which publishes the video and starts
+  seeding it, only after a native confirmation naming the title and the signing key. What the box
+  shows is the worker's account of its own draft (`signer.check`), not the page's.
 
 ### Without Chromium's sandbox (amendment, item 2)
 

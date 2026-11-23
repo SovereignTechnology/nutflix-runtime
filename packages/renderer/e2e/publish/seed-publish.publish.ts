@@ -502,6 +502,8 @@ describe('seed and publish, on loopback', () => {
         cause: e,
       });
     }
+    // Main asked first, with the worker's own account of what would be signed.
+    expect(publisher.dialogs.publishes).toEqual([{ title: TITLE, signer: author }]);
     video = (await page.locator('#nutflix-publish-status').getAttribute('data-video')) ?? '';
     expect(video.startsWith(`${NS}:nutflix-`)).toBe(true);
     const st = (await publisher.request('seeding.status', {})) as SeedingStatusWire;

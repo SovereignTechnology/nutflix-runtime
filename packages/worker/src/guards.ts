@@ -286,6 +286,7 @@ export const isSignedManifest = obj<SignedEventWire>({
 
 export const isSeedingWatchArgs = refine(
   obj<SeedingWatchArgs>({
+    sid: isSessionId,
     manifest: isSignedManifest,
     peers: arrayOf(isHyperdhtEndpoint, MAX_NFX_PEERS),
   }),
@@ -341,6 +342,7 @@ export const validateArgs: { readonly [M in WorkerMethod]: Guard<ArgsOf<M>> } = 
   'signer.local.unlock': obj<ArgsOf<'signer.local.unlock'>>({ passphrase: isPassphrase }),
   'signer.nip46.connect': obj<ArgsOf<'signer.nip46.connect'>>({ uri: isBunkerUri }),
   'signer.lock': isEmpty,
+  'signer.check': obj<ArgsOf<'signer.check'>>({ event: isUnsignedEvent }),
   'signer.sign': obj<ArgsOf<'signer.sign'>>({ event: isUnsignedEvent }),
   'seeding.status': isEmpty,
   'seeding.set': obj<ArgsOf<'seeding.set'>>({ watched: bool }),

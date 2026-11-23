@@ -28,7 +28,14 @@ export interface BareBridge {
   /** The worker's storage directory, which only main knows. */
   readonly storage: string;
   /** What the native dialogs will answer. */
-  readonly dialogs: { file: string | null; confirmSeeding: boolean; asked: number };
+  readonly dialogs: {
+    file: string | null;
+    confirmSeeding: boolean;
+    confirmPublish: boolean;
+    asked: number;
+    /** What each publish confirmation showed. */
+    readonly publishes: { title: string; signer: string }[];
+  };
   attach(page: Page): Promise<void>;
   /** Main's own request. */
   request(m: string, a: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
@@ -66,7 +73,14 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
       .catch(() => undefined);
   };
 
-  const dialogs = { file: null as string | null, confirmSeeding: false, asked: 0 };
+  const dialogs = {
+    file: null as string | null,
+    confirmSeeding: false,
+    confirmPublish: true,
+    asked: 0,
+    publishes: [] as { title: string; signer: string }[],
+  };
+  const declined = { seeding: 0, publish: 0 };
   const gate: RpcGate = new RpcGate({
     toWorker: (frame) => {
       sidecar.write(frame);
@@ -85,7 +99,12 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
           dialogs.asked += 1;
           return Promise.resolve(dialogs.confirmSeeding);
         },
-        worker: (m, a) => gate.request(m, a),
+        confirmPublish: (o) => {
+          dialogs.publishes.push({ ...o });
+          return Promise.resolve(dialogs.confirmPublish);
+        },
+        worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
+        declined,
       }),
   });
   sidecar.on('data', (c: unknown) => {

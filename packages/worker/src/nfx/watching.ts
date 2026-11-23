@@ -80,6 +80,7 @@ interface PlaySession {
   /** The verified hash list's files, once `start` has it (`./offers.ts` reads it). */
   files: ReadonlyMap<string, nfx.FileEntry> | null;
   readonly video: string;
+  readonly root: string;
   closed: boolean;
 }
 
@@ -108,7 +109,9 @@ export class NfxWatching {
     const s = this.sessions.get(sid);
     if (s?.files === null || s === undefined || s.closed) return null;
     const files = s.files;
-    return { video: s.video, entry: (sha) => files.get(sha) };
+    let bytes = 0;
+    for (const f of files.values()) bytes += Number(f.size);
+    return { video: s.video, root: s.root, bytes, entry: (sha) => files.get(sha) };
   }
 
   /** `nfx.play.open`. Throws `<code>: …` errors; a session that fails to open leaves nothing. */
@@ -146,6 +149,7 @@ export class NfxWatching {
       origin: null,
       files: null,
       video: a.video,
+      root: a.root,
       closed: false,
     };
     // Claimed before any await: a second open of the sid is refused, a close finds it.

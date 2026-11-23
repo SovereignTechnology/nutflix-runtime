@@ -15,15 +15,15 @@
  *   5. a play session belongs to the window that opened it: another window's `nfx.play.close`
  *      is a no-op, and a window that goes away closes its sessions;
  *   6. events reach only the windows whose policy lists them, as main re-encoded them;
- *   7. a `seeding.segment` must name a play session this window holds: a file handed over from
- *      WebRTC is checked against THAT session's hash list, so it cannot borrow another's;
+ *   7. a `seeding.segment` or `seeding.watch` must name a play session this window holds: what it
+ *      hands over or asks to seed is checked against THAT session's video and hash list;
  *   8. `mainMethods` are answered here and never reach the worker: `app.pickVideo` (main's native
- *      file dialog, so a page never names a path) and `app.seeding.set` (turning seeding on takes
- *      a native confirmation, so a page cannot start sharing the user's IP address).
+ *      file dialog, so a page never names a path), `app.seeding.set` and `app.publish.sign` (each
+ *      starts sharing the user's IP address, so each takes a native confirmation).
  *
  * What the worker checks is the arguments, strictly, for every method (`guards.ts`): the methods
- * that take a path or turn the switch directly (`studio.source`, `seeding.set`) are in no window's
- * list, and only main's own `request()` reaches them.
+ * that take a path, turn the switch or sign (`studio.source`, `seeding.set`, `signer.check`,
+ * `signer.sign`) are in no window's list, and only main's own `request()` reaches them.
  *
  * Main itself uses the same id space through `request()` (`init`, `status`). Runtime-neutral and
  * Electron-free: bytes in, bytes out, so the tests drive it with fakes.
@@ -64,16 +64,19 @@ export interface WindowPolicy {
  * The renderer's window: what `packages/renderer` uses, each with its own guard in the worker.
  *
  *   play      `status`, `nfx.play.open`, `nfx.play.close`
- *   signer    `signer.*`: a key sealed in the worker or a bunker session held there. `signer.sign`
- *             takes only the kinds in `SIGNABLE_KINDS`, and only a manifest of a video this node
- *             packaged. No key, passphrase-derived key or bunker secret ever comes back.
- *   seeding   `seeding.status`, `.watch` (refused while the switch is off), `.stop`, `.beacons`
- *             (the worker signs, the renderer publishes), `.segment` (a file its own play verified)
- *   Studio    `studio.ffmpeg`, `.probe`, `.publish`, `.cancel`, on a token from `app.pickVideo`
+ *   signer    `signer.status`, `.local.create`, `.local.unlock`, `.nip46.connect`, `.lock`: a key
+ *             sealed in the worker or a bunker session held there. No key, passphrase-derived key
+ *             or bunker secret ever comes back.
+ *   seeding   `seeding.status`, `.watch` (its own open play, with the switch on), `.stop`,
+ *             `.beacons` (the worker signs, the renderer publishes), `.segment` (a file its own
+ *             play verified)
+ *   Studio    `studio.ffmpeg`, `.probe`, `.publish`, `.cancel`, on a one-use token from
+ *             `app.pickVideo`. The signature is `app.publish.sign`, after a native confirmation.
  *
  * Not here, ever: `init` (main sends it, with the storage directory), `nfx.seed.*` and
- * `nfx.endpoint` (the page would pick what this machine serves), `seeding.set` and `studio.source`
- * (main's alone, below), logs, and any method that touches the updater.
+ * `nfx.endpoint` (the page would pick what this machine serves), `seeding.set`, `studio.source`,
+ * `signer.check` and `signer.sign` (main's alone, below), logs, and any method that touches the
+ * updater.
  */
 export const MAIN_WINDOW_POLICY: WindowPolicy = {
   methods: new Set([
@@ -85,7 +88,6 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
     'signer.local.unlock',
     'signer.nip46.connect',
     'signer.lock',
-    'signer.sign',
     'seeding.status',
     'seeding.watch',
     'seeding.stop',
@@ -98,7 +100,7 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
   ]),
   events: new Set(['status', 'studio.progress']),
   mainEvents: new Set(['update', 'serving']),
-  mainMethods: new Set(['app.pickVideo', 'app.seeding.set']),
+  mainMethods: new Set(['app.pickVideo', 'app.seeding.set', 'app.publish.sign']),
   maxInflight: 32,
 };
 
@@ -292,7 +294,10 @@ export class RpcGate {
     const sid = typeof sidArg === 'string' && SID.test(sidArg) ? sidArg : undefined;
     let addedSid: string | undefined;
     let closesSid: string | undefined;
-    if (m === 'seeding.segment' && (sid === undefined || !w.sids.has(sid))) {
+    if (
+      (m === 'seeding.segment' || m === 'seeding.watch') &&
+      (sid === undefined || !w.sids.has(sid))
+    ) {
       refuse('invalid-argument', 'not a play session of this window');
       return;
     }

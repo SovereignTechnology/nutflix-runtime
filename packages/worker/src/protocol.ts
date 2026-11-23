@@ -118,6 +118,10 @@ export const MAX_OFFERED_CHUNK_BYTES = 512 * 1024;
 export const MAX_OFFERED_CHUNK_CHARS = Math.ceil(MAX_OFFERED_CHUNK_BYTES / 3) * 4;
 /** The most beacons one `seeding.beacons` signs. */
 export const MAX_BEACONS = 64;
+/** What "seed what you watch" may keep on disk, within the store's own cap. */
+export const MAX_WATCHED_BYTES = 16 * 1024 * 1024 * 1024;
+/** New videos "seed what you watch" may start storing in an hour. */
+export const MAX_WATCH_STARTS_PER_HOUR = 20;
 
 // ---- shared wire shapes --------------------------------------------------------------------
 
@@ -273,11 +277,12 @@ export interface SignedEventWire extends UnsignedEventWire {
 }
 
 /**
- * How a stored video got here. `published`: Studio packaged it, and it is served once its manifest
- * is signed. `watched`: seeded because the viewer watched it with the switch on, and served only
- * while the switch stays on. `host`: stored through `nfx.seed.start`, always served.
+ * How a stored video got here. `published`: Studio packaged it, and it is served once the user has
+ * confirmed and signed its manifest. `watched`: seeded because the viewer watched it with the
+ * switch on, and served only while the switch stays on. `host`: stored through `nfx.seed.start`,
+ * always served. `unknown`: no record says why it is here, so it is NOT served.
  */
-export type SeedOrigin = 'published' | 'watched' | 'host';
+export type SeedOrigin = 'published' | 'watched' | 'host' | 'unknown';
 
 export interface SeedingVideoWire extends NfxStoredVideoWire {
   readonly origin: SeedOrigin;
@@ -294,6 +299,8 @@ export interface SeedingStatusWire {
 
 /** Seed a video the viewer is watching, from the seeders its beacons name. */
 export interface SeedingWatchArgs {
+  /** The open play of this video: what makes it a video the viewer is watching. */
+  readonly sid: string;
   /** The video's signed kind-38504 manifest, verified again here. */
   readonly manifest: SignedEventWire;
   readonly peers: readonly NfxHyperdhtEndpointWire[];
@@ -403,7 +410,18 @@ export interface WorkerMethodTable {
   'signer.nip46.connect': [args: { readonly uri: string }, result: SignerStatusWire];
   /** Zero the local key, or close the bunker session. */
   'signer.lock': [args: Record<string, never>, result: SignerStatusWire];
-  /** Sign one event of a `SIGNABLE_KINDS` kind, whose content this worker recognises. */
+  /**
+   * MAIN ONLY: what `signer.sign` would sign, for the native confirmation: refused unless it is
+   * the exact draft Studio made.
+   */
+  'signer.check': [
+    args: { readonly event: UnsignedEventWire },
+    result: { readonly video: string; readonly title: string; readonly signer: string },
+  ];
+  /**
+   * MAIN ONLY, after the user confirmed: sign the draft Studio made. Signing it starts serving the
+   * video, which shares the user's IP address, so a window reaches it only via `app.publish.sign`.
+   */
   'signer.sign': [args: { readonly event: UnsignedEventWire }, result: SignedEventWire];
   'seeding.status': [args: Record<string, never>, result: SeedingStatusWire];
   /** The switch. MAIN ONLY: turning it on takes the user's answer to a native dialog. */
@@ -445,6 +463,7 @@ export const WORKER_METHODS = [
   'signer.local.unlock',
   'signer.nip46.connect',
   'signer.lock',
+  'signer.check',
   'signer.sign',
   'seeding.status',
   'seeding.set',
@@ -462,16 +481,19 @@ export const WORKER_METHODS = [
 /**
  * What a window may ask of main itself: answered by the shell (`rpc-gate.ts`), never forwarded to
  * the worker. `app.pickVideo` opens the native file dialog, so a page never names a path;
- * `app.seeding.set` turns the seeding switch, on only after a native confirmation.
+ * `app.seeding.set` turns the seeding switch, on only after a native confirmation;
+ * `app.publish.sign` signs Studio's draft, and so starts seeding it, only after another.
  */
 export interface WindowMethodTable {
   'app.pickVideo': [args: Record<string, never>, result: StudioSourceWire | null];
   'app.seeding.set': [args: { readonly on: boolean }, result: SeedingStatusWire];
+  'app.publish.sign': [args: { readonly event: UnsignedEventWire }, result: SignedEventWire];
 }
 export type WindowMethod = keyof WindowMethodTable;
 export const WINDOW_METHODS = [
   'app.pickVideo',
   'app.seeding.set',
+  'app.publish.sign',
 ] as const satisfies readonly WindowMethod[];
 
 // ---- events --------------------------------------------------------------------------------

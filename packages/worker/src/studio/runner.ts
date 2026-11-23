@@ -8,6 +8,8 @@
  *   - **no playlists:** the picked file may be read only by real container demuxers
  *     (`-format_whitelist`). HLS, DASH and concat are the ones that would read OTHER local files
  *     named inside the input, and put their bytes in a video the user then publishes;
+ *   - **no giant frames:** `-max_pixels` holds every decoder of the picked file to the frame cap,
+ *     whichever stream it opens and whatever a later header in the stream claims;
  *   - **only these files:** every input must be the picked file or inside this job's directory,
  *     and every output must be inside it;
  *   - **bounded:** each output stops at `MAX_SOURCE_SECONDS` of media and `MAX_OUTPUT_BYTES`, each
@@ -16,11 +18,13 @@
 import type { ProcessRunner, media } from '@sovit/core';
 
 import { fail } from '../errors.js';
-import { MAX_SOURCE_SECONDS } from '../protocol.js';
+import { MAX_SOURCE_DIMENSION, MAX_SOURCE_SECONDS } from '../protocol.js';
 
 /** The real containers Studio accepts as input (ffmpeg's demuxer names). */
 export const SOURCE_FORMATS = 'mov,matroska,webm,avi,mpegts';
 export const INPUT_PROTOCOLS = 'file,pipe';
+/** The largest frame any decoder of the picked file may allocate. */
+export const MAX_SOURCE_PIXELS = MAX_SOURCE_DIMENSION * MAX_SOURCE_DIMENSION;
 /** The most one encoded output may be. */
 export const MAX_OUTPUT_BYTES = 32 * 1024 * 1024 * 1024;
 /** The longest one ffmpeg or ffprobe process may run. */
@@ -53,7 +57,8 @@ export function guardArgv(
     const input = checkInput(args[args.length - 1], source, workDir);
     const out = args.slice(0, -1);
     if (!out.includes('-protocol_whitelist')) out.push('-protocol_whitelist', INPUT_PROTOCOLS);
-    if (input === source) out.push('-format_whitelist', SOURCE_FORMATS);
+    if (input === source)
+      out.push('-format_whitelist', SOURCE_FORMATS, '-max_pixels', String(MAX_SOURCE_PIXELS));
     out.push(args[args.length - 1] ?? '');
     return out;
   }
@@ -67,7 +72,8 @@ export function guardArgv(
       const guarded = args[i - 4] === '-protocol_whitelist' && args[i - 2] === '-format_whitelist';
       if (!guarded) {
         out.push('-protocol_whitelist', INPUT_PROTOCOLS);
-        if (input === source) out.push('-format_whitelist', SOURCE_FORMATS);
+        if (input === source)
+          out.push('-format_whitelist', SOURCE_FORMATS, '-max_pixels', String(MAX_SOURCE_PIXELS));
       }
     }
     out.push(a);

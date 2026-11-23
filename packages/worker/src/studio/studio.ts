@@ -57,8 +57,13 @@ export interface StudioDeps {
   readonly emit: (ev: StudioProgress) => void;
   /** Whether a signature can be had now: a publish that could not be signed is refused first. */
   readonly canSign: () => boolean;
-  /** The video is stored: remember it as this user's, unsigned so far, and not yet served. */
-  readonly onStored: (video: string, root: string) => Promise<void>;
+  /**
+   * The video is about to be stored: remember it as this user's, unsigned and not served. This
+   * comes first, so that no crash can leave a stored video without a record of what it is.
+   */
+  readonly onPackaged: (video: string, root: string) => Promise<void>;
+  /** It did not get stored after all. */
+  readonly onAbandoned: (video: string) => Promise<void>;
   readonly now: () => number;
   /** TESTS ONLY: x264's preset (default `medium`). */
   readonly preset?: string;
@@ -187,6 +192,8 @@ export class Studio {
     if (this.#job !== null) fail('rate-limited', 'another video is being published');
     const source = this.#source(a.source);
     if (!this.#d.canSign()) fail('no-signer', 'unlock or connect a signer before publishing');
+    // One pick, one publish: a page cannot loop encodes on a file the user chose once.
+    this.#sources.delete(a.source);
     const job = this.#run(source, a);
     this.#job = job;
     try {
@@ -359,23 +366,30 @@ export class Studio {
       stopIfCancelled();
       emit({ stage: 'storing' });
       const bySha = new Map(packaged.files.map((f) => [f.entry.sha256, f] as const));
-      const put = await d.store.putVideo({
-        video: addr.value,
-        root: packaged.root,
-        segs: packaged.segs,
-        hashListBytes: packaged.hashListBytes,
-        read: async (entry) => {
-          const f = bySha.get(entry.sha256);
-          if (f === undefined) throw new Error('not in the package');
-          return f.source.kind === 'bytes' ? f.source.bytes : fsa.readFile(f.source.path);
-        },
-      });
+      await d.onPackaged(addr.value.toString(), packaged.root);
+      let put: Awaited<ReturnType<NfxStore['putVideo']>>;
+      try {
+        put = await d.store.putVideo({
+          video: addr.value,
+          root: packaged.root,
+          segs: packaged.segs,
+          hashListBytes: packaged.hashListBytes,
+          read: async (entry) => {
+            const f = bySha.get(entry.sha256);
+            if (f === undefined) throw new Error('not in the package');
+            return f.source.kind === 'bytes' ? f.source.bytes : fsa.readFile(f.source.path);
+          },
+        });
+      } catch (e) {
+        await d.onAbandoned(addr.value.toString()).catch(() => undefined);
+        throw e;
+      }
       if (!put.ok) {
+        await d.onAbandoned(addr.value.toString()).catch(() => undefined);
         if (put.error === 'disk-cap') fail('disk-cap', 'storing this video would pass the cap');
         fail('io', 'the video could not be stored');
       }
       const video = put.record.video;
-      await d.onStored(video, packaged.root);
       let bytes = 0;
       for (const f of put.record.files) bytes += f.size;
       const now = d.now();

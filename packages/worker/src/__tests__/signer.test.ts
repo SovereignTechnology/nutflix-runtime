@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
 import type { UnsignedEventWire } from '../protocol.js';
+import type { RelayConnect } from '../runtime.js';
 import { parseBunkerUri } from '../signer/bunker.js';
+import { BunkerRelayPool, MAX_RELAY_MESSAGES_PER_SECOND } from '../signer/relay-pool.js';
 import { KEY_FILE, SIGNER_DIR, UserSigner, unlockBackoffMs } from '../signer/user-signer.js';
 import {
   nodeRuntime,
@@ -145,6 +147,25 @@ describe('the passphrase-sealed key', () => {
     expect(all).not.toContain('distinctive');
   });
 
+  it('stays locked when Lock is pressed while an unlock is running', async () => {
+    const d = await tempDir('nf-signer-');
+    cleanups.push(() => d.rm());
+    const s = new UserSigner({
+      fs: nodeFs,
+      system: nodeSystem(),
+      dir: join(d.dir, SIGNER_DIR),
+      cost,
+    });
+    await s.load();
+    await s.create(PASS);
+    await s.lock();
+    const running = s.unlock(PASS);
+    await s.lock();
+    expect((await running).locked).toBe(true);
+    expect(await codeOf(s.sign(draft()))).toBe('no-signer');
+    await s.close();
+  });
+
   it('holds only public key material in what it reports', async () => {
     const { w } = await worker();
     const s = await w.client.request('signer.local.create', { passphrase: PASS });
@@ -254,6 +275,75 @@ describe('a NIP-46 bunker on loopback', () => {
     const wrong = b.uri.replace('secret=right', 'secret=wrong');
     expect(await codeOf(s.connect(wrong))).toBe('no-signer');
     expect(s.status().kind).toBe('none');
+  });
+
+  describe('a hostile relay', () => {
+    const KEY = 'ab'.repeat(32);
+
+    function socket(): {
+      connect: RelayConnect;
+      say: (m: unknown) => void;
+      destroyed: () => boolean;
+    } {
+      let onMessage: (text: string) => void = () => undefined;
+      let destroyed = false;
+      return {
+        connect: () => ({
+          onMessage: (cb) => {
+            onMessage = cb;
+          },
+          onEnd: () => undefined,
+          send: () => undefined,
+          destroy: () => {
+            destroyed = true;
+          },
+        }),
+        say: (m) => {
+          onMessage(JSON.stringify(m));
+        },
+        destroyed: () => destroyed,
+      };
+    }
+
+    it('is dropped for an event the filter did not ask for', () => {
+      const r = socket();
+      const pool = new BunkerRelayPool(r.connect);
+      const onevent = vi.fn();
+      pool.subscribe(['wss://r.example'], { kinds: [24133], authors: [KEY] }, { onevent });
+      r.say(['EVENT', 'nip46-1', { kind: 24133, pubkey: 'cd'.repeat(32) }]);
+      expect(r.destroyed()).toBe(true);
+      expect(onevent).not.toHaveBeenCalled();
+    });
+
+    it('is dropped for an event that does not verify', () => {
+      const r = socket();
+      const pool = new BunkerRelayPool(r.connect);
+      const onevent = vi.fn();
+      pool.subscribe(['wss://r.example'], { kinds: [24133], authors: [KEY] }, { onevent });
+      r.say([
+        'EVENT',
+        'nip46-1',
+        {
+          id: '00'.repeat(32),
+          kind: 24133,
+          pubkey: KEY,
+          created_at: 1,
+          tags: [],
+          content: '',
+          sig: '00'.repeat(64),
+        },
+      ]);
+      expect(r.destroyed()).toBe(true);
+      expect(onevent).not.toHaveBeenCalled();
+    });
+
+    it('is dropped for a flood of messages', () => {
+      const r = socket();
+      const pool = new BunkerRelayPool(r.connect);
+      pool.subscribe(['wss://r.example'], { kinds: [24133] }, { onevent: () => undefined });
+      for (let i = 0; i <= MAX_RELAY_MESSAGES_PER_SECOND; i++) r.say(['NOTICE', 'x']);
+      expect(r.destroyed()).toBe(true);
+    });
   });
 
   it.each([

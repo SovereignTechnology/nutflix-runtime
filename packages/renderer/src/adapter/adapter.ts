@@ -129,6 +129,7 @@ export interface RuntimeAdapterOptions {
    */
   readonly onPlay?:
     | ((play: {
+        readonly sid: string;
         readonly video: NfxVideo;
         readonly peers: readonly NfxHyperdhtEndpointWire[];
       }) => void)
@@ -477,7 +478,7 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
       fail('session-closed', 'the app is closing');
     }
     try {
-      this.#o.onPlay?.({ video, peers: found.peers });
+      this.#o.onPlay?.({ sid: session.sid, video, peers: found.peers });
     } catch {
       // Seeding is a side job of a play: its failure is not the play's.
     }

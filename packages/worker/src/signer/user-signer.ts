@@ -52,6 +52,8 @@ export class UserSigner {
   /** The public key the key file names (public data, readable without the passphrase). */
   #filePubkey: string | null = null;
   #busy = false;
+  /** Bumped by `lock` and `close`: a signer still being opened then is not installed. */
+  #generation = 0;
   #failures = 0;
   #notBefore = 0;
 
@@ -93,6 +95,7 @@ export class UserSigner {
 
   async create(passphrase: string): Promise<SignerStatusWire> {
     return this.#once(async () => {
+      const generation = this.#generation;
       if ((await this.#exists()) || this.#filePubkey !== null)
         fail('exists', 'a key is already sealed on this machine');
       const pw = new TextEncoder().encode(passphrase);
@@ -107,9 +110,13 @@ export class UserSigner {
           await signer.lock();
           fail('io', 'the key could not be saved');
         }
-        await this.#dropSession();
-        this.#local = signer;
         this.#filePubkey = await signer.getPublicKey();
+        if (generation === this.#generation) {
+          await this.#dropSession();
+          this.#local = signer;
+        } else {
+          await signer.lock();
+        }
       } finally {
         pw.fill(0);
       }
@@ -119,6 +126,7 @@ export class UserSigner {
 
   async unlock(passphrase: string): Promise<SignerStatusWire> {
     return this.#once(async () => {
+      const generation = this.#generation;
       const now = (this.#d.now ?? Date.now)();
       if (now < this.#notBefore) fail('rate-limited', 'too many wrong passphrases: wait a moment');
       const file = await this.#readFile();
@@ -126,11 +134,16 @@ export class UserSigner {
       const pw = new TextEncoder().encode(passphrase);
       try {
         const signer = await coreSigner.LocalSigner.unlock(file, pw);
-        await this.#dropSession();
-        this.#local = signer;
         this.#filePubkey = await signer.getPublicKey();
         this.#failures = 0;
         this.#notBefore = 0;
+        if (generation === this.#generation) {
+          await this.#dropSession();
+          this.#local = signer;
+        } else {
+          // "Lock" was pressed while this ran: it stays locked.
+          await signer.lock();
+        }
       } catch (e) {
         if (e instanceof coreSigner.KeyFileError && e.code === 'bad-passphrase') {
           this.#failures += 1;
@@ -148,6 +161,7 @@ export class UserSigner {
 
   async connect(uri: string): Promise<SignerStatusWire> {
     return this.#once(async () => {
+      const generation = this.#generation;
       const opened = await openBunker(uri, this.#d.system.connectRelay, this.#d.bunkerWaitMs);
       let adopted: coreSigner.Nip46Signer;
       try {
@@ -155,6 +169,10 @@ export class UserSigner {
       } catch {
         await opened.bunker.close().catch(() => undefined);
         fail('no-signer', 'the bunker did not give a public key');
+      }
+      if (generation !== this.#generation) {
+        await adopted.close().catch(() => undefined);
+        return this.status();
       }
       await this.#dropSession();
       this.#bunker = adopted;
@@ -165,6 +183,7 @@ export class UserSigner {
 
   /** Zero a local key; close a bunker session. Idempotent. */
   async lock(): Promise<SignerStatusWire> {
+    this.#generation += 1;
     await this.#dropSession();
     return this.status();
   }
@@ -189,6 +208,7 @@ export class UserSigner {
   }
 
   async close(): Promise<void> {
+    this.#generation += 1;
     await this.#dropSession();
   }
 

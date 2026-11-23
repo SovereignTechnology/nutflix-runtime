@@ -57,7 +57,18 @@ export interface PlayWorker {
 
 /** What Settings' seeding, signer and Studio panel may ask for, through the shell's gate. */
 export type ControlMethod =
-  | Exclude<WorkerMethod, 'init' | 'nfx.seed.start' | 'nfx.seed.stop' | 'nfx.seed.list'>
+  | Exclude<
+      WorkerMethod,
+      | 'init'
+      | 'nfx.seed.start'
+      | 'nfx.seed.stop'
+      | 'nfx.seed.list'
+      | 'nfx.endpoint'
+      | 'seeding.set'
+      | 'studio.source'
+      | 'signer.check'
+      | 'signer.sign'
+    >
   | WindowMethod;
 type ControlTable = WorkerMethodTable & WindowMethodTable;
 export type ControlArgs<M extends ControlMethod> = ControlTable[M][0];

@@ -118,10 +118,11 @@ Error codes:
 | `signer.local.create`, `signer.local.unlock` | `{ passphrase }` (8 to 1024 characters) | the status |
 | `signer.nip46.connect` | `{ uri }` (`bunker://…`) | the status |
 | `signer.lock` | `{}` | the status |
-| `signer.sign` | `{ event: { kind, created_at, tags, content } }` | the signed event |
+| `signer.check` (main only) | `{ event }` | `{ video, title, signer }` |
+| `signer.sign` (main only) | `{ event: { kind, created_at, tags, content } }` | the signed event |
 | `seeding.status` | `{}` | `{ watched, videos: [{ …, origin, served }], listening }` |
 | `seeding.set` (main only) | `{ watched }` | the seeding status |
-| `seeding.watch` | `{ manifest, peers }` | `{ video, root, segs, files, bytes }` |
+| `seeding.watch` | `{ sid, manifest, peers }` | `{ video, root, segs, files, bytes }` |
 | `seeding.stop` | `{ video }` | `{ removed }` |
 | `seeding.beacons` | `{}` | `{ events }`: signed kind-20464 beacons |
 | `seeding.segment` | `{ sid, sha256, size, offset, data }` | `{ accepted, complete }` |
@@ -154,24 +155,33 @@ A key made here and sealed under a passphrase (`signer/user.key`, 0600: argon2id
 XChaCha20-Poly1305, core's `LocalSigner`), or a NIP-46 bunker whose session this worker holds. No
 method returns a key, and none imports one. `signer.sign` signs only kinds in `SIGNABLE_KINDS`
 (kind 38504), and only the exact draft `studio.publish` made for a video this node packaged, once.
-A wrong passphrase costs a full KDF run, and from the second failure an increasing wait.
+Only main reaches it, after the user confirmed in a native dialog, because signing a manifest starts
+serving the video. A wrong passphrase costs a full KDF run, and from the second failure an
+increasing wait.
 
 #### Seeding
 
-`seeding.json` records why each video may be served. "Seed what you watch" (`seeding.set`) is off by
-default and main turns it on only after a native confirmation; a video the user published and
-signed is served regardless; one stored by `nfx.seed.start` is too. Beacons are signed here by a
-seeder key derived from the Corestore (never the user's), and the renderer publishes them.
+`seeding.json` records why each video may be served, and **a stored video with no record is not
+served**:
+- "Seed what you watch" (`seeding.set`) is off by default, and main turns it on only after a native
+  confirmation. With it on, `seeding.watch` stores the video of an open play of the same window,
+  within 16 GiB and 20 new videos an hour.
+- A video the user published is served once they have confirmed and signed it.
+- One stored by `nfx.seed.start` (the host's, never a window's) is served.
+
+Beacons are signed here by a seeder key derived from the Corestore (never the user's), and the
+renderer publishes them.
 
 A file that reached the renderer over WebRTC (`seeding.segment`) is taken only for an open play
-session whose verified hash list names its sha256 and size, whole, and is then re-seeded without
-being fetched again.
+session whose verified hash list names its sha256 and size, whole, while the switch is on. It is
+then re-seeded without being fetched again.
 
 #### Studio
 
-`studio.source` takes a path from main's native dialog; the page only ever holds a token. The
+`studio.source` takes a path from main's native dialog; the page only ever holds a token, good for
+one publish. The
 system's ffmpeg and ffprobe run from an argv, with `-protocol_whitelist file,pipe`, a demuxer
-allow-list (no HLS, DASH or concat, which would read other local files), inputs and outputs confined
+allow-list (no HLS, DASH or concat, which would read other local files), `-max_pixels`, inputs and outputs confined
 to the picked file and a job directory under `tmp/`, and caps on size, length and time. If they are
 missing, `studio.ffmpeg` says how to install them.
 

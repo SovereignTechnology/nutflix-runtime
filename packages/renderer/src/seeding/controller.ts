@@ -9,8 +9,9 @@
  *     launch with nothing to seed starts no DHT node.
  *   - **seed what you watch:** off until the user turns it on, in a native dialog. With it on, a
  *     play also asks the worker to store and seed the video.
- *   - **publish:** the worker packages the picked file and drafts the manifest, the user's signer
- *     signs it, the result is verified here, and it goes to the write relays and the scoped relays.
+ *   - **publish:** the worker packages the picked file and drafts the manifest, main asks the user
+ *     in a native dialog, the user's signer signs it, the result is verified here, and it goes to
+ *     the write relays and the scoped relays.
  */
 import type { NfxVideo, NostrEvent, RelayUrl } from '@sovit/core';
 import { isListable, parseBeacon, parseManifest } from '@sovit/core/nfx';
@@ -148,13 +149,18 @@ export class SeedPublish {
 
   /** A play started. With the switch on, the worker stores and seeds the video. */
   onPlay(play: {
+    readonly sid: string;
     readonly video: NfxVideo;
     readonly peers: readonly NfxHyperdhtEndpointWire[];
   }): void {
     if (!this.#seeding.watched) return;
     const manifest = toWire(play.video.event) as unknown as SignedEventWire;
     void this.#o.worker
-      .call('seeding.watch', { manifest, peers: [...play.peers] }, { timeoutMs: WATCH_TIMEOUT_MS })
+      .call(
+        'seeding.watch',
+        { sid: play.sid, manifest, peers: [...play.peers] },
+        { timeoutMs: WATCH_TIMEOUT_MS },
+      )
       .then(() => this.refreshSeeding())
       .catch(() => undefined);
   }
@@ -301,10 +307,11 @@ export class SeedPublish {
       }
       this.#unsigned = { key, stored };
     }
+    // Main asks the user first, in a native dialog: a video is public from here on.
     const event = await this.#o.worker.call(
-      'signer.sign',
+      'app.publish.sign',
       { event: stored.draft },
-      { timeoutMs: BUNKER_TIMEOUT_MS },
+      { timeoutMs: DIALOG_TIMEOUT_MS },
     );
     // The worker signs a draft once: from here on it cannot be asked again.
     this.#unsigned = null;

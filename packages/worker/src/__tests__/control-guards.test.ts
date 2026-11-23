@@ -88,6 +88,19 @@ describe('signer.nip46.connect', () => {
   });
 });
 
+describe('signer.check and signer.sign', () => {
+  const event = { kind: 38504, created_at: 1_800_000_000, tags: [['d', VIDEO]], content: '' };
+
+  it.each(['signer.check', 'signer.sign'])('%s takes one allow-listed event', (m) => {
+    ok(m, { event });
+    no(m, { event: { ...event, kind: 1 } });
+    no(m, { event: { ...event, kind: 20464 } });
+    no(m, { event: { ...event, pubkey: SHA } });
+    no(m, { event, extra: 1 });
+    no(m, {});
+  });
+});
+
 describe('seeding', () => {
   it('seeding.set', () => {
     ok('seeding.set', { watched: true });
@@ -104,16 +117,19 @@ describe('seeding', () => {
   });
 
   it('seeding.watch', () => {
-    ok('seeding.watch', { manifest: MANIFEST, peers: [PEER] });
-    ok('seeding.watch', { manifest: MANIFEST, peers: [] });
-    no('seeding.watch', { manifest: { ...MANIFEST, kind: 1 }, peers: [] });
-    no('seeding.watch', { manifest: { ...MANIFEST, sig: 'x' }, peers: [] });
-    no('seeding.watch', { manifest: { ...MANIFEST, extra: 1 }, peers: [] });
-    no('seeding.watch', { manifest: MANIFEST, peers: [PEER, PEER] });
-    no('seeding.watch', { manifest: MANIFEST, peers: [{ ...PEER, t: 'iroh' }] });
-    no('seeding.watch', { manifest: MANIFEST, peers: Array.from({ length: 17 }, () => PEER) });
-    no('seeding.watch', { manifest: MANIFEST });
-    no('seeding.watch', { peers: [] });
+    const a = { sid: SID, manifest: MANIFEST, peers: [PEER] };
+    ok('seeding.watch', a);
+    ok('seeding.watch', { ...a, peers: [] });
+    no('seeding.watch', { manifest: MANIFEST, peers: [PEER] });
+    no('seeding.watch', { ...a, sid: 'x' });
+    no('seeding.watch', { ...a, manifest: { ...MANIFEST, kind: 1 } });
+    no('seeding.watch', { ...a, manifest: { ...MANIFEST, sig: 'x' } });
+    no('seeding.watch', { ...a, manifest: { ...MANIFEST, extra: 1 } });
+    no('seeding.watch', { ...a, peers: [PEER, PEER] });
+    no('seeding.watch', { ...a, peers: [{ ...PEER, t: 'iroh' }] });
+    no('seeding.watch', { ...a, peers: Array.from({ length: 17 }, () => PEER) });
+    no('seeding.watch', { sid: SID, manifest: MANIFEST });
+    no('seeding.watch', { sid: SID, peers: [] });
   });
 
   it('seeding.segment', () => {

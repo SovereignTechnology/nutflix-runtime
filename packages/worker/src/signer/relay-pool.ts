@@ -14,6 +14,8 @@ import type { RelayConnect, RelaySocket } from '../runtime.js';
 export const MAX_RELAY_MESSAGE_CHARS = 256 * 1024;
 /** How long one publish waits for the relay's `OK`. */
 export const PUBLISH_WAIT_MS = 10_000;
+/** Messages one relay may send in a second; a bunker's channel carries a handful. */
+export const MAX_RELAY_MESSAGES_PER_SECOND = 64;
 
 interface Handlers {
   readonly onevent: (event: Event) => void;
@@ -25,6 +27,9 @@ interface Sub {
   readonly handlers: Handlers;
   /** The relays it is open on. */
   readonly relays: Set<Conn>;
+  /** What the filter asked for: anything else from a relay is a hostile relay. */
+  readonly kinds: readonly number[] | undefined;
+  readonly authors: readonly string[] | undefined;
   closed: boolean;
 }
 
@@ -40,6 +45,9 @@ interface Conn {
   readonly subs: Map<string, Sub>;
   readonly waiting: Map<string, Waiting>;
   ended: boolean;
+  /** The current one-second window of messages. */
+  windowAt: number;
+  windowCount: number;
 }
 
 export class BunkerRelayPool {
@@ -52,11 +60,17 @@ export class BunkerRelayPool {
     this.#connect = connect;
   }
 
-  subscribe(relays: readonly string[], filter: unknown, handlers: Handlers): { close(): void } {
+  subscribe(
+    relays: readonly string[],
+    filter: { readonly kinds?: readonly number[]; readonly authors?: readonly string[] },
+    handlers: Handlers,
+  ): { close(): void } {
     const sub: Sub = {
       id: `nip46-${String(this.#nextSub++)}`,
       handlers,
       relays: new Set(),
+      kinds: filter.kinds,
+      authors: filter.authors,
       closed: false,
     };
     for (const url of relays) {
@@ -117,7 +131,15 @@ export class BunkerRelayPool {
     } catch {
       return null;
     }
-    const conn: Conn = { url, socket, subs: new Map(), waiting: new Map(), ended: false };
+    const conn: Conn = {
+      url,
+      socket,
+      subs: new Map(),
+      waiting: new Map(),
+      ended: false,
+      windowAt: 0,
+      windowCount: 0,
+    };
     this.#conns.set(url, conn);
     socket.onEnd(() => {
       this.#end(conn);
@@ -156,8 +178,28 @@ export class BunkerRelayPool {
     }
   }
 
+  /** A relay that floods or forges is dropped: verifying its events would stall the worker. */
+  #drop(conn: Conn): void {
+    this.#end(conn);
+    try {
+      conn.socket.destroy();
+    } catch {
+      // Already gone.
+    }
+  }
+
   #onMessage(conn: Conn, text: string): void {
-    if (text.length > MAX_RELAY_MESSAGE_CHARS) return;
+    if (conn.ended) return;
+    const now = Date.now();
+    if (now - conn.windowAt >= 1000) {
+      conn.windowAt = now;
+      conn.windowCount = 0;
+    }
+    conn.windowCount += 1;
+    if (conn.windowCount > MAX_RELAY_MESSAGES_PER_SECOND || text.length > MAX_RELAY_MESSAGE_CHARS) {
+      this.#drop(conn);
+      return;
+    }
     let msg: unknown;
     try {
       msg = JSON.parse(text);
@@ -169,13 +211,23 @@ export class BunkerRelayPool {
     if (type === 'EVENT' && typeof a === 'string') {
       const sub = conn.subs.get(a);
       if (sub === undefined || typeof b !== 'object' || b === null) return;
-      let verified: boolean;
+      const e = b as Partial<Event>;
+      // Cheap checks first: a signature is verified only for what the filter asked for.
+      if (
+        (sub.kinds !== undefined && !sub.kinds.includes(e.kind ?? -1)) ||
+        (sub.authors !== undefined && !sub.authors.includes(e.pubkey ?? ''))
+      ) {
+        this.#drop(conn);
+        return;
+      }
+      let verified = false;
       try {
         verified = verifyEvent(b as Event);
       } catch {
-        return;
+        // Not an event.
       }
       if (verified) sub.handlers.onevent(b as Event);
+      else this.#drop(conn);
     } else if (type === 'OK' && typeof a === 'string') {
       const w = conn.waiting.get(a);
       if (w === undefined) return;

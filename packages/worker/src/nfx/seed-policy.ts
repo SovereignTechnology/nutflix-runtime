@@ -4,11 +4,14 @@
  *
  *   - **the switch** (`watched`), off by default: seed what I watch. Turning it on takes a native
  *     confirmation in main (the page cannot turn it on), and turning it off stops serving at once.
- *   - **`published`:** the user published the video, with their signature.
- *   - no record: `nfx.seed.start` from the host, which is not reachable from a window.
+ *   - **`published`:** the user confirmed publishing the video, and signed it.
+ *   - **`host`:** `nfx.seed.start` from the host, which is not reachable from a window.
+ *
+ * NO RECORD MEANS NOT SERVED. A video that is stored for no reason this file gives (a crash between
+ * the store and this file, a file that was lost or damaged) stays private until the user acts.
  *
  * Written whole through a temporary file. A file that is missing or not this shape means the
- * defaults: nothing watched is served.
+ * defaults: nothing is served.
  */
 import type { SeederFs } from '@sovit/seeder';
 
@@ -20,7 +23,7 @@ const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const SHA = /^[0-9a-f]{64}$/;
 
 export interface SeedRecord {
-  readonly origin: 'published' | 'watched';
+  readonly origin: 'published' | 'watched' | 'host';
   readonly root: string;
   /** The manifest's author; for `published`, `null` until the user signed it. */
   readonly author: string | null;
@@ -31,7 +34,7 @@ function isRecord(x: unknown): x is SeedRecord {
   const r = x as Record<string, unknown>;
   const author = r['author'];
   return (
-    (r['origin'] === 'published' || r['origin'] === 'watched') &&
+    (r['origin'] === 'published' || r['origin'] === 'watched' || r['origin'] === 'host') &&
     typeof r['root'] === 'string' &&
     SHA.test(r['root']) &&
     (author === null || (typeof author === 'string' && SHA.test(author)))
@@ -77,13 +80,14 @@ export class SeedPolicy {
   }
 
   origin(video: string): SeedOrigin {
-    return this.#records.get(video)?.origin ?? 'host';
+    return this.#records.get(video)?.origin ?? 'unknown';
   }
 
   /** Whether peers may fetch `video` from this node now. */
   served(video: string): boolean {
     const r = this.#records.get(video);
-    if (r === undefined) return true;
+    if (r === undefined) return false;
+    if (r.origin === 'host') return true;
     return r.origin === 'published' ? r.author !== null : this.#watched;
   }
 

@@ -10,6 +10,8 @@
  *     re-seeded though no other seeder has it.
  */
 import { createHash } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import type { NostrEvent } from '@sovit/core';
 import { nfx } from '@sovit/core';
@@ -21,9 +23,10 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
+import { SEEDING_FILE } from '../nfx/seed-policy.js';
 import type { NfxHyperdhtEndpointWire, SignedEventWire } from '../protocol.js';
 import { nodeRuntime, startWorker, tempDir, type RunningWorker } from './helpers/harness.js';
-import { memorySource, testNfxVideo, type TestNfxVideo } from './helpers/nfx-video.js';
+import { memorySource, segments, testNfxVideo, type TestNfxVideo } from './helpers/nfx-video.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -96,14 +99,33 @@ describe('seeding, on a loopback testnet', () => {
     return { endpoint: hyperdhtEndpoint(keyPair, 'cd'.repeat(32), 'nfx:testnet:1'), listener };
   }
 
-  async function worker(dir?: string): Promise<{ w: RunningWorker; dir: string }> {
+  /** A play of `v`: what makes it a video this viewer is watching. */
+  async function play(
+    w: RunningWorker,
+    v: TestNfxVideo,
+    endpoint: NfxHyperdhtEndpointWire,
+  ): Promise<void> {
+    await w.client.request('nfx.play.open', {
+      sid: SID,
+      video: v.video,
+      root: v.root,
+      segs: v.segs,
+      peers: [endpoint],
+      progressive: false,
+    });
+  }
+
+  async function worker(
+    dir?: string,
+    over: { readonly maxWatchedBytes?: number } = {},
+  ): Promise<{ w: RunningWorker; dir: string }> {
     let storage = dir;
     if (storage === undefined) {
       const d = await tempDir('nf-seed-');
       cleanups.push(() => d.rm());
       storage = d.dir;
     }
-    const w = startWorker({ runtime: nodeRuntime() });
+    const w = startWorker({ runtime: nodeRuntime(), ...over });
     cleanups.push(() => w.close());
     await w.client.request('init', { v: 1, storage, bootstrap: testnet.bootstrap });
     return { w, dir: storage };
@@ -160,7 +182,11 @@ describe('seeding, on a loopback testnet', () => {
     const { w } = await worker();
     expect(
       await code(
-        w.client.request('seeding.watch', { manifest: signedManifest(v), peers: [endpoint] }),
+        w.client.request('seeding.watch', {
+          sid: SID,
+          manifest: signedManifest(v),
+          peers: [endpoint],
+        }),
       ),
     ).toBe('invalid-argument');
     expect((await w.client.request('status', {})).storedVideos).toBe(0);
@@ -172,8 +198,13 @@ describe('seeding, on a loopback testnet', () => {
     const { endpoint, listener } = await otherSeeder(v);
     const { w, dir } = await worker();
     await w.client.request('seeding.set', { watched: true });
+    await play(w, v, endpoint);
     const manifest = signedManifest(v);
-    const stored = await w.client.request('seeding.watch', { manifest, peers: [endpoint] });
+    const stored = await w.client.request('seeding.watch', {
+      sid: SID,
+      manifest,
+      peers: [endpoint],
+    });
     expect(stored.files).toBe(v.files.size);
     const status = await w.client.request('seeding.status', {});
     expect(status.videos).toMatchObject([{ video: v.video, origin: 'watched', served: true }]);
@@ -214,7 +245,12 @@ describe('seeding, on a loopback testnet', () => {
     const { endpoint } = await otherSeeder(v);
     const { w, dir } = await worker();
     await w.client.request('seeding.set', { watched: true });
-    await w.client.request('seeding.watch', { manifest: signedManifest(v), peers: [endpoint] });
+    await play(w, v, endpoint);
+    await w.client.request('seeding.watch', {
+      sid: SID,
+      manifest: signedManifest(v),
+      peers: [endpoint],
+    });
     await w.close();
 
     const again = await worker(dir);
@@ -233,13 +269,80 @@ describe('seeding, on a loopback testnet', () => {
     const { endpoint } = await otherSeeder(v);
     const { w } = await worker();
     await w.client.request('seeding.set', { watched: true });
+    await play(w, v, endpoint);
     const tampered = { ...signedManifest(v), content: 'changed after signing' };
     const priced = signedManifest(v, { extra: [['price_hint', '5']] });
     for (const manifest of [tampered, priced])
-      expect(await code(w.client.request('seeding.watch', { manifest, peers: [endpoint] }))).toBe(
-        'invalid-argument',
-      );
+      expect(
+        await code(w.client.request('seeding.watch', { sid: SID, manifest, peers: [endpoint] })),
+      ).toBe('invalid-argument');
     expect((await w.client.request('status', {})).storedVideos).toBe(0);
+  });
+
+  it('seeds only the video of an open play', async () => {
+    const v = testNfxVideo();
+    const other = testNfxVideo(segments(2));
+    const { endpoint } = await otherSeeder(v);
+    const { w } = await worker();
+    await w.client.request('seeding.set', { watched: true });
+    const manifest = signedManifest(v);
+    // No play at all.
+    expect(
+      await code(w.client.request('seeding.watch', { sid: SID, manifest, peers: [endpoint] })),
+    ).toBe('session-closed');
+    await play(w, v, endpoint);
+    // A play of this address, and a manifest naming another hash list.
+    const otherRoot = signedManifest({ ...v, root: other.root });
+    expect(
+      await code(
+        w.client.request('seeding.watch', { sid: SID, manifest: otherRoot, peers: [endpoint] }),
+      ),
+    ).toBe('invalid-argument');
+    expect((await w.client.request('status', {})).storedVideos).toBe(0);
+  });
+
+  it('keeps watched videos within their own byte budget', async () => {
+    const v = testNfxVideo();
+    const { endpoint } = await otherSeeder(v);
+    const { w } = await worker(undefined, { maxWatchedBytes: 16 });
+    await w.client.request('seeding.set', { watched: true });
+    await play(w, v, endpoint);
+    expect(
+      await code(
+        w.client.request('seeding.watch', {
+          sid: SID,
+          manifest: signedManifest(v),
+          peers: [endpoint],
+        }),
+      ),
+    ).toBe('disk-cap');
+    expect((await w.client.request('status', {})).storedVideos).toBe(0);
+  });
+
+  it('a stored video no record explains is not served, and starts no DHT node', async () => {
+    const v = testNfxVideo();
+    const { endpoint } = await otherSeeder(v);
+    const { w, dir } = await worker();
+    await w.client.request('nfx.seed.start', {
+      video: v.video,
+      root: v.root,
+      segs: v.segs,
+      peers: [endpoint],
+    });
+    expect((await w.client.request('status', {})).listening).toHaveLength(1);
+    await w.close();
+    // The record is lost: a crash, or a damaged file.
+    await rm(join(dir, SEEDING_FILE));
+
+    const again = await worker(dir);
+    const s = await again.w.client.request('status', {});
+    expect(s.storedVideos).toBe(1);
+    expect(s.dht).toBe('idle');
+    expect(s.listening).toEqual([]);
+    expect((await again.w.client.request('seeding.status', {})).videos).toMatchObject([
+      { video: v.video, origin: 'unknown', served: false },
+    ]);
+    expect((await again.w.client.request('seeding.beacons', {})).events).toEqual([]);
   });
 
   describe('a file handed over from WebRTC', () => {
@@ -275,18 +378,11 @@ describe('seeding, on a loopback testnet', () => {
       const { w } = await worker();
       await w.client.request('seeding.set', { watched: true });
       const manifest = signedManifest(v);
+      await play(w, v, endpoint);
       // Without the hand-over the store cannot be completed.
-      expect(await code(w.client.request('seeding.watch', { manifest, peers: [endpoint] }))).toBe(
-        'no-seeders',
-      );
-      await w.client.request('nfx.play.open', {
-        sid: SID,
-        video: v.video,
-        root: v.root,
-        segs: v.segs,
-        peers: [endpoint],
-        progressive: false,
-      });
+      expect(
+        await code(w.client.request('seeding.watch', { sid: SID, manifest, peers: [endpoint] })),
+      ).toBe('no-seeders');
       const bytes = v.files.get(missing);
       if (bytes === undefined) throw new Error('no bytes');
       // In two chunks, as the renderer sends a larger file.
@@ -312,7 +408,11 @@ describe('seeding, on a loopback testnet', () => {
         }),
       ).toEqual({ accepted: true, complete: true });
 
-      const stored = await w.client.request('seeding.watch', { manifest, peers: [endpoint] });
+      const stored = await w.client.request('seeding.watch', {
+        sid: SID,
+        manifest,
+        peers: [endpoint],
+      });
       expect(stored.files).toBe(v.files.size);
       await listener.close();
       const { events } = await w.client.request('seeding.beacons', {});
@@ -321,6 +421,26 @@ describe('seeding, on a loopback testnet', () => {
       const ep = beacon.value.content.endpoints[0];
       if (ep?.t !== 'hyperdht') throw new Error('no hyperdht endpoint');
       expect(await fetchAll(v, ep)).toBe(v.files.size);
+    });
+
+    it('is not taken while the switch is off', async () => {
+      const v = testNfxVideo();
+      const { endpoint } = await otherSeeder(v);
+      const { w } = await worker();
+      await play(w, v, endpoint);
+      const sha = v.segmentShas[0];
+      if (sha === undefined) throw new Error('no segment');
+      const real = v.files.get(sha);
+      if (real === undefined) throw new Error('no bytes');
+      expect(
+        await w.client.request('seeding.segment', {
+          sid: SID,
+          sha256: sha,
+          size: real.length,
+          offset: 0,
+          data: b64(real),
+        }),
+      ).toEqual({ accepted: false, complete: false });
     });
 
     it('is refused when the hash list does not name it', async () => {
@@ -359,7 +479,9 @@ describe('seeding, on a loopback testnet', () => {
       ).toBe('invalid-argument');
       // And the store still has no way to complete the video.
       expect(
-        await code(w.client.request('seeding.watch', { manifest: signedManifest(v), peers: [] })),
+        await code(
+          w.client.request('seeding.watch', { sid: SID, manifest: signedManifest(v), peers: [] }),
+        ),
       ).toBe('no-seeders');
     });
 

@@ -110,7 +110,10 @@ jobs:
             env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
               STRFRY="$d/strfry" STRFRY_CONF="$d/strfry.conf" CHROMIUM="$CHROMIUM" \
               npm run test:publish -w packages/renderer 2>&1 | tee "$RUNNER_TEMP/publish.log"
-          grep '^PROOF ' "$RUNNER_TEMP/publish.log" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Every proof reported its numbers, or the job fails. The reporter's colours come off first.
+          sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/publish.log" | grep '^PROOF ' > "$RUNNER_TEMP/proofs"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/proofs"
+          test "$(wc -l < "$RUNNER_TEMP/proofs")" -eq 8
       - name: it still has nothing but loopback
         if: always()
         run: |
