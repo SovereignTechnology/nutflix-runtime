@@ -13,4 +13,4 @@ import { assertNoUpgradeLink } from '../../packaging/update-root.ts';
 const app = process.argv[2];
 if (app === undefined) throw new Error('usage: no-updater.ts <app directory>');
 assertNoUpgradeLink(readFileSync(join(app, STAGED.updateWorker), 'utf8'));
-console.log('this build has no upgrade link: it starts no updater');
+process.stdout.write('this build has no upgrade link: it starts no updater\n');

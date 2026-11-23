@@ -9,10 +9,6 @@ import { join } from 'node:path';
 import { decode } from 'nostr-tools/nip19';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  DEFAULT_SETTINGS,
-  SCOPED_RELAY,
-} from '../../../../packages/renderer/src/settings/defaults.ts';
 import { parseCli } from '../../scripts/cli-options.ts';
 import { encodeBakedRoot, parseTrustRoot, type TrustRoot } from '../../src/update/root.ts';
 import { STAGED } from '../identity.ts';
@@ -61,10 +57,16 @@ describe('the production root', () => {
   });
 
   it("reads notices from the app's own default relays, the network's first", () => {
-    expect(RELEASE_NOTICE_RELAYS).toEqual([
-      SCOPED_RELAY,
-      ...DEFAULT_SETTINGS.relays.map((r) => r.url),
-    ]);
+    // Read as text: this package's TypeScript project does not include the renderer's settings.
+    const defaults = readFileSync(
+      join(REPO_ROOT, 'packages', 'renderer', 'src', 'settings', 'defaults.ts'),
+      'utf8',
+    );
+    const scoped = /SCOPED_RELAY = '(wss:\/\/[^']+)'/.exec(defaults)?.[1];
+    const general = [...defaults.matchAll(/\brelay\('(wss:\/\/[^']+)'\)/g)].map((m) => m[1]);
+    expect(scoped).toBeDefined();
+    expect(general.length).toBeGreaterThan(0);
+    expect(RELEASE_NOTICE_RELAYS).toEqual([scoped, ...general]);
   });
 
   it('refuses to let a runner launch a build that would start an updater', () => {
