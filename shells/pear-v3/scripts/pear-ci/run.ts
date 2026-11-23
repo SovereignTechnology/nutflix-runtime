@@ -734,12 +734,18 @@ async function verifyInstalled(
       throw new Error('the installed AppImage is not executable');
     const desktop = join(home, '.local', 'share', 'applications', `${APP.productName}.desktop`);
     if (!existsSync(desktop)) throw new Error(`no launcher entry at ${desktop}`);
-    const exec = /^Exec=(.*)$/m.exec(readFileSync(desktop, 'utf8'))?.[1];
+    const entry = readFileSync(desktop, 'utf8');
+    const exec = /^Exec=(.*)$/m.exec(entry)?.[1];
     if (exec !== dest) throw new Error(`the launcher entry runs ${String(exec)}, not ${dest}`);
     const icons = join(home, '.local', 'share', 'icons', 'hicolor');
     const nIcons = existsSync(icons) ? (await listFiles(icons)).length : 0;
-    if (nIcons === 0)
-      report.notes.push('pear install placed no icons under ~/.local/share/icons/hicolor');
+    // The icon the launcher names must be one the system now has.
+    const iconName = /^Icon=(.*)$/m.exec(entry)?.[1];
+    if (iconName === undefined) throw new Error('the launcher entry names no icon');
+    const icon = iconName.startsWith('/')
+      ? iconName
+      : join(icons, '512x512', 'apps', `${iconName}.png`);
+    if (!existsSync(icon)) throw new Error(`the launcher's icon ${iconName} was not installed`);
     return {
       summary: `${dest} (${String(statSync(dest).size)} bytes, sha256 equal to the staged file), launcher ${desktop} runs it, ${String(nIcons)} icons`,
       launch: dest,
