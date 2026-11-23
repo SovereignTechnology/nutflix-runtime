@@ -92,7 +92,7 @@ export function checkLibrary(lock: NfxLock, tar: Uint8Array): PinnedLibrary {
 /** The committed tar of the lock in package directory `pkg`, checked. */
 export function readPinnedLibrary(pkg: string): PinnedLibrary {
   const lock = parseLock(readFileSync(join(pkg, 'nfx-web.lock'), 'utf8'));
-  const tar = readFileSync(join(pkg, 'vendor', `nfx-web-lib-${lock.commit.slice(0, 12)}.tar`));
+  const tar = readFileSync(join(pkg, 'pinned', `nfx-web-lib-${lock.commit.slice(0, 12)}.tar`));
   return checkLibrary(lock, tar);
 }
 

@@ -97,6 +97,8 @@ describe('the app: handler', () => {
     [join(R, 'app.js'), 'x'],
     [join(R, 'ui.css'), 'x'],
     [join(R, 'shell.css'), 'x'],
+    [join(R, 'nfx', 'player.js'), 'x'],
+    [join(R, 'nfx', 'wasm.js'), 'x'],
     [join(R, 'secret.js'), 'nope'],
     [join(OUT, 'app.js'), 'planted'],
   ]);

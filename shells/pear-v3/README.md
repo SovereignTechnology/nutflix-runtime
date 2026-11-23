@@ -149,8 +149,10 @@ than 1.29.4 (`smoke.ts bare`).
    page's own `status` came back through the preload, main's gate and the worker (`pipe`), and the
    OS is confining the renderer** (`rendererSandbox`: seccomp on Linux, Electron's process metrics
    on macOS and Windows). Every build prints this line; no switch makes it
-   print. The line also says what the packaged engine can do: whether the renderer's WebRTC player
-   probe passed, and whether `MediaSource` takes VP9 or H.264 in MP4;
+   print. The line must also show the WebRTC IP policy as Chromium reports it for this window
+   (`default_public_interface_only`) and that the renderer's whole WebRTC player probe passed: the
+   pinned nfx library loaded through `app:` under the real policy, and its WASM verifier started.
+   It says too whether `MediaSource` takes VP9 or H.264 in MP4;
 4. with `--no-sandbox`, the warning comes first and no window opens.
 
 What is launched: Linux, the `.AppImage` itself, once mounted with FUSE and once with no FUSE tools;

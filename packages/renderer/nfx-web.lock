@@ -16,7 +16,7 @@
 # are bb94a3a's, byte for byte. The latest release, 0.1.2, predates `remoteCandidates`.
 #
 # How the bytes get into the bundle: the tar itself is committed, as
-# vendor/nfx-web-lib-<commit, 12 hex>.tar, and scripts/build.ts refuses it unless its sha256 is the
+# pinned/nfx-web-lib-<commit, 12 hex>.tar, and scripts/build.ts refuses it unless its sha256 is the
 # one here. Why committed:
 #   - every build on every target (five OSes, a contributor's machine) takes the same bytes with no
 #     Rust toolchain, no network and no release to depend on: nfx has no release at this commit,

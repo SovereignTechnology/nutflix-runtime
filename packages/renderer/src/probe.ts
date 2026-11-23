@@ -129,7 +129,7 @@ export async function probePlayer(
     return {
       report: {
         ...base,
-        [add]: false,
+        wasm: add === 'wasm' ? false : base.wasm,
         player: false,
         missing,
         reason: reasonFor(missing),

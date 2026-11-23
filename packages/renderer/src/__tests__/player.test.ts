@@ -49,7 +49,7 @@ describe('the pin', () => {
     const lib = readPinnedLibrary(pkg);
     expect(lib.lock.commit).toMatch(/^[0-9a-f]{40}$/);
     const tar = readFileSync(
-      join(pkg, 'vendor', `nfx-web-lib-${lib.lock.commit.slice(0, 12)}.tar`),
+      join(pkg, 'pinned', `nfx-web-lib-${lib.lock.commit.slice(0, 12)}.tar`),
     );
     expect(hex(tar)).toBe(lib.lock.libSha256);
     expect([...readUstar(tar).keys()]).toEqual([...LIB_FILES]);
@@ -60,7 +60,7 @@ describe('the pin', () => {
   it('refuses a tar with one byte changed', () => {
     const lib = readPinnedLibrary(pkg);
     const tar = new Uint8Array(
-      readFileSync(join(pkg, 'vendor', `nfx-web-lib-${lib.lock.commit.slice(0, 12)}.tar`)),
+      readFileSync(join(pkg, 'pinned', `nfx-web-lib-${lib.lock.commit.slice(0, 12)}.tar`)),
     );
     tar[1000] = (tar[1000] ?? 0) ^ 1;
     expect(() => checkLibrary(lib.lock, tar)).toThrow(/sha256/);
@@ -100,7 +100,9 @@ describe('the pin', () => {
 
   it('takes regular files only, and no name that leaves the directory', () => {
     const body = Uint8Array.of(1, 2, 3);
-    expect(readUstar(Buffer.concat([member('a/b.js', body), end])).get('a/b.js')).toEqual(body);
+    expect([
+      ...(readUstar(Buffer.concat([member('a/b.js', body), end])).get('a/b.js') ?? []),
+    ]).toEqual([1, 2, 3]);
     expect(() => readUstar(Buffer.concat([member('link', body, '2'), end]))).toThrow(/regular/);
     expect(() => readUstar(Buffer.concat([member('../evil', body), end]))).toThrow(/unsafe/);
     expect(() => readUstar(Buffer.concat([member('/abs', body), end]))).toThrow(/unsafe/);

@@ -157,8 +157,13 @@ describe('the renderer shell', () => {
     expect(container.querySelector('[id$="-appearance-remote-images"]')).toBeNull();
     expect(container.querySelector('[id$="-nfx-enabled"]')).toBeNull();
     expect(container.querySelector('[id$="-nfx-iroh-add"]')).toBeNull();
-    // Signaling relays belong to the WebRTC player (slice B).
-    expect(container.querySelector('[id$="-nfx-mesh-add"]')).toBeNull();
+    // The WebRTC switch, on by default, with who sees what, and its signaling relays.
+    const webrtc = container.querySelector<HTMLInputElement>('input[id$="-nfx-webrtc"]');
+    expect(webrtc?.checked).toBe(true);
+    expect(container.querySelector('[id$="-nfx-webrtc-notice"]')?.textContent).toContain(
+      'see your IP address',
+    );
+    expect(container.querySelector('[id$="-nfx-mesh-add"]')).not.toBeNull();
     expect(container.querySelector('[id$="-nfx-mesh-notice"]')).toBeNull();
     expect(container.textContent).toContain('wss://relay.nutflix.xyz');
     expect(container.textContent).toContain('wss://relay.ditto.pub');
@@ -192,6 +197,11 @@ describe('the renderer shell', () => {
     expect(client.capabilities).toBe(report);
     await flush();
     expect(container.dataset['webrtcPlayer']).toBe('unavailable');
+    await goHash('#/settings');
+    await flush();
+    expect(container.querySelector('#nutflix-webrtc-status')?.textContent).toMatch(
+      /^WebRTC is off\. .*missing in this runtime/,
+    );
   });
 
   it('stop() unmounts the shell and stops following the hash', async () => {
