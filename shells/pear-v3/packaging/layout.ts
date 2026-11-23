@@ -53,6 +53,7 @@ export function layoutProblems(
   };
   real(STAGED.main, true);
   real(STAGED.preload, true);
+  real(STAGED.updateWorker, true);
   real(STAGED.rendererIndex, true);
   real(STAGED.workerEntry, true);
   real(STAGED.pearRuntime, true);

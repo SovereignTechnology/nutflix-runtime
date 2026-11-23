@@ -1,8 +1,8 @@
 /**
  * The Bare worker, started the Pear v3 way: `pear-runtime`'s `run(entry, args)`, which spawns
  * `bare-sidecar`'s prebuilt `bare` on the entry and hands the worker `Bare.IPC` as the sidecar's
- * duplex. Only `run` is used. No `PearRuntime` is constructed, so there is no updater and nothing
- * here can call `applyUpdate()` (README, "Updates are off").
+ * duplex. Only `run` is used: no `PearRuntime` is constructed here and nothing here can call
+ * `applyUpdate()`. The updater is a process of its own (`src/update/update-worker.ts`).
  *
  * The sidecar's bytes go to the gate; its stderr is printed (bounded) so that a worker that dies
  * at load says why; its exit ends the gate. `run` is a parameter: main loads pear-runtime, the

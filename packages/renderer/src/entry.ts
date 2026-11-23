@@ -7,6 +7,7 @@
  */
 import { startRenderer } from './main.js';
 import { createPlayerLoader } from './player/load.js';
+import { installUpdateBanner } from './update-banner.js';
 import { asWorkerPipe } from './worker/pipe.js';
 
 /** The sha256 of `nfx/wasm.js`'s bytes, written in by `scripts/build.ts`. */
@@ -21,6 +22,7 @@ if (root !== null) {
     root.textContent = 'Nutflix could not start: no worker is connected to this window.';
   } else {
     try {
+      installUpdateBanner(document, pipe);
       const client = startRenderer({
         container: root,
         pipe,

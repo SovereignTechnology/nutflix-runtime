@@ -51,11 +51,44 @@ export interface ManifestOptions {
   readonly arch: 'x64' | 'arm64';
   /** The template's text; the file inside `electron-windows-msix` by default. */
   readonly template?: string;
+  /**
+   * This build was packaged with an upgrade link. Only then does the package get what an in-app
+   * MSIX update needs (Holepunch's template has the same three): the `packageManagement` and
+   * `unvirtualizedResources` capabilities, and write virtualization off, so that the deployment
+   * service can read the staged `.msix`. A build with no link does not ask for them.
+   */
+  readonly updates?: boolean;
+}
+
+/** Each anchor must be in the template exactly once, or the manifest is not the one we know. */
+function once(text: string, anchor: string, replacement: string): string {
+  if (text.split(anchor).length !== 2)
+    throw new Error(`the manifest template does not hold exactly one ${anchor}`);
+  return text.replace(anchor, replacement);
+}
+
+function withUpdateRights(template: string): string {
+  let t = once(
+    template,
+    'IgnorableNamespaces="uap uap3 desktop2"',
+    'xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"\n  IgnorableNamespaces="uap uap3 desktop2 desktop6"',
+  );
+  t = once(
+    t,
+    '</Properties>',
+    '  <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>\n  </Properties>',
+  );
+  return once(
+    t,
+    '<rescap:Capability Name="runFullTrust" />',
+    '<rescap:Capability Name="runFullTrust" />\n    <rescap:Capability Name="packageManagement" />\n    <rescap:Capability Name="unvirtualizedResources" />',
+  );
 }
 
 /** The manifest the MSIX maker packs. */
 export function appxManifest(o: ManifestOptions): string {
-  const template = o.template ?? readFileSync(templatePath(), 'utf8');
+  const base = o.template ?? readFileSync(templatePath(), 'utf8');
+  const template = o.updates === true ? withUpdateRights(base) : base;
   const values: Record<string, string> = {
     IdentityName: MSIX.identity,
     AppDisplayName: APP.productName,
@@ -88,7 +121,12 @@ export function appxManifest(o: ManifestOptions): string {
 }
 
 /** Writes the manifest for `arch` to `file` and returns the path (the maker's `appManifest`). */
-export function writeAppxManifest(file: string, version: string, arch: 'x64' | 'arm64'): string {
-  writeFileSync(file, appxManifest({ version, arch }));
+export function writeAppxManifest(
+  file: string,
+  version: string,
+  arch: 'x64' | 'arm64',
+  updates = false,
+): string {
+  writeFileSync(file, appxManifest({ version, arch, updates }));
   return file;
 }

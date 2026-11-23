@@ -293,6 +293,7 @@ describe('the layout check', () => {
     for (const rel of [
       STAGED.main,
       STAGED.preload,
+      STAGED.updateWorker,
       STAGED.rendererIndex,
       STAGED.workerEntry,
       STAGED.pearRuntime,
@@ -336,13 +337,21 @@ describe('the layout check', () => {
 
 describe("the smoke test's reading of the app", () => {
   const line =
-    'NUTFLIX_SHELL_READY {"shell":"pear-v3","version":"0.1.0","window":"loaded","renderer":"mounted","worker":"status-ok","sandbox":"on","pipe":"round-trip","rendererSandbox":"enforced","webrtcPolicy":"default_public_interface_only","player":"available"}';
+    'NUTFLIX_SHELL_READY {"shell":"pear-v3","version":"0.1.0","window":"loaded","renderer":"mounted","worker":"status-ok","sandbox":"on","pipe":"round-trip","rendererSandbox":"enforced","webrtcPolicy":"default_public_interface_only","player":"available","updates":"off"}';
 
   it('accepts the ready line and nothing weaker', () => {
     const f = parseReadyLine(line);
     expect(f).not.toBeNull();
     expect(readyProblems(f ?? {})).toEqual([]);
-    for (const k of ['window', 'renderer', 'worker', 'pipe', 'rendererSandbox', 'webrtcPolicy'])
+    for (const k of [
+      'window',
+      'renderer',
+      'worker',
+      'pipe',
+      'rendererSandbox',
+      'webrtcPolicy',
+      'updates',
+    ])
       expect(readyProblems({ ...f, [k]: 'no' }).join()).toContain(k);
     expect(readyProblems({ ...f, webrtcPolicy: 'default' }).join()).toContain('webrtcPolicy');
     expect(readyProblems({ ...f, player: 'unavailable' }).join()).toContain('player');
@@ -376,7 +385,7 @@ describe("the smoke test's reading of the app", () => {
   });
 });
 
-describe('updates are off in this slice', () => {
+describe('updates: only the gate can apply one, and a shipped build has no link', () => {
   const sources = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
       const p = join(dir, e.name);
@@ -386,25 +395,53 @@ describe('updates are off in this slice', () => {
   // Comments may say what is not done; code may not do it.
   const code = (text: string): string =>
     text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const pkg = join(REPO_ROOT, 'shells', 'pear-v3');
+  const all = (): string[] => [
+    ...sources(join(pkg, 'src')),
+    ...sources(join(pkg, 'packaging')),
+    ...sources(join(pkg, 'scripts')),
+  ];
+  const rel = (f: string): string => f.slice(pkg.length + 1).replaceAll('\\', '/');
 
-  it('no source of the shell, the staging step or the driver can start an updater or apply an update', () => {
-    const pkg = join(REPO_ROOT, 'shells', 'pear-v3');
-    const files = [
-      ...sources(join(pkg, 'src')),
-      ...sources(join(pkg, 'packaging')),
-      ...sources(join(pkg, 'scripts')),
-    ];
+  it('only the gate calls applyUpdate, and only the updater process builds an updater', () => {
+    const files = all();
     expect(files.length).toBeGreaterThan(10);
-    for (const f of files)
+    const applies = files.filter((f) => code(readFileSync(f, 'utf8')).includes('.applyUpdate('));
+    expect(applies.map(rel)).toEqual(['src/update/gate.ts']);
+    const builds = files.filter((f) =>
+      /new\s+PearRuntime(Updater)?\b/.test(code(readFileSync(f, 'utf8'))),
+    );
+    expect(builds.map(rel)).toEqual(['src/update/update-worker.ts']);
+  });
+
+  it('nothing in main, the preload or the renderer can reach the updater', () => {
+    const page = sources(join(REPO_ROOT, 'packages', 'renderer', 'src'));
+    for (const f of [
+      ...sources(join(pkg, 'src', 'main')),
+      ...sources(join(pkg, 'src', 'preload')),
+      ...page,
+    ])
       expect(code(readFileSync(f, 'utf8')), f).not.toMatch(
-        /applyUpdate|PearRuntimeUpdater|pear-runtime-updater|new\s+PearRuntime\b|\.updater\b|\bupgrade\b/,
+        /applyUpdate|PearRuntimeUpdater|pear-runtime-updater|new\s+PearRuntime\b|\.updater\b/,
       );
   });
 
-  it('the staged package.json carries no upgrade link, so a PearRuntime could not be pointed anywhere', () => {
-    const own = JSON.parse(
-      readFileSync(join(REPO_ROOT, 'shells', 'pear-v3', 'package.json'), 'utf8'),
-    ) as Record<string, unknown>;
+  it('the trust root is read from the baked constant, never from the environment or argv', () => {
+    const worker = code(readFileSync(join(pkg, 'src', 'update', 'update-worker.ts'), 'utf8'));
+    expect(worker.match(/decodeBakedRoot\(/g)).toHaveLength(1);
+    expect(worker).toContain('decodeBakedRoot(__NUTFLIX_UPDATE_ROOT__)');
+    expect(worker).not.toMatch(/Bare\.argv|process\.env|bare-env/);
+    for (const f of ['root.ts', 'notice.ts', 'gate.ts', 'relays.ts', 'hash.ts', 'status.ts'])
+      expect(code(readFileSync(join(pkg, 'src', 'update', f), 'utf8')), f).not.toMatch(
+        /process\.|Bare\.|readFile|argv/,
+      );
+  });
+
+  it('the shell has no upgrade field of its own to point anywhere', () => {
+    const own = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
     expect(own['upgrade']).toBeUndefined();
   });
 });

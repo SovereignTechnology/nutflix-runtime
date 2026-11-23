@@ -13,9 +13,9 @@ import { appFileName } from './pins.ts';
 
 /**
  * The project's `package.json` for `pear build` and `pear stage`: the packaged app's own fields
- * (`packaging/stage.ts`) and nothing that points anywhere. It has no update link, as the app's own
- * `package.json` has none: the app has no updater in this slice, and the repository's tests refuse
- * a link in anything the shell ships or stages.
+ * (`packaging/stage.ts`) and nothing that points anywhere. It has no update link: the link an app
+ * follows is compiled into its updater at package time (`packaging/update-root.ts`), and a field
+ * here could not change it.
  */
 export function deploymentPackageJson(o: { version: string }): string {
   return `${JSON.stringify(
