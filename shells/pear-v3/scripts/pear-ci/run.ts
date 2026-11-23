@@ -10,10 +10,13 @@
  *   seeded     `pear seed` on the private DHT, until the install is done
  *   installed  `pear install pear://<link>` from the private DHT
  *   launched   the INSTALLED app, started as installed, prints its ready line
+ *   gate       the update gate, on two more real builds (`update-proof.ts`)
  *
- * The app takes no test switch. Updates are off: nothing here builds a `PearRuntime`, calls
- * `applyUpdate()`, provisions or multisigs. The link is made on the private DHT and exists nowhere
- * else; no peer of the public network can reach it, and nothing here reaches the public network.
+ * The app takes no test switch. The builds of the `shell` job have no upgrade link and run no
+ * updater, and each must say so. Nothing here provisions or multisigs. Every link is made on the
+ * private DHT and exists nowhere else; no peer of the public network can reach it, and nothing here
+ * reaches the public network: the app's public relay names are blackholed (`sinkhole.ts`) and the
+ * tripwire counts their real addresses too.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
@@ -34,7 +37,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { APP, MSIX, TARGETS } from '../../packaging/identity.ts';
-import { PKG_DIR } from '../../packaging/paths.ts';
+import { PKG_DIR, REPO_ROOT } from '../../packaging/paths.ts';
 import { makeAppx } from '../../packaging/windows-kit.ts';
 import { launch, readyProblems, type LaunchResult, type ReadyFields } from '../smoke.ts';
 import {
@@ -49,7 +52,13 @@ import {
   type TreeManifest,
 } from './deployment.ts';
 import { Pear, fetchPear, isolatedEnv, killTree, unzip, type Started } from './pear.ts';
-import { CANARY_IP, PEAR_VERSION, appFileName, type TargetName } from './pins.ts';
+import {
+  CANARY_IP,
+  PEAR_VERSION,
+  PUBLIC_BOOTSTRAP_IPS,
+  appFileName,
+  type TargetName,
+} from './pins.ts';
 import {
   assertLoopbackBootstrap,
   bootstrapProof,
@@ -60,7 +69,9 @@ import {
   succeeded,
   type PearRecord,
 } from './records.ts';
+import { applySinkhole, assertSinkholed, publicHosts, resolvePublicIps } from './sinkhole.ts';
 import { barrier, createTripwire, proveTripwire, publicBootstrapHits } from './tripwire.ts';
+import { proveUpdateGate, type UpdateProofReport } from './update-proof.ts';
 import {
   aliasPath,
   appxLog,
@@ -116,6 +127,11 @@ interface Report {
   installed?: string;
   launched?: string;
   ready?: ReadyFields | null;
+  /** The public relay and STUN names blackholed on this runner. */
+  sinkholed?: readonly string[];
+  /** Packets to the public addresses while the update gate's proof ran. */
+  publicHitsDuringGate?: number;
+  updateGate?: UpdateProofReport;
   notes: string[];
   failures: string[];
 }
@@ -222,7 +238,17 @@ export async function run(o: Options): Promise<number> {
   mkdirSync(logs, { recursive: true });
   const report: Report = { target: o.target, notes: [], failures: [] };
 
-  const tw = createTripwire(process.platform, work, SCRIPTS_DIR);
+  // The app's public relay and STUN hosts, and where they really are, BEFORE the names are
+  // blackholed: the tripwire watches those addresses too.
+  const relayHosts = publicHosts(REPO_ROOT);
+  const relayIps = (await resolvePublicIps(relayHosts)).filter(
+    (ip) => !PUBLIC_BOOTSTRAP_IPS.includes(ip) && ip !== CANARY_IP,
+  );
+  const tw = createTripwire(process.platform, work, SCRIPTS_DIR, [
+    ...PUBLIC_BOOTSTRAP_IPS,
+    ...relayIps,
+    CANARY_IP,
+  ]);
   let dht: ChildProcess | undefined;
   let seed: Started | undefined;
   let pear: Pear | undefined;
@@ -311,6 +337,14 @@ export async function run(o: Options): Promise<number> {
       const hits = await proveTripwire(tw, process.platform === 'win32' ? 90_000 : 15_000);
       say(`counted: ${JSON.stringify(hits)}`);
       return hits[CANARY_IP] ?? 0;
+    });
+
+    await phase('sinkhole: the public relay names point at loopback', async () => {
+      applySinkhole(process.platform, relayHosts);
+      await assertSinkholed(relayHosts);
+      report.sinkholed = relayHosts;
+      say(`${String(relayHosts.length)} hosts: ${relayHosts.join(' ')}`);
+      say(`the tripwire also watches their ${String(relayIps.length)} real IPv4 addresses`);
     });
 
     // ---- the CLI and the private DHT --------------------------------------------------------
@@ -648,6 +682,32 @@ export async function run(o: Options): Promise<number> {
       if (fromApp !== 0)
         throw new Error(`${String(fromApp)} packets went to the public bootstrap from the app`);
     });
+
+    // ---- the update gate, on two more real builds ------------------------------------------
+    report.updateGate = await proveUpdateGate({
+      target: o.target,
+      platform: own.platform,
+      arch: own.arch,
+      file: own.file,
+      work,
+      logs,
+      pearBin: fetched.bin,
+      scriptsDir: SCRIPTS_DIR,
+      cert,
+      baseVersion: version,
+      phase,
+      say,
+    });
+    await phase(
+      'read the tripwire: the update proof sent nothing to a public address',
+      async () => {
+        const hits = await barrier(tw, process.platform === 'win32' ? 120_000 : 15_000);
+        const n = publicBootstrapHits(hits);
+        say(`tripwire: ${JSON.stringify(hits)}`);
+        report.publicHitsDuringGate = n;
+        if (n !== 0) throw new Error(`${String(n)} packets went to a public address`);
+      },
+    );
   } catch (e) {
     if (!(e instanceof Handled)) {
       const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
@@ -905,6 +965,9 @@ function writeSummary(work: string, r: Report): void {
         : `${r.tripwire.kind}: canary counted ${String(r.tripwire.canaryCounted)}; packets to the public bootstrap during Pear: ${String(r.tripwire.publicBootstrapHitsDuringPear)}; during the app's launch: ${String(r.tripwire.publicBootstrapHitsFromTheApp)}`
     } |`,
     `| sidecar's bootstrap | ${r.bootstrapProof === undefined ? 'NOT READ' : `${r.bootstrapProof.set ? 'set' : 'NOT SET'}, names the private node: ${String(r.bootstrapProof.names)}, read known-nodes cache: ${String(r.bootstrapProof.readKnownNodes)}`} |`,
+    `| public relays blackholed | ${r.sinkholed === undefined ? 'NOT DONE' : r.sinkholed.join(', ')} |`,
+    ...(r.updateGate?.rows ?? []).map((x) => `| gate: ${x.step} | ${x.result} |`),
+    `| public addresses, after the gate proof | ${r.publicHitsDuringGate === undefined ? 'NOT MEASURED' : `${String(r.publicHitsDuringGate)} packets`} |`,
     '',
     ...r.notes.map((n) => `- ${n}`),
     ...r.failures.map((f) => `- FAILED: ${f}`),

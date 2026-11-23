@@ -13,6 +13,9 @@
  *   - Windows: Windows Defender Firewall, one outbound Block rule over the addresses, with blocked
  *     packets logged (the log is read and its lines counted).
  *
+ * What it watches is HyperDHT's public bootstrap plus, since the update gate, the addresses of every
+ * public Nostr relay the app can name (`sinkhole.ts` resolves them before it blackholes the names).
+ *
  * The instrument is proved before it is trusted: the job sends one datagram to a documentation
  * address that the tripwire also watches (RFC 5737, never routed), and a tripwire that did not
  * count that datagram fails the job. Counting needs no packet to leave the machine.
@@ -106,7 +109,7 @@ export function parseWindowsFirewallLog(text: string, ips: readonly string[] = T
   return hits;
 }
 
-/** What the log shows: the sum over the three real bootstrap addresses. */
+/** What the log shows: the sum over every real address watched (all but the canary). */
 export function publicBootstrapHits(h: Hits): number {
   return Object.entries(h)
     .filter(([ip]) => ip !== CANARY_IP)
@@ -134,12 +137,12 @@ function must(what: string, r: Ran): Ran {
   return r;
 }
 
-function iptables(): Tripwire {
+function iptables(ips: readonly string[]): Tripwire {
   const ipt = (...args: string[]): Ran => run('sudo', ['-n', 'iptables', '-w', '10', ...args]);
   return {
     kind: 'iptables',
     arm() {
-      for (const ip of TRIPWIRE_IPS)
+      for (const ip of ips)
         must(
           `iptables -I OUTPUT ${ip}`,
           ipt('-I', 'OUTPUT', '1', '-d', ip, '-m', 'comment', '--comment', COMMENT, '-j', 'DROP'),
@@ -148,10 +151,11 @@ function iptables(): Tripwire {
     read() {
       return parseIptablesCounters(
         must('iptables -L OUTPUT', ipt('-L', 'OUTPUT', '-v', '-n', '-x')).stdout,
+        ips,
       );
     },
     disarm() {
-      for (const ip of TRIPWIRE_IPS)
+      for (const ip of ips)
         ipt('-D', 'OUTPUT', '-d', ip, '-m', 'comment', '--comment', COMMENT, '-j', 'DROP');
     },
     describe() {
@@ -160,7 +164,19 @@ function iptables(): Tripwire {
   };
 }
 
-function pf(work: string): Tripwire {
+/**
+ * One rule per address, and the optimizer off: from six addresses pfctl folds such rules into one
+ * rule over a table, whose counter cannot say which address was hit.
+ */
+export function pfRules(ips: readonly string[]): string {
+  return (
+    `# ${COMMENT}: drop and count the public addresses and one canary\n` +
+    'set ruleset-optimization none\n' +
+    ips.map((ip) => `block drop out quick inet from any to ${ip}\n`).join('')
+  );
+}
+
+function pf(work: string, ips: readonly string[]): Tripwire {
   const rules = join(work, 'tripwire-pf.conf');
   const pfctl = (...args: string[]): Ran => run('sudo', ['-n', 'pfctl', ...args]);
   let token: string | null = null;
@@ -178,11 +194,7 @@ function pf(work: string): Tripwire {
   return {
     kind: 'pf',
     arm() {
-      writeFileSync(
-        rules,
-        `# ${COMMENT}: drop and count; the addresses are HyperDHT's public bootstrap and one canary\n` +
-          TRIPWIRE_IPS.map((ip) => `block drop out quick inet from any to ${ip}\n`).join(''),
-      );
+      writeFileSync(rules, pfRules(ips));
       // -E takes a reference ("Token : n") and enables pf when it was off; -X n drops it again.
       // Enable first, then load: what is loaded last is what runs.
       const e = must('pfctl -E', pfctl('-E'));
@@ -191,7 +203,7 @@ function pf(work: string): Tripwire {
       process.stdout.write(`${describe()}\n`);
     },
     read() {
-      return parsePfCounters(must('pfctl -vsr', pfctl('-vsr')).stdout);
+      return parsePfCounters(must('pfctl -vsr', pfctl('-vsr')).stdout, ips);
     },
     disarm() {
       pfctl('-F', 'rules');
@@ -201,7 +213,7 @@ function pf(work: string): Tripwire {
   };
 }
 
-function windowsFirewall(scriptsDir: string): Tripwire {
+function windowsFirewall(scriptsDir: string, ips: readonly string[]): Tripwire {
   const script = join(scriptsDir, 'windows', 'tripwire.ps1');
   const ps = (...args: string[]): Ran =>
     run('powershell.exe', [
@@ -218,10 +230,7 @@ function windowsFirewall(scriptsDir: string): Tripwire {
   return {
     kind: 'windows-firewall',
     arm() {
-      const r = must(
-        'tripwire.ps1 arm',
-        ps('-Action', 'arm', '-Addresses', TRIPWIRE_IPS.join(',')),
-      );
+      const r = must('tripwire.ps1 arm', ps('-Action', 'arm', '-Addresses', ips.join(',')));
       process.stdout.write(r.stdout);
       log = /^LOG=(.+)$/m.exec(r.stdout)?.[1]?.trim() ?? '';
       offset = /^OFFSET=(\d+)$/m.exec(r.stdout)?.[1] ?? '0';
@@ -230,9 +239,9 @@ function windowsFirewall(scriptsDir: string): Tripwire {
     read() {
       const r = must(
         'tripwire.ps1 read',
-        ps('-Action', 'read', '-Addresses', TRIPWIRE_IPS.join(','), '-Log', log, '-Offset', offset),
+        ps('-Action', 'read', '-Addresses', ips.join(','), '-Log', log, '-Offset', offset),
       );
-      return parseWindowsFirewallLog(r.stdout);
+      return parseWindowsFirewallLog(r.stdout, ips);
     },
     disarm() {
       ps('-Action', 'disarm');
@@ -244,14 +253,20 @@ function windowsFirewall(scriptsDir: string): Tripwire {
 }
 
 /** The tripwire for this machine. `work` is a scratch directory, `scriptsDir` is `scripts/pear-ci`. */
-export function createTripwire(platform: string, work: string, scriptsDir: string): Tripwire {
+export function createTripwire(
+  platform: string,
+  work: string,
+  scriptsDir: string,
+  ips: readonly string[] = TRIPWIRE_IPS,
+): Tripwire {
+  if (!ips.includes(CANARY_IP)) throw new Error('the tripwire must watch its canary');
   switch (platform) {
     case 'linux':
-      return iptables();
+      return iptables(ips);
     case 'darwin':
-      return pf(work);
+      return pf(work, ips);
     case 'win32':
-      return windowsFirewall(scriptsDir);
+      return windowsFirewall(scriptsDir, ips);
     default:
       throw new Error(`no tripwire for ${platform}`);
   }

@@ -10,8 +10,10 @@
  *   node_modules/                       the runtime closure: pear-runtime, bare-sidecar and the
  *                                       worker (`@nutflix-runtime/worker`) with its dependencies
  *
- * Updates are OFF. Nothing here constructs a `PearRuntime` or calls `applyUpdate()`; the app does
- * not swap itself. The update gate is a later slice (README).
+ * Updates: this file constructs no `PearRuntime` and cannot apply anything. A build packaged with
+ * an upgrade link starts one more Bare process, the updater (`src/update/update-worker.ts`), which
+ * holds the gate; main only passes its checked status to the window. A build without a link, as
+ * every shipped build is until a real link exists, starts nothing (README, "Updates").
  */
 import { readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -38,6 +40,11 @@ import {
   PIPE_WRITE,
   SANDBOX_PREFLIGHT_SWITCH,
 } from '../shared/ids.ts';
+import {
+  UPDATE_BANNER_ID,
+  updateBannerText,
+} from '../../../../packages/renderer/src/update-text.ts';
+import type { UpdateStatus } from '../update/status.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
@@ -61,12 +68,17 @@ import {
 import { fromMetrics, fromProcStatus, type RendererSandbox } from './sandbox-proof.ts';
 import { APP_SCHEME, APP_URL, isAppUrl, privilegedSchemes } from './schemes.ts';
 import { hardenWebContents, installSessionPolicy, refusedSwitch } from './security.ts';
+import { installedApp, startUpdater } from './update-proc.ts';
 import { startWorker, type WorkerHandle } from './worker-proc.ts';
 import { WEBRTC_IP_POLICY, createMainWindow } from './window.ts';
+
+/** Replaced by the bundler (`packaging/stage.ts`): this build was packaged with an upgrade link. */
+declare const __NUTFLIX_UPDATES__: boolean;
 
 /** `resources/app` (the staged tree): this file is `<app>/main/main.cjs`. */
 const appDir = join(__dirname, '..');
 const WORKER_ENTRY = join(appDir, 'node_modules', '@nutflix-runtime', 'worker', 'dist', 'main.js');
+const UPDATE_ENTRY = join(appDir, 'main', 'update-worker.cjs');
 const PKG = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8')) as { version: string };
 
 /** Chromium's own `--user-data-dir` wins when given; otherwise one stable directory for this app. */
@@ -94,6 +106,8 @@ if (refused !== undefined) {
 
 const windowIds = new Set<number>();
 let worker: WorkerHandle | undefined;
+let updater: WorkerHandle | undefined;
+let lastUpdate: UpdateStatus | undefined;
 let mainWindow: BrowserWindow | undefined;
 let unsandboxed = false;
 
@@ -166,6 +180,7 @@ app.on('before-quit', (e) => {
   });
 });
 app.on('will-quit', () => {
+  updater?.stop();
   worker?.stop();
 });
 
@@ -281,6 +296,7 @@ async function main(): Promise<void> {
       player: probe.player,
       vp9: probe.vp9,
       h264: probe.h264,
+      updates: __NUTFLIX_UPDATES__ ? 'on' : 'off',
     });
   };
 
@@ -334,6 +350,7 @@ async function main(): Promise<void> {
     if (!isAppUrl(win.webContents.getURL())) return;
     state.window = true;
     if (unsandboxed) void injectBanner(win.webContents);
+    if (lastUpdate !== undefined) showUpdate(lastUpdate);
     void showFuseNotice(win.webContents);
     void untilMounted(win.webContents).then((probe) => {
       if (probe !== null) {
@@ -345,6 +362,79 @@ async function main(): Promise<void> {
     });
   });
   void win.loadURL(APP_URL);
+  if (__NUTFLIX_UPDATES__) await startUpdates();
+}
+
+// ---- the updater (a build with an upgrade link only) ----------------------------------------
+
+async function startUpdates(): Promise<void> {
+  const installed = installedApp({
+    platform: process.platform,
+    arch: process.arch,
+    execPath: process.execPath,
+    appImage: process.env['APPIMAGE'],
+    windowsStore: process.windowsStore,
+    productName: 'Nutflix',
+  });
+  if (installed === null) {
+    // Run from an unpacked directory: there is no installed app to swap.
+    event('update-not-installed');
+    return;
+  }
+  try {
+    const PearRuntime = (await import('pear-runtime')).default;
+    updater = startUpdater({
+      entry: UPDATE_ENTRY,
+      run: (entry, args) => PearRuntime.run(entry, args),
+      start: {
+        dir: join(app.getPath('userData'), 'update'),
+        version: PKG.version,
+        ...installed,
+      },
+      onStatus: (s) => {
+        lastUpdate = s;
+        event('update', { ...s });
+        showUpdate(s);
+      },
+      log: (name, fields) => {
+        event(name, fields);
+      },
+    });
+  } catch {
+    event('update-worker-start-failed');
+  }
+}
+
+/** To the window, through the gate's allow-list; then proves the window shows it. */
+function showUpdate(s: UpdateStatus): void {
+  gate.fromMain('update', { state: s.state });
+  const text = updateBannerText(s.state);
+  if (text !== null && mainWindow !== undefined)
+    void confirmUpdateShown(mainWindow.webContents, s.state, text);
+}
+
+async function confirmUpdateShown(wc: WebContents, state: string, text: string): Promise<void> {
+  const code = `(() => {
+    const e = document.getElementById(${JSON.stringify(UPDATE_BANNER_ID)});
+    return e === null ? null : { state: e.dataset.updateState, text: e.textContent };
+  })()`;
+  for (let i = 0; i < 40; i++) {
+    if (wc.isDestroyed()) return;
+    try {
+      const r = (await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }])) as {
+        state?: unknown;
+        text?: unknown;
+      } | null;
+      if (r !== null && r.state === state && r.text === text) {
+        event('update-shown', { state });
+        return;
+      }
+    } catch {
+      // The page is between documents; try again.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  event('update-not-shown', { state });
 }
 
 /** What the OS is doing to this window's renderer (`sandbox-proof.ts`). */

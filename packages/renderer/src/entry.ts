@@ -6,6 +6,7 @@
  * it says so, as text.
  */
 import { startRenderer } from './main.js';
+import { installUpdateBanner } from './update-banner.js';
 import { asWorkerPipe } from './worker/pipe.js';
 
 const root = document.getElementById('root');
@@ -17,6 +18,7 @@ if (root !== null) {
     root.textContent = 'Nutflix could not start: no worker is connected to this window.';
   } else {
     try {
+      installUpdateBanner(document, pipe);
       const client = startRenderer({
         container: root,
         pipe,

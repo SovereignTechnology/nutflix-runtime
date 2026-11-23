@@ -9,6 +9,10 @@
  *   node scripts/package.ts package [--platform p] [--arch a] [--out dir]
  *   node scripts/package.ts make    [--platform p] [--arch a] [--out dir] [--appimage-runtime-dir dir]
  *   node scripts/package.ts build   (`package` on macOS, `make` elsewhere: the artifact `pear build` takes)
+ *   node scripts/package.ts test-build --update-root <json> --app-version <a.b.c> [...]
+ *                                   the same, with a THROWAWAY trust root on loopback (CI's update
+ *                                   proof). Every other command bakes in the production root and
+ *                                   takes no option that could change it (`packaging/update-root.ts`)
  *
  * After `package`/`make`, the fuses of every packaged binary were read back and match
  * `packaging/fuses.ts`, and the layout matches `packaging/layout.ts` (a mismatch fails the run).
@@ -28,6 +32,7 @@ import { pinnedRuntime } from '../packaging/maker-appimage.ts';
 import { writeAppxManifest } from '../packaging/msix-manifest.ts';
 import { PKG_DIR, REPO_ROOT } from '../packaging/paths.ts';
 import { stageApp } from '../packaging/stage.ts';
+import { assertStagedRoot, releaseRoot, testRootFromText } from '../packaging/update-root.ts';
 import { parseCli, type CliOptions } from './cli-options.ts';
 
 export interface Artifact {
@@ -36,11 +41,24 @@ export interface Artifact {
 }
 
 export async function run(o: CliOptions): Promise<Artifact[]> {
-  const make = o.command === 'make' || (o.command === 'build' && o.platform !== 'darwin');
+  const buildLike = o.command === 'build' || o.command === 'test-build';
+  const make = o.command === 'make' || (buildLike && o.platform !== 'darwin');
+  const updateRoot =
+    o.command === 'test-build'
+      ? testRootFromText(readFileSync(o.updateRootFile ?? '', 'utf8'))
+      : releaseRoot();
   // Fail before minutes of packaging when the AppImage maker would refuse anyway.
   if (make && o.platform === 'linux') pinnedRuntime(o.appImageRuntimeDir, o.arch);
   const stageDir = join(o.out, `stage-${o.platform}-${o.arch}`);
-  const staged = await stageApp({ out: stageDir, platform: o.platform, arch: o.arch });
+  const staged = await stageApp({
+    out: stageDir,
+    platform: o.platform,
+    arch: o.arch,
+    updateRoot,
+    ...(o.appVersion === undefined ? {} : { version: o.appVersion }),
+  });
+  // What the bundle holds, read back: a release must carry the production root and nothing else.
+  assertStagedRoot(stageDir, updateRoot, o.command === 'test-build' ? 'test' : 'release');
   process.stdout.write(
     `staged: ${String(staged.packages.length)} packages, ${String(staged.files)} files, ${(staged.bytes / 1e6).toFixed(1)} MB\n`,
   );
@@ -59,6 +77,7 @@ export async function run(o: CliOptions): Promise<Artifact[]> {
               join(o.out, `AppxManifest-${o.arch}.xml`),
               staged.version,
               o.arch === 'arm64' ? 'arm64' : 'x64',
+              updateRoot.upgrade !== null,
             ),
           }
         : {}),

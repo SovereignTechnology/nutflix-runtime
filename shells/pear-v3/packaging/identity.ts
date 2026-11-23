@@ -54,6 +54,8 @@ export type Arch = (typeof TARGETS)[number]['arch'];
 export const STAGED = {
   main: 'main/main.cjs',
   preload: 'main/preload.cjs',
+  /** The updater process (`src/update/update-worker.ts`), with this build's trust root in it. */
+  updateWorker: 'main/update-worker.cjs',
   rendererIndex: 'renderer/index.html',
   workerEntry: 'node_modules/@nutflix-runtime/worker/dist/main.js',
   pearRuntime: 'node_modules/pear-runtime/package.json',

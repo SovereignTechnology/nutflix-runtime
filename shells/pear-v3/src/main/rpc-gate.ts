@@ -38,17 +38,24 @@ export interface WindowPolicy {
   readonly methods: ReadonlySet<string>;
   /** The worker events this window may hear. */
   readonly events: ReadonlySet<string>;
+  /**
+   * The events only MAIN may send this window (`fromMain`). The same name from the worker is
+   * dropped, so a compromised data worker cannot tell the page an update was verified.
+   */
+  readonly mainEvents?: ReadonlySet<string>;
   readonly maxInflight: number;
 }
 
 /**
  * The renderer's window: what `packages/renderer` uses (`status` to wait for the worker,
- * `nfx.play.open` and `nfx.play.close`), and the one event that follows `status`. No `init`
- * (main sends it, with the storage directory), no `nfx.seed.*`, no `nfx.endpoint`, no logs.
+ * `nfx.play.open` and `nfx.play.close`), the one event that follows `status`, and main's `update`
+ * status to display. No `init` (main sends it, with the storage directory), no `nfx.seed.*`, no
+ * `nfx.endpoint`, no logs, and no method that touches the updater.
  */
 export const MAIN_WINDOW_POLICY: WindowPolicy = {
   methods: new Set(['status', 'nfx.play.open', 'nfx.play.close']),
   events: new Set(['status']),
+  mainEvents: new Set(['update']),
   maxInflight: 32,
 };
 
@@ -329,6 +336,15 @@ export class RpcGate {
       this.#windows.delete(windowId);
       this.#d.closeWindow(windowId);
     }
+  }
+
+  // ---- main's own events ---------------------------------------------------------------------
+
+  /** An event of main's own, to the windows whose policy lists it in `mainEvents`. */
+  fromMain(name: string, fields: Readonly<Record<string, string | number | boolean>>): void {
+    for (const [windowId, w] of this.#windows)
+      if (w.policy.mainEvents?.has(name) === true)
+        this.#toWindow(windowId, { ...fields, op: 'ev', e: name });
   }
 
   // ---- main's own requests -------------------------------------------------------------------
