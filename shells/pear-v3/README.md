@@ -182,7 +182,11 @@ opens the real one. The page says only: use the Account menu, and Nutflix never 
 bunker link inside this page. The menu bar is kept on screen (`autoHideMenuBar: false`) on Linux and
 Windows, and is in the system's menu bar on macOS. Every packaged launch on all five targets reads
 back from Electron that the menu is in place and, on Linux and Windows, that the bar is visible
-(`accountMenu` and `menuBar` in the ready line); a launch that fails this fails CI. Lock never
+(`accountMenu` and `menuBar` in the ready line); a launch that fails this fails CI. **There is no Account menu in fullscreen:** a page can go
+fullscreen on the user's click and draw a fake menu, so press Esc first, and never enter a key or
+bunker link while in fullscreen. In the Electron proof (Linux under Xvfb, no window manager), a real
+click took the page to fullscreen and Electron reported the menu bar hidden; a real Esc left it and
+Electron reported the bar visible again. Windows and macOS were not measured. Lock never
 waits for another dialog, so a page that keeps one open cannot keep the key unlocked, and a cancelled
 file picker stays closed for a few seconds.
 

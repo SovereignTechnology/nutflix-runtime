@@ -33,7 +33,9 @@ export const PUBLISH_DISCLOSURE =
 /** The only thing this page says about entering a secret. */
 export const ACCOUNT_MENU_NOTE =
   'To create, unlock or lock a key, or connect a bunker, use the Account menu. Nutflix never asks ' +
-  'for a key, passphrase or bunker link inside this page. If a box here asks for one, do not type it.';
+  'for a key, passphrase or bunker link inside this page. If a box here asks for one, do not type it. ' +
+  'There is no Account menu in fullscreen: press Esc first, and never type a key or bunker link ' +
+  'while in fullscreen.';
 
 export interface SeedPublishPanel {
   stop(): void;
