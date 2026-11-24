@@ -14,7 +14,9 @@
  *   3. ids are remapped, so the page cannot answer for, or collide with, the shell's requests;
  *   4. at most `MAX_INFLIGHT` requests at once, and a repeated id in flight is refused;
  *   5. only sessions this page opened can be closed through it, and they close when it goes away;
- *   6. of the worker's events, only `status` reaches the page.
+ *   6. of the worker's events, only `status` reaches the page;
+ *   7. a `reset` frame (a new page after a reload) closes the old page's sessions and forgets its
+ *      ids, as if that page had gone.
  */
 import {
   ERROR_CODES,
@@ -139,6 +141,15 @@ export class PageGate {
   pageGone(): void {
     if (!this.#pageOpen) return;
     this.#pageOpen = false;
+    this.#forgetPage();
+  }
+
+  /** A new page on the same pipe: the old one's sessions close and its ids are forgotten. */
+  #resetPage(): void {
+    this.#forgetPage();
+  }
+
+  #forgetPage(): void {
     for (const [wid, p] of this.#pending)
       if (p.kind === 'page') this.#pending.set(wid, { kind: 'drop' });
     this.#inflight.clear();
@@ -162,6 +173,10 @@ export class PageGate {
 
   #onPageMessage(msg: unknown): void {
     if (!this.#pageOpen || !isRecord(msg)) return;
+    if (msg['op'] === 'reset') {
+      this.#resetPage();
+      return;
+    }
     const id = msg['id'];
     // Only requests go this way. A response or an event from the page is nonsense: dropped.
     if (msg['op'] !== 'req' || !isMsgId(id)) return;

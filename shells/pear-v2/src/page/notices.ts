@@ -17,7 +17,16 @@ export const LABEL_TEXT_UNVERSIONED =
   'Pear v2 runs this window with Node access and no sandbox. This unversioned link updates with no signed notice. Prefer the Pear v3 app: pear install.';
 
 export const WEBRTC_LEGACY_NOTE =
-  'This legacy runtime cannot set webRTCIPHandlingPolicy, so WebRTC cannot be limited to your public address. It starts off here. If you turn it on, peers may also see your local network and VPN addresses.';
+  'This legacy runtime cannot set webRTCIPHandlingPolicy, so WebRTC cannot be limited to your public address. It starts off here. If you turn it on, WebRTC peers may also see your local network and VPN addresses. HyperDHT, which plays with WebRTC off, is set never to share them.';
+
+/** Where the refusal goes: the app's own root, as text. */
+export function showRefusal(doc: Document, text: string): void {
+  const root = doc.getElementById('root');
+  if (root === null) return;
+  root.textContent = text;
+  root.setAttribute('role', 'alert');
+  root.dataset['refused'] = 'unversioned';
+}
 
 export interface WindowControls {
   minimize(): unknown;
@@ -25,11 +34,6 @@ export interface WindowControls {
   restore(): unknown;
   isMaximized(): Promise<boolean>;
   close(): unknown;
-}
-
-/** `pear://<fork>.<length>.<key>`: the only form that holds one exact build. */
-export function isVersionedLink(link: unknown): boolean {
-  return typeof link === 'string' && /^pear:\/\/\d+\.\d+\.[a-z0-9]{52}(\/|$)/.test(link);
 }
 
 function control(doc: Document, name: string, glyph: string, run: () => void): HTMLButtonElement {

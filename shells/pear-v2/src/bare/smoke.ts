@@ -65,6 +65,7 @@ async function main(): Promise<void> {
     storage,
     bootstrap: [{ host: '127.0.0.1', port: 9 }],
     localKey: false,
+    watchOnly: true,
   });
   await gate.request('seeding.set', { watched: false });
   if (!watchOnly(await gate.request('seeding.status', {}))) throw new Error('seeding is not off');

@@ -181,6 +181,32 @@ describe('sessions and events', () => {
   });
 });
 
+describe('a new page on the same pipe (a reload)', () => {
+  it('closes the old page’s sessions, drops its late answers, and takes its ids again', () => {
+    const r = rig();
+    r.gate.fromPage(req(1, 'nfx.play.open', { sid: SID_A }));
+    r.answer(r.toWorker[0]?.['id'] as number, { ok: 1 });
+    r.gate.fromPage(req(2, 'status'));
+    const late = r.toWorker[1]?.['id'] as number;
+    const answered = r.toPage.length;
+
+    r.gate.fromPage(encodeFrame({ op: 'reset' }));
+    expect(r.toWorker[2]).toMatchObject({ m: 'nfx.play.close', a: { sid: SID_A } });
+    r.answer(late, { old: true });
+    expect(r.toPage).toHaveLength(answered);
+
+    // The new page reuses id 2: it is a new request, not "already in flight".
+    r.gate.fromPage(req(2, 'status'));
+    const fresh = r.toWorker[3]?.['id'] as number;
+    r.answer(fresh, { new: true });
+    expect(r.toPage.at(-1)).toEqual({ op: 'res', id: 2, ok: true, r: { new: true } });
+    // The old page's session is no longer this page's to close.
+    r.gate.fromPage(req(3, 'nfx.play.close', { sid: SID_A }));
+    expect(r.toWorker).toHaveLength(4);
+    expect(r.closed()).toBe(0);
+  });
+});
+
 describe("the shell's requests and a worker that goes away", () => {
   it('answers the shell, not the page', async () => {
     const r = rig();

@@ -27,6 +27,7 @@ import { encodeFrame } from '@nutflix-runtime/worker';
 import { SETTINGS_KEY } from '../../../packages/renderer/src/settings/store.ts';
 import { stage } from '../scripts/stage.ts';
 import { LABEL_ID, LABEL_TITLE, LEGACY_NOTE_ID, WEBRTC_LEGACY_NOTE } from '../src/page/notices.ts';
+import { UNVERSIONED_REFUSAL } from '../src/shared/link.ts';
 import { PEAR_V2, type ReleaseLine } from '../src/shared/pins.ts';
 import { Cdp } from './cdp.ts';
 import { S1_DIR, loopbackNodes } from './platform-modules.ts';
@@ -151,6 +152,8 @@ const children: ChildProcess[] = [];
 let boot = '';
 let line: ReleaseLine;
 let verlink = '';
+/** The same app's plain, unversioned `pear://<key>` link. */
+let appLink = '';
 let world: World | undefined;
 let app: ChildProcess | undefined;
 let cdp: Cdp;
@@ -159,8 +162,8 @@ let appExit: Promise<number | null>;
 const pear = (args: readonly string[], timeoutSec = 180): string =>
   run(PEAR, ['--dht-bootstrap', boot, ...args], timeoutSec);
 
-/** Starts the staged link and attaches to its window. */
-async function launchApp(): Promise<void> {
+/** Starts the staged link (the versioned one unless told) and attaches to its window. */
+async function launchApp(link = verlink): Promise<void> {
   const debugPort = await freePort();
   const log = openSync(APP_LOG, 'a');
   const started = spawn(
@@ -174,7 +177,7 @@ async function launchApp(): Promise<void> {
       boot,
       'run',
       '--trusted',
-      verlink,
+      link,
       `--remote-debugging-port=${String(debugPort)}`,
     ],
     {
@@ -274,6 +277,7 @@ beforeAll(async () => {
   ) as { data?: { link?: string } };
   const link = touched.data?.link;
   if (link === undefined) throw new Error('pear touch gave no link');
+  appLink = link;
   const staged = pear(['stage', '--json', link, APP], 900);
   // Stage reports the link it started from first: the build it made is in the `addendum`.
   const addendum = staged
@@ -752,6 +756,26 @@ describe('a real `pear run` of a staged versioned link', () => {
       60_000,
       'the worker after a restart',
     );
+    expect(await quitApp()).not.toBe('hung');
+  });
+
+  it('an unversioned link gets no worker, and the window says why', async () => {
+    expect(appLink).toMatch(/^pear:\/\/[a-z0-9]{52}$/);
+    await launchApp(appLink);
+    await cdp.waitFor(
+      `document.getElementById('root')?.dataset.refused === 'unversioned'`,
+      60_000,
+      'the refusal',
+    );
+    const r = await cdp.eval<{ pipe: string; text: string; label: string }>(`({
+      pipe: typeof globalThis.nutflixWorkerPipe,
+      text: document.getElementById('root').textContent,
+      label: document.getElementById(${JSON.stringify(LABEL_ID)}).textContent,
+    })`);
+    expect(r.pipe).toBe('undefined');
+    expect(r.text).toBe(UNVERSIONED_REFUSAL);
+    expect(r.label).toContain(LABEL_TITLE);
+    expect(readFileSync(APP_LOG, 'utf8')).toContain('refusing to start the worker');
     expect(await quitApp()).not.toBe('hung');
   });
 

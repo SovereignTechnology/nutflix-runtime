@@ -106,6 +106,8 @@ interface Running {
   readonly signer: UserSigner | null;
   readonly studio: Studio | null;
   /** What "seed what you watch" has started lately, and holds in flight. */
+  /** `InitArgs.watchOnly`: nothing is served and nothing is fetched to seed. */
+  readonly watchOnly: boolean;
   readonly watchBudget: {
     starts: number[];
     reserved: number;
@@ -122,6 +124,18 @@ const needs = <T>(x: T | null): T => {
 };
 
 type Call = { [M in WorkerMethod]: { readonly m: M; readonly a: ArgsOf<M> } }[WorkerMethod];
+
+/** What a watch-only worker refuses: fetching to seed, and turning seeding on. */
+const SEED_METHODS: ReadonlySet<WorkerMethod> = new Set([
+  'nfx.seed.start',
+  'seeding.watch',
+  'seeding.resume',
+]);
+
+function seedsAnything(c: Call): boolean {
+  if (c.m === 'seeding.set') return c.a.watched;
+  return SEED_METHODS.has(c.m);
+}
 
 export class WorkerHost implements WorkerRpcHandler {
   private readonly o: WorkerHostOptions;
@@ -149,6 +163,7 @@ export class WorkerHost implements WorkerRpcHandler {
     if (c.m === 'init') return this.init(c.a);
     const r = this.running;
     if (r === null) fail('not-ready', 'init has not answered');
+    if (r.watchOnly && seedsAnything(c)) fail('unsupported-input', 'this worker is watch only');
     switch (c.m) {
       case 'status':
         return this.status();
@@ -559,7 +574,8 @@ export class WorkerHost implements WorkerRpcHandler {
         this.o.emit(ev);
       },
       onChange,
-      served: (video) => policy.served(video),
+      // Watch only: nothing stored is served, so no listener ever opens.
+      served: a.watchOnly === true ? () => false : (video) => policy.served(video),
       held: (video, sha) => offers.read(video, sha),
     });
     const seederKeys = new SeederKeys((name) => keys.keyPair(name));
@@ -608,7 +624,7 @@ export class WorkerHost implements WorkerRpcHandler {
         ...(this.o.sourceTtlSec === undefined ? {} : { sourceTtlSec: this.o.sourceTtlSec }),
       });
     }
-    await seeds.resume();
+    if (a.watchOnly !== true) await seeds.resume();
     return {
       logger,
       keys,
@@ -622,6 +638,7 @@ export class WorkerHost implements WorkerRpcHandler {
       seederKeys,
       signer,
       studio,
+      watchOnly: a.watchOnly === true,
       watchBudget: { starts: [], reserved: 0, fetched: [], active: new Set() },
     };
   }

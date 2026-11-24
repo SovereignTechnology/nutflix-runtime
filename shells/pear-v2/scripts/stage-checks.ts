@@ -114,3 +114,47 @@ export function moduleClosure(
 
 /** What a watch-only build must not load: Studio's process runner, the bunker's socket, `env`. */
 export const SYSTEM_ONLY_PACKAGES: readonly string[] = ['bare-env', 'bare-subprocess', 'bare-ws'];
+
+/** A lockfile's `packages` entries, as far as the stage reads them. */
+export type LockPackages = Readonly<
+  Record<
+    string,
+    {
+      readonly version?: string;
+      readonly name?: string;
+      readonly optional?: boolean;
+      readonly dev?: boolean;
+      readonly link?: boolean;
+    }
+  >
+>;
+
+/**
+ * What differs between a lockfile and the packages staged from it. `staged` maps each package's
+ * path (`node_modules/a`, `node_modules/a/node_modules/@s/b`) to its own `package.json` name and
+ * version. Every package must be the lockfile's, at its version, and every package the lockfile
+ * installs must be there. `extra` names paths the stage adds itself (`@sovit/*`).
+ */
+export function lockMismatches(
+  lock: LockPackages,
+  staged: ReadonlyMap<string, { readonly name: unknown; readonly version: unknown }>,
+  extra: (path: string) => boolean = () => false,
+): string[] {
+  const out: string[] = [];
+  const nameOf = (path: string): string => path.slice(path.lastIndexOf('node_modules/') + 13);
+  for (const [path, entry] of Object.entries(lock)) {
+    if (!path.startsWith('node_modules/') || entry.link === true || entry.dev === true) continue;
+    const got = staged.get(path);
+    if (got === undefined) {
+      if (entry.optional !== true) out.push(`${path}: missing`);
+      continue;
+    }
+    const want = entry.name ?? nameOf(path);
+    if (got.name !== want) out.push(`${path}: name ${String(got.name)}, lockfile ${want}`);
+    if (got.version !== entry.version)
+      out.push(`${path}: version ${String(got.version)}, lockfile ${String(entry.version)}`);
+  }
+  for (const path of staged.keys())
+    if (!(path in lock) && !extra(path)) out.push(`${path}: not in the lockfile`);
+  return out.sort();
+}

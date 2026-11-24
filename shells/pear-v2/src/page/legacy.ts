@@ -8,12 +8,8 @@
  * do anything the user can. Keeping code from getting to run here is the job of the CSP and of
  * rendering every remote field as text.
  */
-import {
-  installLabel,
-  installWebRtcWarning,
-  isVersionedLink,
-  type WindowControls,
-} from './notices.ts';
+import { UNVERSIONED_REFUSAL, linkKind } from '../shared/link.ts';
+import { installLabel, installWebRtcWarning, showRefusal, type WindowControls } from './notices.ts';
 import { removeWebRtc, webrtcOffUnlessChosen } from './first-run.ts';
 import { linkOpener } from './open-link.ts';
 import { workerPipeOver, type PageStream } from './pipe.ts';
@@ -27,17 +23,21 @@ const g = globalThis as unknown as Record<string, unknown>;
 const pear = g['Pear'] as (PagePear & Record<symbol, unknown>) | undefined;
 
 if (pear !== undefined) {
-  const ipc = pear[pear.constructor.IPC] as { pipe(): PageStream };
-  if (webrtcOffUnlessChosen(() => globalThis.localStorage) === 'no-storage')
-    removeWebRtc(globalThis);
-  g['nutflixWorkerPipe'] = workerPipeOver(ipc.pipe());
-  // Watch only: the renderer shows no seeding, publishing or signer controls, and calls none.
-  g['nutflixWatchOnly'] = true;
-  // The one call to `window.open` in this shell: `linkOpener` has checked the URL.
-  g['nutflixOpenLink'] = linkOpener((url) => {
-    // eslint-disable-next-line no-restricted-syntax -- the checked exit for an https: link
-    globalThis.open(url, '_blank', 'noopener');
-  });
+  // An unversioned link gets no worker (`../bare/main.ts` starts none), so no pipe either.
+  const refused = linkKind(pear.config?.link) === 'unversioned';
+  if (!refused) {
+    const ipc = pear[pear.constructor.IPC] as { pipe(): PageStream };
+    if (webrtcOffUnlessChosen(() => globalThis.localStorage) === 'no-storage')
+      removeWebRtc(globalThis);
+    g['nutflixWorkerPipe'] = workerPipeOver(ipc.pipe());
+    // Watch only: the renderer shows no seeding, publishing or signer controls, and calls none.
+    g['nutflixWatchOnly'] = true;
+    // The one call to `window.open` in this shell: `linkOpener` has checked the URL.
+    g['nutflixOpenLink'] = linkOpener((url) => {
+      // eslint-disable-next-line no-restricted-syntax -- the checked exit for an https: link
+      globalThis.open(url, '_blank', 'noopener');
+    });
+  }
 
   // A file or link dropped on the window would navigate it.
   for (const type of ['dragover', 'drop'] as const)
@@ -51,9 +51,11 @@ if (pear !== undefined) {
 
   const ui = pear[pear.constructor.UI] as { app?: WindowControls } | undefined;
   const whenReady = (): void => {
-    installLabel(document, ui?.app ?? null, isVersionedLink(pear.config?.link));
+    installLabel(document, ui?.app ?? null, !refused);
+    // After the renderer's module has run: it found no pipe and said so; this says why.
+    if (refused) showRefusal(document, UNVERSIONED_REFUSAL);
     const root = document.getElementById('root');
-    if (root !== null) installWebRtcWarning(root);
+    if (root !== null && !refused) installWebRtcWarning(root);
   };
   if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', whenReady, { once: true });

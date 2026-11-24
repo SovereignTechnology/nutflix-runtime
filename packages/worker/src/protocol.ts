@@ -185,6 +185,12 @@ export interface InitArgs {
    * and, by ADR 0001's amendment, signs nothing at all: it runs the worker with no `system`.
    */
   readonly localKey?: boolean;
+  /**
+   * `true`: watch only (shape b). Nothing stored is served, so no listener opens, at `init` or
+   * later, and the methods that fetch to seed or turn seeding on answer `unsupported-input`.
+   * Absent: as before.
+   */
+  readonly watchOnly?: boolean;
 }
 
 /**

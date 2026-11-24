@@ -5,26 +5,30 @@
  *   index.js       `src/bare/entry.ts`, bundled, with the platform line and page list written in
  *   page/          the renderer's own build, plus `legacy.js` and `legacy.css` (with SRI)
  *   worker/        the worker package's `tsc` output, only the modules the entry reaches
- *   node_modules/  `app/package-lock.json`'s versions (those that run on Bare 1.24.3), linux-x64
- *                  prebuilds only, plus `@sovit/core` and `@sovit/seeder` from the submodule
+ *   node_modules/  a clean `npm ci` of `app/package-lock.json` (versions that run on Bare 1.24.3),
+ *                  checked package by package against it, linux-x64 prebuilds only and no `.bin`,
+ *                  plus `@sovit/core` and `@sovit/seeder` from the submodule
  *
  *   node shells/pear-v2/scripts/stage.ts --test-line <key>:<fork>:<length> [--out DIR] [--with-smoke]
  *
  * With no `--test-line` it builds for `RELEASE_LINE`, and refuses while that is `null`. A test
  * line can never be Holepunch's key. Nothing here publishes anything.
  */
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +44,9 @@ import {
   checkStagedHtml,
   importsOf,
   insertLegacyTags,
+  lockMismatches,
   moduleClosure,
+  type LockPackages,
   parseTestLine,
   sri,
 } from './stage-checks.ts';
@@ -137,15 +143,58 @@ function keepPrebuild(p: string): boolean {
   return m === null || m[1] === HOST;
 }
 
-function copyModules(out: string): void {
-  const src = join(PKG, 'app', 'node_modules');
-  if (!existsSync(join(src, 'pear-electron')))
-    fail('no pinned modules: run `npm ci --ignore-scripts` in shells/pear-v2/app');
-  cpSync(src, join(out, 'node_modules'), {
-    recursive: true,
-    verbatimSymlinks: true,
-    filter: (p) => keepPrebuild(p) && !p.endsWith('/.package-lock.json'),
+/**
+ * The app's pinned modules, from a clean install of its own lockfile in a new directory, so that
+ * nothing already on disk is shipped: `npm ci` checks every package's integrity against it.
+ */
+function cleanInstall(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'nutflix-v2-modules-'));
+  for (const f of ['package.json', 'package-lock.json']) cpSync(join(PKG, 'app', f), join(dir, f));
+  const r = spawnSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, npm_config_ignore_scripts: 'true' },
   });
+  if (r.status !== 0) fail(`npm ci of app/package-lock.json failed:\n${r.stderr.slice(-2000)}`);
+  return dir;
+}
+
+/** Every package under `root/node_modules`, by its path there, with its own name and version. */
+function stagedPackages(root: string): Map<string, { name: unknown; version: unknown }> {
+  const found = new Map<string, { name: unknown; version: unknown }>();
+  const walk = (dir: string): void => {
+    const nm = join(root, dir, 'node_modules');
+    if (!existsSync(nm)) return;
+    for (const name of readdirSync(nm)) {
+      if (name.startsWith('.')) continue;
+      const scoped = name.startsWith('@');
+      for (const sub of scoped ? readdirSync(join(nm, name)) : ['']) {
+        const rel = `${dir === '' ? '' : `${dir}/`}node_modules/${scoped ? `${name}/${sub}` : name}`;
+        const pj = join(root, rel, 'package.json');
+        if (!existsSync(pj)) continue;
+        const j = JSON.parse(readFileSync(pj, 'utf8')) as { name?: unknown; version?: unknown };
+        found.set(rel, { name: j.name, version: j.version });
+        walk(rel);
+      }
+    }
+  };
+  walk('');
+  return found;
+}
+
+function copyModules(out: string): void {
+  const dir = cleanInstall();
+  try {
+    cpSync(join(dir, 'node_modules'), join(out, 'node_modules'), {
+      recursive: true,
+      verbatimSymlinks: true,
+      // No `.bin` (nothing here runs a package binary), no other platform's prebuilds.
+      filter: (p) =>
+        keepPrebuild(p) && !p.endsWith('/.package-lock.json') && !/[\\/]\.bin(?:[\\/]|$)/.test(p),
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   for (const n of ['core', 'seeder']) {
     const from = join(REPO, 'vendor', 'nutflix-pear', 'packages', n);
     if (!existsSync(join(from, 'dist'))) fail(`@sovit/${n} is not built: run \`npm run build\``);
@@ -157,12 +206,45 @@ function copyModules(out: string): void {
       filter: (p) => !p.includes('__tests__') && !p.endsWith('.map'),
     });
   }
+  const lock = (
+    JSON.parse(readFileSync(join(PKG, 'app', 'package-lock.json'), 'utf8')) as {
+      packages: LockPackages;
+    }
+  ).packages;
+  const wrong = lockMismatches(lock, stagedPackages(out), (p) =>
+    p.startsWith('node_modules/@sovit/'),
+  );
+  if (wrong.length > 0)
+    fail(`the staged modules are not app/package-lock.json's:\n  ${wrong.join('\n  ')}`);
+}
+
+/** One sha256 over the staged tree: each file's path, executable bit and sha256, sorted. */
+export function treeHash(root: string): string {
+  const lines: string[] = [];
+  const walk = (rel: string): void => {
+    for (const name of readdirSync(join(root, rel)).sort()) {
+      const r = rel === '' ? name : `${rel}/${name}`;
+      const st = lstatSync(join(root, r));
+      if (st.isSymbolicLink()) fail(`a symlink in the stage: ${r}`);
+      if (st.isDirectory()) walk(r);
+      else
+        lines.push(
+          `${r}\t${(st.mode & 0o111) !== 0 ? 'x' : '-'}\t${createHash('sha256')
+            .update(readFileSync(join(root, r)))
+            .digest('hex')}`,
+        );
+    }
+  };
+  walk('');
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
 export interface StageResult {
   readonly out: string;
   readonly line: ReleaseLine;
   readonly pageFiles: readonly string[];
+  /** `treeHash` of the staged directory. */
+  readonly tree: string;
 }
 
 export async function stage(o: {
@@ -178,10 +260,10 @@ export async function stage(o: {
   if (o.smoke === true && o.testLine === null) fail('--with-smoke is for test builds only');
   if (o.testLine !== null && o.testLine.key === PEAR_V2.upstream.key)
     fail('a test line cannot be Holepunch’s key: the pin is a line nobody else can append to');
-  // ADR 0001 amendment, item 1: this shape signs only through a NIP-46 bunker. The renderer offers
-  // no sign-in at all today; if that changes, this build must be looked at again, not ship it.
+  // ADR 0001 amendment, item 1: shape (b) is watch only, and offers no sign-in of any kind. If the
+  // renderer's offer ever has one, this build must be looked at again, not shipped.
   if ((RUNTIME_OFFER.signIn as unknown) !== false)
-    fail('the renderer now offers sign-in: shape (b) allows a NIP-46 bunker only');
+    fail('the renderer now offers sign-in: shape (b) is watch only and offers none');
 
   assertReplaceable(o.out);
   rmSync(o.out, { recursive: true, force: true });
@@ -275,7 +357,7 @@ export async function stage(o: {
     `${JSON.stringify({ name, version, description, license, type, main: entry, pear }, null, 2)}\n`,
   );
   cpSync(join(REPO, 'LICENSE'), join(o.out, 'LICENSE'));
-  return { out: o.out, line, pageFiles };
+  return { out: o.out, line, pageFiles, tree: treeHash(o.out) };
 }
 
 function arg(name: string): string | undefined {
@@ -292,11 +374,8 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     smoke: process.argv.includes('--with-smoke'),
   }).then(
     (r) => {
-      const hash = createHash('sha256')
-        .update(readFileSync(join(r.out, 'index.js')))
-        .digest('hex');
       process.stdout.write(
-        `staged ${relative(process.cwd(), r.out)}: ${String(r.pageFiles.length)} page files, index.js sha256 ${hash}\n`,
+        `staged ${relative(process.cwd(), r.out)}: ${String(r.pageFiles.length)} page files, tree sha256 ${r.tree}\n`,
       );
     },
     (e: unknown) => {

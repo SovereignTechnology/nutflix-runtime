@@ -10,6 +10,7 @@ import {
   checkStagedHtml,
   importsOf,
   insertLegacyTags,
+  lockMismatches,
   moduleClosure,
   parseTestLine,
   sri,
@@ -168,5 +169,46 @@ describe('the staged worker', () => {
   it('refuses a path out of the worker, and a module that is not there', () => {
     expect(() => moduleClosure(read, ['evil.js'])).toThrow(/leaves the worker/);
     expect(() => moduleClosure(read, ['gone.js'])).toThrow(/has no gone\.js/);
+  });
+});
+
+describe('the staged modules against the lockfile', () => {
+  const lock = {
+    '': { name: 'nutflix-legacy' },
+    'node_modules/a': { version: '1.0.0' },
+    'node_modules/@s/b': { version: '2.0.0' },
+    'node_modules/a/node_modules/c': { version: '3.0.0' },
+    'node_modules/opt': { version: '1.0.0', optional: true },
+    'node_modules/devonly': { version: '1.0.0', dev: true },
+  };
+  const good = new Map<string, { name: unknown; version: unknown }>([
+    ['node_modules/a', { name: 'a', version: '1.0.0' }],
+    ['node_modules/@s/b', { name: '@s/b', version: '2.0.0' }],
+    ['node_modules/a/node_modules/c', { name: 'c', version: '3.0.0' }],
+  ]);
+
+  it('passes what the lockfile installs', () => {
+    expect(lockMismatches(lock, good)).toEqual([]);
+  });
+
+  it('finds another version, another name, a missing package and an extra one', () => {
+    const bad = new Map(good);
+    bad.set('node_modules/a', { name: 'a', version: '1.0.1' });
+    bad.set('node_modules/@s/b', { name: '@evil/b', version: '2.0.0' });
+    bad.delete('node_modules/a/node_modules/c');
+    bad.set('node_modules/planted', { name: 'planted', version: '0.0.1' });
+    expect(lockMismatches(lock, bad)).toEqual([
+      'node_modules/@s/b: name @evil/b, lockfile @s/b',
+      'node_modules/a/node_modules/c: missing',
+      'node_modules/a: version 1.0.1, lockfile 1.0.0',
+      'node_modules/planted: not in the lockfile',
+    ]);
+  });
+
+  it('lets the stage add its own packages, and only those', () => {
+    const plus = new Map(good);
+    plus.set('node_modules/@sovit/core', { name: '@sovit/core', version: '0.0.0' });
+    expect(lockMismatches(lock, plus, (p) => p.startsWith('node_modules/@sovit/'))).toEqual([]);
+    expect(lockMismatches(lock, plus)).toEqual(['node_modules/@sovit/core: not in the lockfile']);
   });
 });

@@ -24,6 +24,8 @@ import type {
 } from '@sovit/seeder';
 import { hyperdhtEndpoint, listenNfx } from '@sovit/seeder';
 
+import { withoutLocalAddresses } from '../net/no-local-addresses.js';
+
 export interface NfxSeedingDeps {
   /** The DHT node to listen on (the swarm's), or `null` while there is none. */
   readonly dht: () => NfxDht | null;
@@ -97,7 +99,10 @@ export class NfxSeeding {
       }
       try {
         const keyPair = await this.peerKeyPair();
-        this.listener = await listenNfx(dht, { keyPair, source: this.d.source });
+        this.listener = await listenNfx(withoutLocalAddresses(dht), {
+          keyPair,
+          source: this.d.source,
+        });
         this.d.logger.info('nfx: seeding over HyperDHT', { namespace: this.namespace });
       } catch (err) {
         this.d.logger.error('nfx: the HyperDHT listener did not start', { error: err });

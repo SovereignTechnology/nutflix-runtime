@@ -55,6 +55,8 @@ describe('seeding is off at start', () => {
     const src = readFileSync(join(here, '..', 'bare', 'main.ts'), 'utf8');
     expect(src).toContain("gate.request('seeding.set', { watched: false })");
     expect(src).toContain('localKey: false');
+    expect(src).toContain('watchOnly: true');
+    expect(src).toContain("linkKind(Pear.config.link) === 'unversioned'");
   });
 });
 

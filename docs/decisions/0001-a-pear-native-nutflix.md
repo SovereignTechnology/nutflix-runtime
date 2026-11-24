@@ -5,7 +5,8 @@ Date: 2026-11-19
 ## Status
 
 Accepted by the maintainer, 2026-11-19. Amended 2026-11-22 after spikes S1 and S2: see
-[the amendment](#amendment-2026-11-22), which takes precedence over the text above it.
+[the amendment](#amendment-2026-11-22), which takes precedence over the text above it. Its shape (b)
+conditions were changed on 2026-11-24; the note at its end says what changed and why.
 
 ## Context
 
@@ -121,6 +122,14 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   cut in the seconds after publishing can bring back the file from before the signature. The video
   then reads as an unsigned draft, the next start deletes its bytes, and its manifest stays on the
   relays pointing at nothing.
+- **HyperDHT tells no peer this machine's local addresses, in both shapes.** By default hyperdht
+  puts every local IPv4 address (LAN, VPN, container bridges) into each connection: a dialer in
+  its first handshake, a server in every reply. The worker turns both off (`localConnection: false`,
+  `shareLocalAddress: false`; `packages/worker/src/net/no-local-addresses.ts`). This is nutflix-pear
+  ADR 0023 rule 5, which keeps LAN candidates from WebRTC peers, applied to HyperDHT; without it,
+  turning WebRTC off would not keep those addresses from strangers. The cost: a viewer and a seeder
+  on the same LAN, behind a router without NAT loopback, may fail to connect, because neither learns
+  the other's LAN address. nutflix-pear's desktop app still shares them; that is not changed here.
 - **Known limit: free space is read once, per job.** Studio reads the real free space
   (`statfs`) and holds a job to a third of it, because the encode, the packaged files and the store's
   copy are on disk at once. Anything else filling the disk during the job can still end it with an
@@ -138,7 +147,12 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    injection; it does not add a boundary. Shape (b) does not ship until all of these hold:
    - It runs on a pinned v2.6.5 from a SovTech-controlled release line, because S1 found that only
      re-homing onto a key we control holds the version. Users run the versioned link a signed
-     notice names.
+     notice names, and the app starts no worker from an unversioned `pear://` link.
+   - The Electron UI drive is on a SovTech-controlled key too, or its bytes are checked when it
+     runs. Today `pear-electron` 1.7.28 fetches it from Holepunch's key at a versioned link
+     (`pear://0.940.cktxz…`), and nothing of ours checks its bytes: a versioned link fixes a fork
+     and length, not content, and this binary renders strangers' content with no sandbox. This
+     condition is open, and it is the owner's to close before any release.
    - A `<meta>` CSP, first in the document, allows no inline script and no `eval`.
    - Every remote field renders as text. `innerHTML` and `dangerouslySetInnerHTML` are refused by
      lint, and anything that cannot be text goes in an `<iframe sandbox="allow-scripts">`.
@@ -152,6 +166,16 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    - An authenticated renderer-to-worker channel works. S1 did not confirm this pipe.
    - The window, the README and the install instructions say plainly that this is unsandboxed
      legacy software, and point to shape (a).
+
+   **Changed on 2026-11-24** (PR #22), after seed and publish landed for shape (a) and after an
+   independent security review of shape (b):
+   - The signing condition read "no signing key is on disk: shape (b) signs only through a NIP-46
+     bunker". It now reads watch only, for v1: a bunker link is a secret too, and this window has
+     no safe place to type one. Seeding goes with it, because it would put the user's address on
+     the network from the same unconfined process.
+   - The Electron UI drive condition is new (the review's finding M2).
+   - "Users run the versioned link" is now enforced in code, not only written down (finding M3).
+   - HyperDHT's sharing of local addresses (finding M1) is a consequence for both shapes, below.
 2. **Without Chromium's sandbox, the app runs only if the user chooses to (shape a).** The AppImage's
    `AppRun` adds `--no-sandbox` only when the kernel limits user namespaces and Chromium itself then
    reports that its sandbox cannot start, because Chromium would otherwise abort before app code.

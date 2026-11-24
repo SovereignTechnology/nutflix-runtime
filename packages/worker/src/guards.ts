@@ -179,6 +179,7 @@ export const isInitArgs = obj<InitArgs>(
     diskCapBytes: int(0, Number.MAX_SAFE_INTEGER),
     logLevel: oneOf(['debug', 'info', 'warn', 'error'] as const),
     localKey: bool,
+    watchOnly: bool,
   },
 );
 

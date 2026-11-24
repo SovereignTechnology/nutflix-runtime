@@ -44,7 +44,9 @@ describe('dist/main.js under the real Bare', () => {
   it('inits, plays and seeds over NFX-12, serves both loopback endpoints, exits 0', async () => {
     expect(existsSync(MAIN), `${MAIN} (run npm run build first)`).toBe(true);
     const v = testNfxVideo();
-    const dht = new DHT({ bootstrap: testnet.bootstrap });
+    // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
+    // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
+    const dht = new DHT({ bootstrap: testnet.bootstrap, firewalled: false });
     cleanups.push(() => dht.destroy());
     await dht.fullyBootstrapped();
     const keyPair = DHT.keyPair();

@@ -59,7 +59,9 @@ export async function startWorld(bootstrap: readonly DhtNode[]): Promise<World> 
   const videoId = `proof-${createHash('sha256').update(String(Date.now())).digest('hex').slice(0, 24)}`;
   const pkg = makeVp9Package(`${NS}:${videoId}`);
 
-  const dht = new DHT({ bootstrap: [...bootstrap] });
+  // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
+  // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
+  const dht = new DHT({ bootstrap: [...bootstrap], firewalled: false });
   await dht.fullyBootstrapped();
   const keyPair = DHT.keyPair();
   const source: NfxFileSource = {

@@ -19,11 +19,14 @@ import {
   WEBRTC_LEGACY_NOTE,
   installLabel,
   installWebRtcWarning,
-  isVersionedLink,
+  showRefusal,
   type WindowControls,
 } from '../page/notices.ts';
 import { LINK_LIMIT, LINK_WINDOW_MS, checkedLink, linkOpener } from '../page/open-link.ts';
 import { workerPipeOver } from '../page/pipe.ts';
+import { UNVERSIONED_REFUSAL, linkKind } from '../shared/link.ts';
+import { PAGE_RESET } from '../shared/reset.ts';
+import { FrameDecoder } from '@nutflix-runtime/worker';
 
 class FakeStream extends EventEmitter {
   readonly written: Uint8Array[] = [];
@@ -50,13 +53,22 @@ function memory(initial?: string): SettingsStorage & { value: string | null } {
 }
 
 describe('the worker pipe over the page stream', () => {
+  it('first tells the gate a new page is talking', () => {
+    const s = new FakeStream();
+    workerPipeOver(s);
+    const seen: unknown[] = [];
+    const d = new FrameDecoder((m) => seen.push(m));
+    for (const b of s.written) d.push(b);
+    expect(seen).toEqual([PAGE_RESET]);
+  });
+
   it('carries bytes both ways, as plain copies', () => {
     const s = new FakeStream();
     const p = workerPipeOver(s);
     const got: Uint8Array[] = [];
     p.onData((b) => got.push(b));
     p.write(Uint8Array.of(1, 2));
-    expect(s.written).toEqual([Uint8Array.of(1, 2)]);
+    expect(s.written.slice(1)).toEqual([Uint8Array.of(1, 2)]);
     const chunk = Buffer.from([3, 4]);
     s.emit('data', chunk);
     expect(got[0]).toEqual(Uint8Array.of(3, 4));
@@ -289,17 +301,40 @@ describe('what the window says', () => {
   });
 
   it.each([
-    [`pear://0.42.${'y'.repeat(52)}`, true],
-    [`pear://3.1000.${'a'.repeat(52)}/`, true],
-    [`pear://${'y'.repeat(52)}`, false],
-    [`pear://0.${'y'.repeat(52)}`, false],
-    [`pear://0.42.${'y'.repeat(51)}`, false],
-    [`https://0.42.${'y'.repeat(52)}`, false],
-    ['file:///home/x/app', false],
-    [undefined, false],
-    [42, false],
-  ])('reads %j as versioned: %s', (link, want) => {
-    expect(isVersionedLink(link)).toBe(want);
+    [`pear://0.42.${'y'.repeat(52)}`, 'versioned'],
+    [`pear://3.1000.${'a'.repeat(52)}/`, 'versioned'],
+    [`pear://3.1000.${'a'.repeat(52)}/some/path`, 'versioned'],
+    [`pear://${'y'.repeat(52)}`, 'unversioned'],
+    [`pear://${'y'.repeat(52)}/`, 'unversioned'],
+    [`pear://0.${'y'.repeat(52)}`, 'unversioned'],
+    [`pear://0.42.${'y'.repeat(51)}`, 'unversioned'],
+    [`pear://0.42.${'l'.repeat(52)}`, 'unversioned'],
+    [`pear://0.42.${'y'.repeat(52)}x`, 'unversioned'],
+    ['pear://dev', 'unversioned'],
+    [`https://0.42.${'y'.repeat(52)}`, 'unversioned'],
+    ['//evil.example/app', 'unversioned'],
+    ['', 'unversioned'],
+    [undefined, 'unversioned'],
+    [42, 'unversioned'],
+    ['file:///home/x/app', 'local'],
+    ['/home/x/app', 'local'],
+  ])('reads %j as %s', (link, want) => {
+    expect(linkKind(link)).toBe(want);
+  });
+
+  it('tells a refused window why, as text, in the app root', () => {
+    document.body.textContent = '';
+    const root = document.createElement('div');
+    root.id = 'root';
+    root.textContent = 'Nutflix could not start: no worker is connected to this window.';
+    document.body.append(root);
+    showRefusal(document, UNVERSIONED_REFUSAL);
+    expect(root.textContent).toBe(UNVERSIONED_REFUSAL);
+    expect(root.dataset['refused']).toBe('unversioned');
+    expect(root.getAttribute('role')).toBe('alert');
+    expect(root.children).toHaveLength(0);
+    expect(UNVERSIONED_REFUSAL).toContain('versioned link');
+    expect(UNVERSIONED_REFUSAL).toContain('release notice');
   });
 
   it('gives a frameless window its controls', async () => {

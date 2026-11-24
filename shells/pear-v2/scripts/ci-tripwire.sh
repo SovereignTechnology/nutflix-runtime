@@ -3,6 +3,11 @@
 # this drops and COUNTS packets to HyperDHT's three public bootstrap addresses, and proves the
 # counter works with one datagram to a documentation address (RFC 5737, never routed).
 #
+# What it cannot see: anything sent to another address. dht-rpc resolves `nodeN.hyperdht.org` when
+# a bootstrap's own address does not answer, and a different answer would go out uncounted. So the
+# job runs the worker in a network namespace with loopback alone, where no name resolves and no
+# packet leaves; this count is a second check, not the barrier.
+#
 #   ci-tripwire.sh arm      install the rules and count the canary
 #   ci-tripwire.sh check    fail unless the public bootstrap count is zero
 set -euo pipefail

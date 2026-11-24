@@ -215,7 +215,9 @@ async function fetchEverything(
   segs: bigint,
   storage: string | null,
 ): Promise<Fetched> {
-  const dht = new DHT({ bootstrap });
+  // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
+  // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
+  const dht = new DHT({ bootstrap, firewalled: false });
   try {
     await dht.fullyBootstrapped();
     const dialed = await dialNfx(dht, Buffer.from(peer, 'hex'), {

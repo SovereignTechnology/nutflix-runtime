@@ -2,7 +2,9 @@
  * The Bare main of the pinned `pear run` shell (ADR 0001 shape b):
  *
  *   1. refuses any runtime but the exact Pear, Bare and platform version this build is pinned to;
- *   2. runs the same worker as shape (a), in this process, behind `PageGate`;
+ *   2. runs the same worker as shape (a), in this process, behind `PageGate`, watch only, and only
+ *      when started from a versioned link (`../shared/link.ts`): from an unversioned one the window
+ *      opens with no worker and says why;
  *   3. serves the page's files on a loopback origin (`page-server.ts`), not through `pear-bridge`;
  *   4. starts the Electron UI through `pear-electron`, whose fd-3 pipe is the page's only channel
  *      to the worker. No RPC listens on any socket.
@@ -20,6 +22,7 @@ import { WorkerRpc } from '@nutflix-runtime/worker/rpc';
 
 import { bareDataPlane } from '../../../../packages/worker/src/adapters/bare-data.js';
 import { openCorestoreKeyring } from '../../../../packages/worker/src/keys.js';
+import { linkKind } from '../shared/link.ts';
 import { runtimeMismatch, type ReleaseLine } from '../shared/pins.ts';
 import { dataPlaneOnly, watchOnly } from './data-plane.ts';
 import { PageGate } from './page-gate.ts';
@@ -119,34 +122,25 @@ async function listenPage(
   throw new Error('no loopback port for the page');
 }
 
-export async function main(): Promise<void> {
-  const versions = await Pear.versions();
-  const mismatch = runtimeMismatch(
-    versions,
-    platformKey(versions.platform?.key),
-    __PLATFORM_LINE__,
-  );
-  if (mismatch !== null) {
-    console.error(
-      `nutflix: refusing to start: ${mismatch}. This build runs only on its pinned Pear v2.6.5 release line.`,
-    );
-    Bare.exit(1);
-  }
+interface Worker {
+  readonly gate: PageGate;
+  close(): Promise<void>;
+}
 
-  const ipc = (Pear as unknown as Record<symbol, PearIpc>)[Pear.constructor.IPC];
-  if (ipc === undefined) throw new Error('this Pear has no IPC');
-
-  let pipe: UiPipe | null = null;
+/**
+ * The worker, in this process, watch only: no `system` (so no signer and no Studio), no sealed key,
+ * nothing served (`watchOnly`), and the seeding switch off, which it must confirm.
+ */
+async function startWorker(
+  toPage: (frame: Uint8Array) => void,
+  closePage: () => void,
+): Promise<Worker> {
   const gate: PageGate = new PageGate({
     toWorker: (frame) => {
       rpc.push(frame);
     },
-    toPage: (frame) => {
-      pipe?.write(frame);
-    },
-    closePage: () => {
-      pipe?.destroy();
-    },
+    toPage,
+    closePage,
   });
   const rpc: WorkerRpc = new WorkerRpc({
     write: (bytes) => {
@@ -165,26 +159,63 @@ export async function main(): Promise<void> {
     },
     openKeyring: openCorestoreKeyring,
   });
-
-  // A rejection nothing handled would abort Bare: as in the worker's own entry, it is survived.
-  Bare.on('unhandledRejection', () => {
-    console.error('nutflix: an unhandled rejection in the worker');
-  });
-
   await gate.request('init', {
     v: 1,
     storage: `${Pear.config.storage}/worker`,
     bootstrap: Pear.config.dht?.bootstrap ?? null,
     // No passphrase-sealed key: this window has no safe place to type one (ADR 0001 amendment).
     localKey: false,
+    // Nothing stored is served and no listener opens, not even for a video an earlier run seeded.
+    watchOnly: true,
   });
-  // Watch only: seeding is off at every start, whatever a file on disk says, and the page can
-  // never turn it on (`PageGate`). A worker that says otherwise does not get a window.
+  // The "seed what you watch" switch, off whatever a file on disk says. A worker that does not
+  // confirm it does not get a window.
   await gate.request('seeding.set', { watched: false });
   if (!watchOnly(await gate.request('seeding.status', {}))) {
     console.error('nutflix: refusing to start: the worker would not turn seeding off.');
     Bare.exit(1);
   }
+  return { gate, close: () => host.close() };
+}
+
+export async function main(): Promise<void> {
+  const versions = await Pear.versions();
+  const mismatch = runtimeMismatch(
+    versions,
+    platformKey(versions.platform?.key),
+    __PLATFORM_LINE__,
+  );
+  if (mismatch !== null) {
+    console.error(
+      `nutflix: refusing to start: ${mismatch}. This build runs only on its pinned Pear v2.6.5 release line.`,
+    );
+    Bare.exit(1);
+  }
+
+  const ipc = (Pear as unknown as Record<symbol, PearIpc>)[Pear.constructor.IPC];
+  if (ipc === undefined) throw new Error('this Pear has no IPC');
+
+  // A rejection nothing handled would abort Bare: as in the worker's own entry, it is survived.
+  Bare.on('unhandledRejection', () => {
+    console.error('nutflix: an unhandled rejection in the worker');
+  });
+
+  let pipe: UiPipe | null = null;
+  const refused = linkKind(Pear.config.link) === 'unversioned';
+  if (refused)
+    console.error(
+      'nutflix: refusing to start the worker: this is an unversioned link, which Pear v2 updates with no signed notice. Run the versioned link the release notice names.',
+    );
+  const worker = refused
+    ? null
+    : await startWorker(
+        (frame) => {
+          pipe?.write(frame);
+        },
+        () => {
+          pipe?.destroy();
+        },
+      );
 
   const { page, port } = await listenPage(ipc, Pear.config.link ?? Pear.config.storage);
 
@@ -192,13 +223,12 @@ export async function main(): Promise<void> {
   const stop = (code: number): void => {
     if (stopping) return;
     stopping = true;
-    gate.pageGone();
+    worker?.gate.pageGone();
     const force = setTimeout(() => {
       Bare.exit(code);
     }, SHUTDOWN_GRACE_MS);
     page.server.close();
-    void host
-      .close()
+    void (worker?.close() ?? Promise.resolve())
       .catch(() => undefined)
       .finally(() => {
         clearTimeout(force);
@@ -214,7 +244,7 @@ export async function main(): Promise<void> {
   });
   pipe = ui;
   ui.on('data', (chunk) => {
-    gate.fromPage(chunk);
+    worker?.gate.fromPage(chunk);
   });
   ui.on('end', () => {
     stop(0);

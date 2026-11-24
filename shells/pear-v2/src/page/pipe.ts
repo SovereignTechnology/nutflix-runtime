@@ -3,9 +3,14 @@
  * (`Pear[Pear.constructor.IPC].pipe()`: Electron main relays it to fd 3 of the Bare process).
  *
  * `close()` only stops this page listening. It never destroys the stream: Electron main holds one
- * shared pipe for the app, so destroying a page's end of it would end the whole app.
+ * shared pipe for the app, so destroying a page's end of it would end the whole app. For the same
+ * reason a reload does not end the pipe, so a new page first sends `PAGE_RESET`: the gate then
+ * closes what the old page opened and forgets its request ids.
  */
+import { encodeFrame } from '@nutflix-runtime/worker';
+
 import type { WorkerPipe } from '../../../../packages/renderer/src/worker/pipe.js';
+import { PAGE_RESET } from '../shared/reset.ts';
 
 /** The part of the runtime's stream this uses. */
 export interface PageStream {
@@ -46,6 +51,7 @@ export function workerPipeOver(stream: PageStream): WorkerPipe {
       }
     }
   });
+  stream.write(encodeFrame(PAGE_RESET));
   stream.on('end', shut);
   stream.on('close', shut);
   stream.on('error', shut);

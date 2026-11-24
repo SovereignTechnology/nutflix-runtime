@@ -81,7 +81,9 @@ describe('seeding, on a loopback testnet', () => {
   });
 
   async function dhtNode(): Promise<DHT> {
-    const n = new DHT({ bootstrap: testnet.bootstrap });
+    // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
+    // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
+    const n = new DHT({ bootstrap: testnet.bootstrap, firewalled: false });
     cleanups.push(() => n.destroy());
     await n.fullyBootstrapped();
     return n;

@@ -256,6 +256,8 @@ declare module 'hyperdht' {
     readonly host?: string;
     readonly port?: number;
     readonly ephemeral?: boolean;
+    /** Default `true`. `false`: reachable at its address, so a dialer connects to it directly. */
+    readonly firewalled?: boolean;
   }
 
   export interface ServerOptions {
@@ -264,6 +266,8 @@ declare module 'hyperdht' {
      * return `true` to REJECT. Only the first argument is used here.
      */
     readonly firewall?: (remotePublicKey: Uint8Array) => boolean | Promise<boolean>;
+    /** Default `true`: every handshake reply carries this machine's local IPv4 addresses. */
+    readonly shareLocalAddress?: boolean;
   }
 
   /** `lib/server.js` `Server`: listens on one key pair. */
@@ -275,6 +279,8 @@ declare module 'hyperdht' {
 
   export interface ConnectOptions {
     readonly keyPair?: KeyPair;
+    /** Default `true`: the first handshake carries this machine's local IPv4 addresses. */
+    readonly localConnection?: boolean;
   }
 
   class DHT {
