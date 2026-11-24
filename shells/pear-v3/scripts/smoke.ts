@@ -585,7 +585,7 @@ export async function bareVersion(bin: string): Promise<{ version?: string; deta
 export function stopLine(s: StopReport): string {
   return s.lingering.length > 0
     ? `${String(s.tracked)} processes sent ${s.signal}; still running after ${String(STOP_GRACE_MS / 1000)} s: ${s.lingering.join(', ')}`
-    : `${String(s.tracked)} processes sent ${s.signal}; every one, and its process group, exited in ${String(s.exitedMs)} ms`;
+    : `${String(s.tracked)} processes sent ${s.signal}; every one${process.platform === 'win32' ? '' : ', and its process group,'} exited in ${String(s.exitedMs)} ms`;
 }
 
 function report(label: string, r: LaunchResult): void {
