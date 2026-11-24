@@ -185,6 +185,14 @@ const prompts = new PromptHost({
       session.fromPartition(PROMPT_PARTITION, { cache: false }),
       spec,
       onGone,
+      {
+        onRendererGone: (reason, exitCode) => {
+          event('prompt-renderer-gone', { reason, exitCode });
+        },
+        onNeverShown: () => {
+          event('prompt-never-shown');
+        },
+      },
     ),
 });
 ipcMain.on(PROMPT_SUBMIT, (e, value: unknown) => {

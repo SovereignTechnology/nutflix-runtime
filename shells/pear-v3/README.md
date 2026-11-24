@@ -189,14 +189,15 @@ worker, so a passphrase or bunker URI never enters the page. It is modal, sandbo
 an in-memory session of its own that reaches one file; its policy is `default-src 'none'`, so its
 page runs no script and its form is built by its preload; and main takes a value only from that
 exact webContents' top frame, at that exact URL. Closing it while a value is being handled waits for
-that call and reports what really happened. If its renderer dies, that counts as a cancel.
+that call and reports what really happened.
 
 Without Chromium's sandbox, `init` says `localKey: false`: only a bunker can sign, and a key on disk
 stays untouched. Choosing Unlock or Create Key says why.
 
 `scripts/prompt-proof.ts` (run in the `seed-publish` workflow) drives that real window and the real
-menu in Electron with a script: the item is clicked and the keys are sent by the script. No person
-has used them in CI, and no test drives the native message boxes.
+menu in Electron with a script: the item is clicked and the keys are sent by the script. A failure
+is final, and the workflow requires one exact result line with every check true. No person has used
+them in CI, and no test drives the native message boxes.
 
 ### Without Chromium's sandbox (amendment, item 2)
 

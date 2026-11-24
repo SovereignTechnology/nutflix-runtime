@@ -40,6 +40,9 @@ export const PROMPT_PARTITION = 'nutflix-prompt';
 export const PROMPT_CSP =
   "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/** How long a prompt may take to load and paint before it counts as dead. */
+export const PROMPT_SHOW_DEADLINE_MS = 30_000;
+
 /** What the preload builds. Fixed text from `main-calls.ts`: nothing here comes from a page. */
 export interface PromptSpec {
   readonly title: string;
@@ -127,7 +130,19 @@ export function installPromptSession(ses: Session, readHtml: () => Promise<Uint8
   ses.protocol.handle(APP_SCHEME, createPromptProtocolHandler(readHtml));
 }
 
-/** Opens the window and shows `spec`. A page that fails to load closes it, which is a cancel. */
+export interface OpenPromptOptions {
+  /** Default `PROMPT_SHOW_DEADLINE_MS`. */
+  readonly showWithinMs?: number;
+  /** Chromium's reason and exit code, for the log. */
+  readonly onRendererGone?: (reason: string, exitCode: number) => void;
+  readonly onNeverShown?: () => void;
+}
+
+/**
+ * Opens the window and shows `spec`. Every way it can fail to become a usable prompt ends in the
+ * window being destroyed, which is a cancel, so a dead prompt cannot hold the dialog lock: a page
+ * that fails to load, a renderer that dies, and a window that has not loaded and painted in time.
+ */
 export function openPrompt(
   BrowserWindow: PromptWindowCtor,
   parent: ElectronBrowserWindow,
@@ -135,22 +150,40 @@ export function openPrompt(
   ses: Session,
   spec: PromptSpec,
   onGone: () => void,
+  o: OpenPromptOptions = {},
 ): PromptSurface {
   const win = createPromptWindow(BrowserWindow, parent, preload, ses, spec.title);
   const wc = win.webContents;
   const id = wc.id;
   win.setMenu(null);
-  win.once('closed', onGone);
-  // A renderer that dies before its first paint would leave an invisible window holding the
-  // dialog lock: gone is a cancel.
-  wc.once('render-process-gone', () => {
+  const state = { loaded: false, painted: false };
+  const watchdog = setTimeout(() => {
+    o.onNeverShown?.();
     if (!win.isDestroyed()) win.destroy();
+  }, o.showWithinMs ?? PROMPT_SHOW_DEADLINE_MS);
+  const settled = (): void => {
+    if (state.loaded && state.painted) clearTimeout(watchdog);
+  };
+  win.once('closed', () => {
+    clearTimeout(watchdog);
+    onGone();
+  });
+  wc.once('render-process-gone', (_e, details) => {
+    o.onRendererGone?.(details.reason, details.exitCode);
+    // Not from inside the event: the contents is still being told that its renderer is gone.
+    setImmediate(() => {
+      if (!win.isDestroyed()) win.destroy();
+    });
   });
   wc.once('did-finish-load', () => {
+    state.loaded = true;
     wc.send(PROMPT_SHOW, spec);
+    settled();
   });
   win.once('ready-to-show', () => {
+    state.painted = true;
     win.show();
+    settled();
   });
   win.loadURL(PROMPT_URL).catch(() => {
     if (!win.isDestroyed()) win.destroy();

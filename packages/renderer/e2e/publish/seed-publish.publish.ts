@@ -83,7 +83,10 @@ const need = (name: string): string => {
   return v;
 };
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
+/** Set when teardown starts: a test that timed out and resumes because of it reports nothing. */
+let tearingDown = false;
 const report = (name: string, o: unknown): void => {
+  if (tearingDown) return;
   console.warn(`PROOF ${name} ${JSON.stringify(o)}`);
 };
 
@@ -415,6 +418,7 @@ describe('seed and publish, on loopback', () => {
   }, 240_000);
 
   afterAll(async () => {
+    tearingDown = true;
     for (const c of cleanups.splice(0).reverse()) await Promise.resolve(c()).catch(() => undefined);
   }, 60_000);
 

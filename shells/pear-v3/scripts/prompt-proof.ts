@@ -5,7 +5,8 @@
  *
  *   node shells/pear-v3/scripts/prompt-proof.ts
  *
- * The exit status is Electron's. CI only: tests never run on a development machine.
+ * It exits 0 only if Electron ended by itself, in time, with status 0. The workflow then also reads
+ * the log (`prompt-proof-check.ts`). CI only: tests never run on a development machine.
  */
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -46,10 +47,13 @@ try {
   const r = spawnSync(electron, [join(out, 'main.cjs')], {
     stdio: 'inherit',
     timeout: 120_000,
+    // Not SIGTERM: Electron can answer that with a clean shutdown and status 0.
+    killSignal: 'SIGKILL',
     env,
   });
-  if (r.error !== undefined) console.error(`Electron did not run: ${r.error.message}`);
-  status = r.status ?? 1;
+  if (r.error !== undefined) console.error(`Electron did not finish: ${r.error.message}`);
+  if (r.signal !== null) console.error(`Electron was ended by ${r.signal}`);
+  status = r.error === undefined && r.signal === null ? (r.status ?? 1) : 1;
 } finally {
   rmSync(out, { recursive: true, force: true });
 }

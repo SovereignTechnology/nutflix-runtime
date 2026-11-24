@@ -12,14 +12,17 @@
  *   - an accepted value closes it, and Cancel and closing the window both count as a cancel;
  *   - Enter on a focused Cancel never submits;
  *   - closing it during a submit waits for the call and reports what really happened;
- *   - a prompt whose renderer dies counts as a cancel;
+ *   - a prompt that never loads is destroyed by its watchdog, which counts as a cancel;
+ *   - a prompt whose renderer process dies counts as a cancel, and the log says how it died;
  *   - the real window keeps the real Account menu on screen, its item opens the prompt, a real key
  *     event reaches main's shortcut before the page, and a page's synthetic one does not.
  *
- * The menu item is clicked and the keys are sent by this script. What it does not show: a person
- * using the menu or the window, how they look, and any native message box.
+ * The verdict is `prompt-proof-verdict.ts`: a failure is final, and the success line is printed only
+ * when every check above ran and held. The menu item is clicked and the keys are sent by this
+ * script. What it does not show: a person using the menu or the window, how they look, and any
+ * native message box.
  */
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,6 +62,7 @@ import { privilegedSchemes } from '../src/main/schemes.ts';
 import { hardenWebContents } from '../src/main/security.ts';
 import { createMainWindow } from '../src/main/window.ts';
 import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../src/shared/ids.ts';
+import { ProofVerdict, runProof, withDeadline, type VerdictIo } from './prompt-proof-verdict.ts';
 
 const SPEC: PromptSpec = {
   title: 'A proof',
@@ -72,12 +76,14 @@ const SPEC: PromptSpec = {
 const FIRST = 'the first value';
 const SECOND = 'the second value';
 const OVERALL_MS = 90_000;
+/** How long a prompt's answer may take once the thing that ends it has happened. */
+const ANSWER_MS = 15_000;
+/** How long the crash API gets to end the renderer before this script kills it outright. */
+const FORCE_CRASH_MS = 12_000;
+/** The watchdog's deadline for the prompt that never loads. */
+const NEVER_SHOWN_MS = 1_500;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-function check(ok: boolean, what: string): void {
-  if (!ok) throw new Error(`failed: ${what}`);
-}
 
 async function until<T>(what: string, f: () => Promise<T | null> | T | null): Promise<T> {
   const end = Date.now() + 20_000;
@@ -108,6 +114,15 @@ const fill = (wc: WebContents, id: string, value: string): Promise<void> =>
  */
 const click = (wc: WebContents, id: string): Promise<void> =>
   inPage(wc, `void setTimeout(() => document.getElementById(${JSON.stringify(id)}).click(), 0)`);
+
+/** The kernel's view of a process: its state letter, or `gone`. */
+function procState(pid: number): string {
+  try {
+    return /^State:\s*(\S+)/m.exec(readFileSync(`/proc/${String(pid)}/status`, 'utf8'))?.[1] ?? '?';
+  } catch {
+    return 'gone';
+  }
+}
 
 const POLICY_PROBE = `(async () => {
   const out = {};
@@ -145,9 +160,10 @@ const WORLD_PROBE = `JSON.stringify({
   exposed: Object.getOwnPropertyNames(globalThis).filter((k) => /electron|nutflix|ipc/i.test(k)),
 })`;
 
-async function run(): Promise<void> {
+async function run(v: ProofVerdict): Promise<void> {
   const ses = session.fromPartition(PROMPT_PARTITION, { cache: false });
   installPromptSession(ses, () => readFile(join(__dirname, 'prompt.html')));
+  const preload = join(__dirname, 'prompt-preload.cjs');
 
   // The app's real window options, so that what hides or shows its menu bar is what ships.
   const parent = createMainWindow(BrowserWindow, join(__dirname, 'proof-preload.cjs'));
@@ -155,16 +171,21 @@ async function run(): Promise<void> {
   await parent.loadURL('data:text/html,<p>the other window</p>');
 
   let current: WebContents | null = null;
+  const gone: { reason: string | null; exitCode: number | null; at: number } = {
+    reason: null,
+    exitCode: null,
+    at: 0,
+  };
   const host = new PromptHost({
     open: (_windowId, spec, onGone) => {
-      const surface = openPrompt(
-        BrowserWindow,
-        parent,
-        join(__dirname, 'prompt-preload.cjs'),
-        ses,
-        spec,
-        onGone,
-      );
+      const surface = openPrompt(BrowserWindow, parent, preload, ses, spec, onGone, {
+        onRendererGone: (reason, exitCode) => {
+          gone.reason = reason;
+          gone.exitCode = exitCode;
+          gone.at = Date.now();
+          v.note('render-process-gone', { reason, exitCode });
+        },
+      });
       current = webContents.fromId(surface.id) ?? null;
       return surface;
     },
@@ -218,9 +239,9 @@ async function run(): Promise<void> {
     account.trigger(action);
   });
   const menu = Menu.getApplicationMenu();
-  check(accountMenuPresent(menu), 'the Account menu is in place');
+  v.check('accountMenuPresent', accountMenuPresent(menu));
   const menuBar = menuBarState(process.platform, parent);
-  check(menuBar === 'visible', `the menu bar is ${menuBar}`);
+  v.check('menuBarVisible', menuBar === 'visible', `the menu bar is ${menuBar}`);
 
   await inPage(
     parent.webContents,
@@ -229,7 +250,7 @@ async function run(): Promise<void> {
     }))`,
   );
   await sleep(200);
-  check(actions.length === 0, "a page's synthetic key event does not reach the shortcut");
+  v.check('syntheticKeyIgnored', actions.length === 0);
 
   await inPage(
     parent.webContents,
@@ -251,46 +272,51 @@ async function run(): Promise<void> {
     modifiers: ['control', 'shift'],
   });
   await until('the shortcut', () => (actions.includes('unlock') ? true : null));
+  v.check('realKeyReachedMain', true);
   await sleep(200);
-  check(
+  v.check(
+    'pageDidNotSeeKey',
     (await inPage<number>(parent.webContents, 'globalThis.__keys')) === 0,
-    'the page never saw the shortcut',
   );
 
   const connect = ACCOUNT_ITEMS.find((x) => x.action === 'connect')?.label;
   const item = menu?.items
     .find((i) => i.label === ACCOUNT_MENU_LABEL)
     ?.submenu?.items.find((i) => i.label === connect);
-  if (item === undefined) throw new Error('failed: no Connect Bunker item');
+  if (item === undefined) throw new Error('no Connect Bunker item');
   (item as unknown as { click(): void }).click();
   const { first } = opened;
-  if (first === null) throw new Error('failed: the menu item did not open the prompt');
+  if (first === null) throw new Error('the menu item did not open the prompt');
+  v.check('menuItemOpensPrompt', true);
 
   // ---- the first prompt: confinement, the sender check, a refusal, then an accepted value ----
   const wc = await form();
+  const win = BrowserWindow.fromWebContents(wc);
+  await until('the window to show', () => (win?.isVisible() === true ? true : null));
+  v.check('promptWasVisible', true);
 
   const sandbox = fromProcStatus(
     readFileSync(`/proc/${String(wc.getOSProcessId())}/status`, 'utf8'),
   );
-  check(sandbox === 'enforced', `the renderer's sandbox is ${sandbox}`);
-  const win = BrowserWindow.fromWebContents(wc);
-  check(win?.isModal() === true, 'the window is modal');
-  check(win?.getParentWindow()?.id === parent.id, 'it belongs to its parent');
-  check(wc.getURL() === PROMPT_URL, 'it shows its one file');
+  v.check('rendererSandboxed', sandbox === 'enforced', `the renderer's sandbox is ${sandbox}`);
+  v.check('modal', win?.isModal() === true, 'the window is not modal');
+  v.check('modal', win?.getParentWindow()?.id === parent.id, 'it does not belong to its parent');
+  v.check('oneFileOnly', wc.getURL() === PROMPT_URL);
 
   const world = JSON.parse(await inPage<string>(wc, WORLD_PROBE)) as Record<string, unknown>;
   for (const k of ['require', 'process', 'module', 'Buffer', 'ipcRenderer', 'electron'])
-    check(world[k] === 'undefined', `the page has no ${k}`);
-  check(JSON.stringify(world['exposed']) === '[]', 'the preload exposed nothing');
+    v.check('pageWorldClean', world[k] === 'undefined', `the page has ${k}`);
+  v.check('pageWorldClean', JSON.stringify(world['exposed']) === '[]', 'the preload exposed some');
 
   const policy = JSON.parse(await inPage<string>(wc, POLICY_PROBE)) as Record<string, string>;
+  v.note('policy', policy);
   for (const k of ['fetchSelf', 'fetchLoopback', 'inlineScript', 'eval', 'image', 'webSocket'])
-    check(policy[k] === 'refused', `${k} is ${policy[k] ?? 'absent'}`);
+    v.check('policyRefusesAll', policy[k] === 'refused', `${k} is ${policy[k] ?? 'absent'}`);
 
   await inPage(parent.webContents, `forgePrompt('a value from another window')`);
   await sleep(400);
-  check(got.length === 0, 'a value from another window was dropped');
-  check(host.open, 'a cancel from another window was dropped');
+  v.check('otherWindowDropped', got.length === 0, 'a value from another window arrived');
+  v.check('otherWindowDropped', host.open, 'a cancel from another window arrived');
 
   await fill(wc, 'prompt-value', FIRST);
   await fill(wc, 'prompt-repeat', FIRST);
@@ -303,39 +329,40 @@ async function run(): Promise<void> {
     })()`,
   );
   await sleep(200);
-  check(got.length === 0 && host.open, 'Enter on a focused Cancel did not submit');
+  v.check('enterOnCancelIgnored', got.length === 0 && host.open);
 
   await fill(wc, 'prompt-value', FIRST);
   await fill(wc, 'prompt-repeat', 'something else');
-  check(
+  v.check(
+    'differentFieldsBlocked',
     await inPage<boolean>(wc, `document.getElementById('prompt-submit').disabled`),
-    'two fields that differ cannot be submitted',
   );
   await fill(wc, 'prompt-repeat', FIRST);
-  check(
+  v.check(
+    'differentFieldsBlocked',
     !(await inPage<boolean>(wc, `document.getElementById('prompt-submit').disabled`)),
-    'two fields that match can',
+    'two fields that match cannot be submitted',
   );
   await click(wc, 'prompt-submit');
   await until('the first value', () => (got.length === 1 ? true : null));
-  check(got[0] === FIRST, 'the value reached main intact');
+  v.check('valueReachedMain', got[0] === FIRST);
   await until('the reason on screen', async () =>
     (await inPage<string>(wc, `document.getElementById('prompt-error').textContent`)) ===
     'not that one'
       ? true
       : null,
   );
-  check(host.open, 'a refusal leaves the window open');
-  check(
+  v.check('refusalKeptOpen', host.open);
+  v.check(
+    'fieldCleared',
     (await inPage<string>(wc, `document.getElementById('prompt-value').value`)) === '',
-    'the field was cleared',
   );
 
   await fill(wc, 'prompt-value', SECOND);
   await fill(wc, 'prompt-repeat', SECOND);
   await click(wc, 'prompt-submit');
-  check(await first, 'an accepted value finishes the prompt');
-  check(got[1] === SECOND, 'the second value reached main');
+  v.check('acceptedCloses', await withDeadline(first, ANSWER_MS, 'the accepted value'));
+  v.check('valueReachedMain', got[1] === SECOND);
   await until('the window to close', () => (wc.isDestroyed() ? true : null));
 
   // ---- Cancel ----
@@ -345,7 +372,7 @@ async function run(): Promise<void> {
     return Promise.resolve(null);
   });
   await click(await form(), 'prompt-cancel');
-  check(!(await cancelled), 'Cancel is a cancel');
+  v.check('cancelIsCancel', !(await withDeadline(cancelled, ANSWER_MS, 'Cancel')));
 
   // ---- closing the window ----
   current = null;
@@ -354,8 +381,8 @@ async function run(): Promise<void> {
     return Promise.resolve(null);
   });
   BrowserWindow.fromWebContents(await form())?.close();
-  check(!(await closed), 'closing the window is a cancel');
-  check(got.length === 2, 'nothing else reached main');
+  v.check('closeIsCancel', !(await withDeadline(closed, ANSWER_MS, 'closing the window')));
+  v.check('nothingElseReachedMain', got.length === 2);
 
   // ---- closed during a submit: the call cannot be taken back, so the answer waits for it ------
   current = null;
@@ -379,33 +406,83 @@ async function run(): Promise<void> {
     heard.now = true;
   });
   await sleep(200);
-  check(!heard.now, 'a close during a submit waits for the call');
+  v.check('closeDuringSubmitWaited', !heard.now);
   finishBusy(null);
-  check(await busy, 'and reports that it happened');
+  v.check('closeDuringSubmitReported', await withDeadline(busy, ANSWER_MS, 'the busy prompt'));
+
+  // ---- a prompt that never loads: its page is never answered, so nothing ever paints ----------
+  const stuckSession = session.fromPartition(`${PROMPT_PARTITION}-never`, { cache: false });
+  installPromptSession(stuckSession, () => new Promise<Uint8Array>(() => undefined));
+  const watchdog = { fired: false };
+  const neverHost = new PromptHost({
+    open: (_windowId, spec, onGone) =>
+      openPrompt(BrowserWindow, parent, preload, stuckSession, spec, onGone, {
+        showWithinMs: NEVER_SHOWN_MS,
+        onNeverShown: () => {
+          watchdog.fired = true;
+        },
+      }),
+  });
+  const neverStarted = Date.now();
+  const never = await withDeadline(
+    neverHost.ask(parent.webContents.id, SPEC, () => Promise.resolve(null)),
+    ANSWER_MS,
+    'the prompt that never loads',
+  );
+  v.note('never-shown', { watchdogFired: watchdog.fired, ms: Date.now() - neverStarted });
+  v.check('neverShownIsCancel', !never && watchdog.fired, 'the watchdog did not end the prompt');
 
   // ---- a renderer that dies ----------------------------------------------------------------------
   current = null;
+  gone.reason = null;
+  gone.exitCode = null;
+  // A function: the event sets these while this step waits.
+  const heardGone = (): typeof gone => gone;
   const crashed = host.ask(parent.webContents.id, SPEC, () => Promise.resolve(null));
   const crashedWc = await form();
+  const pid = crashedWc.getOSProcessId();
+  const heardCrash = { now: false };
+  void crashed.then(() => {
+    heardCrash.now = true;
+  });
+  const started = Date.now();
   crashedWc.forcefullyCrashRenderer();
-  check(!(await crashed), 'a prompt whose renderer died is a cancel');
-
-  console.warn(
-    `PROOF prompt-modal ${JSON.stringify({
-      driven: 'by a script',
-      sandbox,
-      modal: true,
-      pageWorld: 'no node, no electron, nothing exposed',
-      policy,
-      otherWindowDropped: true,
-      refusalKeptOpen: true,
-      cancelAndCloseCancel: true,
-      enterOnCancelIgnored: true,
-      closeDuringSubmitWaited: true,
-      rendererGoneIsCancel: true,
-      accountMenu: { present: true, menuBar, itemClicked: 'by a script', opensPrompt: true },
-      shortcut: { realKeyEventReachedMain: true, pageSawIt: false, syntheticIgnored: true },
-    })}`,
+  while (!heardCrash.now && Date.now() - started < FORCE_CRASH_MS) await sleep(100);
+  v.note('force-crash', {
+    answered: heardCrash.now,
+    ms: Date.now() - started,
+    eventFired: heardGone().reason !== null,
+    reason: heardGone().reason,
+    exitCode: heardGone().exitCode,
+    processState: procState(pid),
+  });
+  let how = 'forcefullyCrashRenderer';
+  if (!heardCrash.now) {
+    // The crash API did not end it. Whether a renderer that really dies is handled is still the
+    // question, so it dies for certain here, and the note above says what the API did.
+    how = 'SIGKILL';
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch (e) {
+      v.note('sigkill', { error: e instanceof Error ? e.message : 'unknown' });
+    }
+  }
+  const answer = await withDeadline(crashed, ANSWER_MS, `the prompt after ${how}`);
+  await until('the crashed window to close', () => (crashedWc.isDestroyed() ? true : null));
+  const died = heardGone();
+  v.note('renderer-death', {
+    how,
+    answer,
+    eventFired: died.reason !== null,
+    reason: died.reason,
+    exitCode: died.exitCode,
+    msToEvent: died.reason === null ? null : died.at - started,
+    processState: procState(pid),
+  });
+  v.check(
+    'rendererDeathIsCancel',
+    !answer && died.reason !== null,
+    `answer ${String(answer)}, render-process-gone ${String(died.reason)}`,
   );
 }
 
@@ -415,20 +492,18 @@ app.on('web-contents-created', (_e, wc) => {
   hardenWebContents(wc);
 });
 app.on('window-all-closed', () => undefined);
-setTimeout(() => {
-  console.error('PROMPT-PROOF-FAILED timed out');
-  app.exit(1);
-}, OVERALL_MS).unref();
 
-app
-  .whenReady()
-  .then(run)
-  .then(
-    () => {
-      app.exit(0);
-    },
-    (e: unknown) => {
-      console.error(`PROMPT-PROOF-FAILED ${e instanceof Error ? e.message : 'unknown'}`);
-      app.exit(1);
-    },
-  );
+const io: VerdictIo = {
+  line: (text) => {
+    writeSync(2, `${text}\n`);
+  },
+  exit: (code) => {
+    if (code === 0) app.exit(0);
+    // Not `app.exit`: its shutdown closes the windows, and that is what once resolved the await a
+    // timed-out proof was stuck on. A failed proof ends here, at once.
+    else process.kill(process.pid, 'SIGKILL');
+  },
+};
+const verdict = new ProofVerdict(io);
+
+void app.whenReady().then(() => runProof(verdict, run, OVERALL_MS));

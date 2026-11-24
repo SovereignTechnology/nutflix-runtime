@@ -15,7 +15,9 @@ import type {
   MenuItemConstructorOptions,
   Session,
 } from 'electron';
-import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../shared/ids.ts';
 import {
@@ -48,11 +50,14 @@ import {
 } from '../main/main-calls.ts';
 import {
   PROMPT_CSP,
+  PROMPT_SHOW_DEADLINE_MS,
   PROMPT_URL,
   PromptHost,
   allowPromptRequest,
   createPromptProtocolHandler,
   createPromptWindow,
+  openPrompt,
+  type OpenPromptOptions,
   type PromptSpec,
   type PromptWindowCtor,
 } from '../main/prompt-window.ts';
@@ -1088,6 +1093,124 @@ describe('the prompt window', () => {
     await expect(h.p.ask(3, SPEC, () => Promise.resolve(null))).rejects.toThrow(/already/);
     h.gone();
     await asked;
+  });
+
+  describe('a prompt that cannot become usable', () => {
+    class FakeContents extends EventEmitter {
+      readonly id = 7;
+      readonly sent: string[] = [];
+      isDestroyed = (): boolean => false;
+      send(channel: string): void {
+        this.sent.push(channel);
+      }
+    }
+    class FakeWindow extends EventEmitter {
+      readonly webContents = new FakeContents();
+      destroyed = false;
+      shown = false;
+      setMenu(): void {
+        // No menu.
+      }
+      loadURL(): Promise<void> {
+        return Promise.resolve();
+      }
+      isDestroyed(): boolean {
+        return this.destroyed;
+      }
+      show(): void {
+        this.shown = true;
+      }
+      close(): void {
+        this.destroy();
+      }
+      destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.emit('closed');
+      }
+    }
+
+    function opened(o: OpenPromptOptions = {}): { win: FakeWindow; gone: () => number } {
+      const box: { win: FakeWindow | null } = { win: null };
+      const Ctor = function () {
+        box.win = new FakeWindow();
+        return box.win;
+      } as unknown as PromptWindowCtor;
+      let n = 0;
+      openPrompt(
+        Ctor,
+        {} as BrowserWindow,
+        '/p.cjs',
+        {} as Session,
+        SPEC,
+        () => {
+          n += 1;
+        },
+        o,
+      );
+      if (box.win === null) throw new Error('no window');
+      return { win: box.win, gone: () => n };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate'],
+      });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('a window that never loads is destroyed at its deadline, which is a cancel', () => {
+      const shown = vi.fn();
+      const { win, gone } = opened({ onNeverShown: shown });
+      vi.advanceTimersByTime(PROMPT_SHOW_DEADLINE_MS - 1);
+      expect(win.destroyed).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(shown).toHaveBeenCalledTimes(1);
+      expect(win.destroyed).toBe(true);
+      expect(gone()).toBe(1);
+    });
+
+    it.each([
+      ['painted but never loaded', ['ready-to-show']],
+      ['loaded but never painted', ['did-finish-load']],
+    ])('%s still counts as never shown', (_name, events) => {
+      const { win } = opened();
+      for (const e of events) (e === 'ready-to-show' ? win : win.webContents).emit(e);
+      vi.advanceTimersByTime(PROMPT_SHOW_DEADLINE_MS);
+      expect(win.destroyed).toBe(true);
+    });
+
+    it('a window that loaded and painted is left alone', () => {
+      const shown = vi.fn();
+      const { win, gone } = opened({ onNeverShown: shown });
+      win.webContents.emit('did-finish-load');
+      win.emit('ready-to-show');
+      vi.advanceTimersByTime(PROMPT_SHOW_DEADLINE_MS * 2);
+      expect(shown).not.toHaveBeenCalled();
+      expect(win.shown).toBe(true);
+      expect(win.destroyed).toBe(false);
+      expect(gone()).toBe(0);
+    });
+
+    it('a renderer that dies destroys the window, says why, and is a cancel', () => {
+      const said = vi.fn();
+      const { win, gone } = opened({ onRendererGone: said });
+      win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 });
+      expect(said).toHaveBeenCalledWith('killed', 9);
+      vi.advanceTimersByTime(1);
+      expect(win.destroyed).toBe(true);
+      expect(gone()).toBe(1);
+    });
+
+    it('closing it stops the watchdog', () => {
+      const shown = vi.fn();
+      const { win } = opened({ onNeverShown: shown });
+      win.close();
+      vi.advanceTimersByTime(PROMPT_SHOW_DEADLINE_MS);
+      expect(shown).not.toHaveBeenCalled();
+    });
   });
 
   it('is sandboxed, isolated, in its own session, and modal, written as literals', () => {

@@ -120,17 +120,24 @@ jobs:
           # Every proof reported its numbers, or the job fails. The reporter's colours come off first.
           sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/publish.log" | grep '^PROOF ' > "$RUNNER_TEMP/proofs"
           tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/proofs"
-          test "$(wc -l < "$RUNNER_TEMP/proofs")" -eq 11
+          # Each proof by name, once: a count alone would accept a repeated line.
+          want='bare-disk dialNfx idle-launch nip46 passphrase played published re-seeded relay relay-origin unconfirmed-draft'
+          got=$(awk '{print $2}' "$RUNNER_TEMP/proofs" | LC_ALL=C sort | tr '\n' ' ')
+          test "$got" = "$(printf '%s\n' $want | LC_ALL=C sort | tr '\n' ' ')"
       # The real window, in real Electron under Xvfb, driven by a script: it proves the window's
       # confinement and its sender check. It is not a person using it, and it opens no native dialog.
       - name: main's prompt window, in real Electron, inside it
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           sudo ip netns exec nfx-publish setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
             --no-new-privs \
             env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
               xvfb-run -a node shells/pear-v3/scripts/prompt-proof.ts 2>&1 | tee "$RUNNER_TEMP/prompt.log"
-          grep '^PROOF prompt-modal ' "$RUNNER_TEMP/prompt.log" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The verdict is what the log says, not the exit status alone: no failure line, and
+          # exactly the one expected proof line, with every field true.
+          node shells/pear-v3/scripts/prompt-proof-check.ts "$RUNNER_TEMP/prompt.log" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - name: it still has nothing but loopback
         if: always()
         run: |
