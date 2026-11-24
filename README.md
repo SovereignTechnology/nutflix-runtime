@@ -30,9 +30,10 @@ Paid videos (Cashu, `pay/1`) are not in scope for the first version.
   mkdir -p ~/Applications                              # macOS
   mkdir -p ~/.local/bin ~/.local/share/applications    # Linux
   ```
-- **Pre-v3 Pear (`pear run pear://…`):** planned as unsandboxed legacy software, under the
+- **Pre-v3 Pear (`pear run pear://…`):** unsandboxed legacy software, not released, under the
   conditions in [ADR 0001's amendment](docs/decisions/0001-a-pear-native-nutflix.md#amendment-2026-11-22).
-  Holepunch removed `pear run` in Pear v3. Prefer `pear install`.
+  Holepunch removed `pear run` in Pear v3. **Prefer `pear install`.** See
+  [`shells/pear-v2`](shells/pear-v2/README.md).
 
 ## Relationship to nutflix-pear
 
@@ -51,6 +52,8 @@ with deployed seeders.
 - `shells/pear-v3`: the Pear v3 desktop shell: a hardened Electron main, the worker started through
   `pear-runtime`, packaged on five targets (updates off). See
   [its README](shells/pear-v3/README.md).
+- `shells/pear-v2`: the pinned `pear run` shell, unsandboxed legacy software on Pear v2.6.5 with its
+  own dependency pins. See [its README](shells/pear-v2/README.md).
 
 Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain
 clone. `npm ci`, `npm run build`, `npm run lint` and `npm test` work as in nutflix-pear. The tests

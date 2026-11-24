@@ -1,0 +1,61 @@
+/* The legacy label is also the window's title bar: the runtime opens a frameless window. `#root`
+   becomes the containing block of the app's fixed elements, so none of them sit under the bar. */
+#nutflix-legacy-label {
+  position: fixed;
+  z-index: 2147483647;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  height: 32px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 12px;
+  background: #7a1f1f;
+  color: #fff;
+  font:
+    12px/1.2 system-ui,
+    sans-serif;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.nutflix-legacy-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nutflix-legacy-controls {
+  display: flex;
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+.nutflix-legacy-controls button {
+  width: 40px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.nutflix-legacy-controls button:hover,
+.nutflix-legacy-controls button:focus-visible {
+  background: rgb(255 255 255 / 20%);
+}
+
+#root {
+  position: fixed;
+  top: 32px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  /* The shell's stylesheet sets `height: 100%`, which would push the bottom 32px off screen. */
+  height: calc(100% - 32px);
+  overflow: hidden;
+  transform: translateZ(0);
+}

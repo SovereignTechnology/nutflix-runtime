@@ -78,6 +78,7 @@ storybook-static/
 packages/app-desktop/out/
 # The Pear v3 shell's staged app, packaged builds and the AppImage runtime (shells/pear-v3)
 shells/pear-v3/out/
+shells/pear-v2/out/
 
 # --- Media (large binaries do not belong in git) ----------------------------
 *.mp4
