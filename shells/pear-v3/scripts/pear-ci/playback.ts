@@ -566,7 +566,9 @@ function refusedWith(f: () => unknown, words: string): void {
     f();
   } catch (e) {
     if (e instanceof TrustRootError && e.message.includes(words)) return;
-    throw new Error(`refused for another reason: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`refused for another reason: ${e instanceof Error ? e.message : String(e)}`, {
+      cause: e,
+    });
   }
   throw new Error(`not refused (wanted: ${words})`);
 }

@@ -131,6 +131,7 @@ export function assertMainMatchesRoot(mainBundle: string, root: TrustRoot): void
   } catch (e) {
     throw new Error(
       `main's bundle does not hold one update root: ${e instanceof Error ? e.message : String(e)}`,
+      { cause: e },
     );
   }
   if (JSON.stringify(held) !== JSON.stringify(root))

@@ -146,7 +146,7 @@ function tree(
   });
   const child = new Promise<number>((resolve, reject) => {
     let out = '';
-    parent.stdout?.on('data', (d: Buffer) => {
+    parent.stdout.on('data', (d: Buffer) => {
       out += d.toString();
       const m = /CHILD (\d+)/.exec(out);
       if (m?.[1] !== undefined) resolve(Number(m[1]));

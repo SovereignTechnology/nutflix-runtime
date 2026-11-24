@@ -238,7 +238,7 @@ export async function stop(
     if (!posix) return undefined;
     const now = table.get(pid);
     if (now === undefined) return pid;
-    return self !== undefined && now.start === self.start ? pid : undefined;
+    return self?.start === now.start ? pid : undefined;
   };
   const running = (): Proc[] => {
     if (tracked === null) return gone ? [UNREAD] : [launched(pid)];

@@ -174,9 +174,8 @@ export function treeOf(table: ReadonlyMap<number, Proc>, root: number): Proc[] {
   };
   const out: Proc[] = [top];
   const seen = new Set([root]);
-  for (let i = 0; i < out.length; i++) {
-    const parent = out[i];
-    if (parent === undefined) break;
+  // `out` grows as it is walked: the array iterator reaches what was pushed behind it.
+  for (const parent of out) {
     for (const c of byParent.get(parent.pid) ?? []) {
       if (seen.has(c.pid) || !notBefore(c, parent)) continue;
       seen.add(c.pid);
@@ -199,7 +198,7 @@ export function stillRunning(
   const seen = new Set<number>();
   for (const t of tracked) {
     const now = table.get(t.pid);
-    if (now !== undefined && now.start === t.start && !now.zombie) {
+    if (now?.start === t.start && !now.zombie) {
       out.push(now);
       seen.add(now.pid);
     }
