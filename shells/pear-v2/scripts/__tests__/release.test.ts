@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
 } from 'node:fs';
@@ -83,11 +84,14 @@ describe.skipIf(process.platform === 'win32')('the copy’s folder', () => {
     const s = scratch();
     try {
       const work = privateDir(join(s.dir, 'cache', 'work'));
+      // The real path: on macOS the temporary folder is under /var, a symlink to /private/var.
+      const base = realpathSync(s.dir);
+      expect(work).toBe(join(base, 'cache', 'work'));
       expect(lstatSync(work).mode & 0o777).toBe(0o700);
-      expect(ancestorPlants(work).filter((p) => p.startsWith(s.dir))).toEqual([]);
+      expect(ancestorPlants(work).filter((p) => p.startsWith(base))).toEqual([]);
       mkdirSync(join(s.dir, 'cache', 'node_modules'));
-      expect(ancestorPlants(work).filter((p) => p.startsWith(s.dir))).toEqual([
-        join(s.dir, 'cache', 'node_modules'),
+      expect(ancestorPlants(work).filter((p) => p.startsWith(base))).toEqual([
+        join(base, 'cache', 'node_modules'),
       ]);
     } finally {
       s.rm();
