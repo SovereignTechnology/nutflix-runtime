@@ -34,7 +34,7 @@ export const APPLE_TEAM_ID: string | null = null;
  * user-writable `~/Applications`; privacy grants reset on every update; and library validation off
  * in the processes that hold the user's key.
  */
-export const ALLOW_AD_HOC_MACOS_RELEASE: boolean = false;
+export const ALLOW_AD_HOC_MACOS_RELEASE = false;
 
 /** The owner's Windows code-signing certificate, once there is one: its SHA-256, subject, issuer. */
 export const WINDOWS_SIGNER: WindowsSigner | null = null;
