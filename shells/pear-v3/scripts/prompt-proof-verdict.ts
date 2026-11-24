@@ -41,6 +41,7 @@ export const PROOF_FIELDS = [
   'closeDuringSubmitWaited',
   'closeDuringSubmitReported',
   'neverShownIsCancel',
+  'deathBeforePaintIsCancel',
   'rendererDeathIsCancel',
 ] as const;
 

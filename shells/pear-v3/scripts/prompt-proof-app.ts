@@ -13,7 +13,8 @@
  *   - Enter on a focused Cancel never submits;
  *   - closing it during a submit waits for the call and reports what really happened;
  *   - a prompt that never loads is destroyed by its watchdog, which counts as a cancel;
- *   - a prompt whose renderer process dies counts as a cancel, and the log says how it died;
+ *   - a prompt whose renderer process dies before its first paint counts as a cancel;
+ *   - so does one whose renderer dies once it is on screen, and the log says how it died;
  *   - the real window keeps the real Account menu on screen, its item opens the prompt, a real key
  *     event reaches main's shortcut before the page, and a page's synthetic one does not.
  *
@@ -58,7 +59,7 @@ import {
   type PromptSpec,
 } from '../src/main/prompt-window.ts';
 import { fromProcStatus } from '../src/main/sandbox-proof.ts';
-import { privilegedSchemes } from '../src/main/schemes.ts';
+import { APP_SCHEME, privilegedSchemes } from '../src/main/schemes.ts';
 import { hardenWebContents } from '../src/main/security.ts';
 import { createMainWindow } from '../src/main/window.ts';
 import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../src/shared/ids.ts';
@@ -431,6 +432,65 @@ async function run(v: ProofVerdict): Promise<void> {
   );
   v.note('never-shown', { watchdogFired: watchdog.fired, ms: Date.now() - neverStarted });
   v.check('neverShownIsCancel', !never && watchdog.fired, 'the watchdog did not end the prompt');
+
+  // ---- a renderer that dies before its first paint: the page commits and never finishes -------
+  const noPaintSession = session.fromPartition(`${PROMPT_PARTITION}-no-paint`, { cache: false });
+  noPaintSession.protocol.handle(APP_SCHEME, () =>
+    Promise.resolve(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start: (c) => {
+            c.enqueue(new TextEncoder().encode('<!doctype html><html>'));
+          },
+        }),
+        { headers: { 'content-type': 'text/html; charset=utf-8' } },
+      ),
+    ),
+  );
+  const early: { wc: WebContents | null; committed: boolean; reason: string | null } = {
+    wc: null,
+    committed: false,
+    reason: null,
+  };
+  // A function: the events set these while this step waits.
+  const heardEarly = (): typeof early => early;
+  const earlyHost = new PromptHost({
+    open: (_windowId, spec, onGone) => {
+      const surface = openPrompt(BrowserWindow, parent, preload, noPaintSession, spec, onGone, {
+        // Far past this step: only the renderer's death can end this prompt.
+        showWithinMs: OVERALL_MS * 2,
+        onRendererGone: (reason, exitCode) => {
+          early.reason = reason;
+          v.note('render-process-gone', { before: 'first paint', reason, exitCode });
+        },
+      });
+      early.wc = webContents.fromId(surface.id) ?? null;
+      early.wc?.once('did-navigate', () => {
+        early.committed = true;
+      });
+      return surface;
+    },
+  });
+  const diesEarly = earlyHost.ask(parent.webContents.id, SPEC, () => Promise.resolve(null));
+  const earlyWc = await until('the no-paint prompt', () => heardEarly().wc);
+  await until('its page to commit', () => (heardEarly().committed ? true : null));
+  const earlyPid = earlyWc.getOSProcessId();
+  if (earlyPid <= 1) throw new Error('the no-paint prompt has no renderer process');
+  const visibleAtDeath = BrowserWindow.fromWebContents(earlyWc)?.isVisible() === true;
+  const earlyAt = Date.now();
+  process.kill(earlyPid, 'SIGKILL');
+  const earlyAnswer = await withDeadline(diesEarly, ANSWER_MS, 'the prompt that died unpainted');
+  v.note('death-before-paint', {
+    visibleAtDeath,
+    answer: earlyAnswer,
+    reason: heardEarly().reason,
+    ms: Date.now() - earlyAt,
+  });
+  v.check(
+    'deathBeforePaintIsCancel',
+    !visibleAtDeath && !earlyAnswer && heardEarly().reason !== null,
+    `visible ${String(visibleAtDeath)}, answer ${String(earlyAnswer)}, event ${String(heardEarly().reason)}`,
+  );
 
   // ---- a renderer that dies ----------------------------------------------------------------------
   current = null;
