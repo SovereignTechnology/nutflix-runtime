@@ -12,6 +12,7 @@ import { refuse } from './guards.ts';
 
 const MH_MAGIC_64 = 0xfeedfacf;
 const FAT_MAGIC = 0xcafebabe;
+const FAT_MAGIC_64 = 0xcafebabf;
 const CPU_X64 = 0x01000007;
 const CPU_ARM64 = 0x0100000c;
 const LC_SEGMENT_64 = 0x19;
@@ -46,19 +47,25 @@ interface Slice {
   readonly bytes: Buffer;
 }
 
-/** A Mach-O's 64-bit slices, or `null` if this is not one this tool can read. */
+/**
+ * A Mach-O's 64-bit slices, or `null` if this is not one this tool can read: a thin 64-bit Mach-O,
+ * or a universal one (`fat_arch` or, with 64-bit offsets, `fat_arch_64`) of 64-bit slices.
+ */
 function slices(file: Buffer): Slice[] | null {
   if (file.length < HEADER_64) return null;
   if (file.readUInt32LE(0) === MH_MAGIC_64) return [{ cpu: file.readUInt32LE(4), bytes: file }];
-  if (file.readUInt32BE(0) !== FAT_MAGIC) return null;
+  const magic = file.readUInt32BE(0);
+  if (magic !== FAT_MAGIC && magic !== FAT_MAGIC_64) return null;
+  const wide = magic === FAT_MAGIC_64;
+  const entry = wide ? 32 : 20;
   const count = file.readUInt32BE(4);
-  // A Java class file starts with the same four bytes, and then a version far above this.
-  if (count === 0 || count > 8 || file.length < 8 + count * 20) return null;
+  // A Java class file starts with FAT_MAGIC's four bytes, and then a version far above this.
+  if (count === 0 || count > 8 || file.length < 8 + count * entry) return null;
   const out: Slice[] = [];
   for (let i = 0; i < count; i++) {
-    const at = 8 + i * 20;
-    const offset = file.readUInt32BE(at + 8);
-    const size = file.readUInt32BE(at + 12);
+    const at = 8 + i * entry;
+    const offset = wide ? Number(file.readBigUInt64BE(at + 8)) : file.readUInt32BE(at + 8);
+    const size = wide ? Number(file.readBigUInt64BE(at + 16)) : file.readUInt32BE(at + 12);
     if (offset + size > file.length) return null;
     const bytes = file.subarray(offset, offset + size);
     if (bytes.length < HEADER_64 || bytes.readUInt32LE(0) !== MH_MAGIC_64) return null;
@@ -67,26 +74,64 @@ function slices(file: Buffer): Slice[] | null {
   return out;
 }
 
-/** Whether `file` starts like a 64-bit Mach-O, thin or universal (read from its first bytes). */
+/**
+ * What kind of Mach-O a file's first bytes say it is, or `null` if none: a thin 64-bit one, a
+ * universal one (`fat` or `fat64`), a 32-bit one (either byte order), or a big-endian 64-bit one.
+ * Only the first three can ship: macOS has not run 32-bit code since 10.15, and this app ships for
+ * arm64 and x64, which are little-endian.
+ */
+export type MachoFormat = 'thin64' | 'fat' | 'fat64' | 'thin32' | 'big-endian64';
+
+export function machoFormat(h: Buffer): MachoFormat | null {
+  if (h.length < 8) return null;
+  const le = h.readUInt32LE(0);
+  if (le === MH_MAGIC_64) return 'thin64';
+  if (le === 0xfeedface || le === 0xcefaedfe) return 'thin32';
+  if (le === 0xcffaedfe) return 'big-endian64';
+  const be = h.readUInt32BE(0);
+  // A Java class file starts with FAT_MAGIC's four bytes, and then a version far above 8.
+  if ((be === FAT_MAGIC || be === FAT_MAGIC_64) && h.readUInt32BE(4) > 0 && h.readUInt32BE(4) <= 8)
+    return be === FAT_MAGIC ? 'fat' : 'fat64';
+  return null;
+}
+
+/** Whether `file` is a Mach-O of any kind (read from its first bytes). */
 export function isMachoFile(file: string): boolean {
-  const h = head(file, 8);
-  if (h.length < 8) return false;
-  if (h.readUInt32LE(0) === MH_MAGIC_64) return true;
-  // A Java class file starts with the same four bytes, and then a version far above 8.
-  return h.readUInt32BE(0) === FAT_MAGIC && h.readUInt32BE(4) > 0 && h.readUInt32BE(4) <= 8;
+  return machoFormat(head(file, 8)) !== null;
+}
+
+/**
+ * Throws unless `file` is a Mach-O this app may ship: 64-bit and little-endian, thin or universal,
+ * with only 64-bit slices.
+ */
+export function assertShippableMacho(file: Buffer, what: string): void {
+  const format = machoFormat(file);
+  if (format === 'thin32')
+    return refuse(
+      `${what} is a 32-bit Mach-O: macOS has not run 32-bit code since 10.15, and this app ships for arm64 and x64 only`,
+    );
+  if (format === 'big-endian64')
+    return refuse(`${what} is a big-endian Mach-O, for no Mac this app ships for`);
+  if (format === null) return refuse(`${what} is not a Mach-O`);
+  if (slices(file) === null)
+    return refuse(
+      `${what} is a universal Mach-O with a slice that is not 64-bit, or that this tool cannot read`,
+    );
 }
 
 /** The CPUs of a Mach-O, or `null` if it is not one. */
 export function machoArches(file: string): Arch[] | null {
-  const h = head(file, 8 + 8 * 20);
+  const h = head(file, 8 + 8 * 32);
   if (h.length < 8) return null;
   const known = (cpus: readonly number[]): Arch[] =>
     cpus.map(cpuName).filter((a): a is Arch => a !== null);
   if (h.readUInt32LE(0) === MH_MAGIC_64) return known([h.readUInt32LE(4)]);
-  if (h.readUInt32BE(0) !== FAT_MAGIC) return null;
+  const magic = h.readUInt32BE(0);
+  if (magic !== FAT_MAGIC && magic !== FAT_MAGIC_64) return null;
+  const entry = magic === FAT_MAGIC_64 ? 32 : 20;
   const count = h.readUInt32BE(4);
-  if (count === 0 || count > 8 || h.length < 8 + count * 20) return null;
-  return known(Array.from({ length: count }, (_, i) => h.readUInt32BE(8 + i * 20)));
+  if (count === 0 || count > 8 || h.length < 8 + count * entry) return null;
+  return known(Array.from({ length: count }, (_, i) => h.readUInt32BE(8 + i * entry)));
 }
 
 const LC_SYMTAB = 0x02;

@@ -255,7 +255,12 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
   );
   // An ad-hoc signature (no team) under a policy that pins one. A signature naming another team
   // is refused in the unit tests only: this job has no identity to make one with.
-  const team: SigningPolicy = { label: 'proof', appleTeamId: 'ABCDE12345', windowsSigner: null };
+  const team: SigningPolicy = {
+    label: 'proof',
+    appleTeamId: 'ABCDE12345',
+    allowAdHocMacosRelease: false,
+    windowsSigner: null,
+  };
   await expectRefusal(
     'an ad-hoc bundle under a policy pinning a Team ID',
     () => compareSigned(t, app, signed, team),
@@ -350,7 +355,12 @@ async function proveMsix(t: ReleaseTarget, artifact: string, work: string): Prom
   // A policy pinning this job's certificate, built here: the release tool never builds one.
   const x = new X509Certificate(readFileSync(cerPath));
   const pinned = { sha256: x.fingerprint256, subject: x.subject, issuer: x.issuer };
-  const proof: SigningPolicy = { label: 'proof', appleTeamId: null, windowsSigner: pinned };
+  const proof: SigningPolicy = {
+    label: 'proof',
+    appleTeamId: null,
+    allowAdHocMacosRelease: false,
+    windowsSigner: pinned,
+  };
   // Not a second real certificate: this job's own, with its pinned fingerprint changed.
   const otherSha = `${pinned.sha256.startsWith('00') ? '11' : '00'}${pinned.sha256.slice(2)}`;
   const other: SigningPolicy = { ...proof, windowsSigner: { ...pinned, sha256: otherSha } };

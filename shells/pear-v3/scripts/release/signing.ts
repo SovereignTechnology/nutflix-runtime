@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { treeManifest } from '../pear-ci/deployment.ts';
 import { readRelease, writeReleaseFile, type ReleaseRow } from './assemble.ts';
 import {
+  assertShippableMacho,
   assertSignatureValid,
   isMachoFile,
   machoCodeDigest,
@@ -139,6 +140,7 @@ async function compareBundle(
   for (const [path, e] of b) {
     if (e.kind !== 'file' || !isMachoFile(join(signed, ...path.split('/')))) continue;
     const bytes = readFileSync(join(signed, ...path.split('/')));
+    assertShippableMacho(bytes, path);
     const signatures = machoSignatures(bytes);
     if (signatures === null) return refuse(`the signature of ${path} cannot be read`);
     for (const slice of signatures)

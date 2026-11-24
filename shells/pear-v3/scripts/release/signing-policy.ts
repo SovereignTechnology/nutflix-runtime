@@ -26,6 +26,16 @@ import { refuse } from './guards.ts';
 /** The owner's Apple Team ID, once there is one. */
 export const APPLE_TEAM_ID: string | null = null;
 
+/**
+ * Whether a release may ship macOS signed ad hoc, while no Team ID is pinned. `false`: no release
+ * goes out until `APPLE_TEAM_ID` is pinned (`multisig commit` and `notice-draft` refuse). Only a
+ * reviewed change sets it to `true`, with the date and the reason, after reading what it costs
+ * (docs/release.md, "Releasing macOS ad hoc"): no notarization; no App Management protection, in a
+ * user-writable `~/Applications`; privacy grants reset on every update; and library validation off
+ * in the processes that hold the user's key.
+ */
+export const ALLOW_AD_HOC_MACOS_RELEASE: boolean = false;
+
 /** The owner's Windows code-signing certificate, once there is one: its SHA-256, subject, issuer. */
 export const WINDOWS_SIGNER: WindowsSigner | null = null;
 
@@ -66,6 +76,8 @@ export interface SigningPolicy {
   readonly label: string;
   /** `null`: ad-hoc signatures only. */
   readonly appleTeamId: string | null;
+  /** With no Team ID, whether a release may still ship macOS ad hoc (`ALLOW_AD_HOC_MACOS_RELEASE`). */
+  readonly allowAdHocMacosRelease: boolean;
   /** `null`: no signed `.msix` is accepted. */
   readonly windowsSigner: WindowsSigner | null;
 }
@@ -74,6 +86,7 @@ export const productionSigningPolicy = (): SigningPolicy =>
   assertSigningPolicy({
     label: 'production',
     appleTeamId: APPLE_TEAM_ID,
+    allowAdHocMacosRelease: ALLOW_AD_HOC_MACOS_RELEASE,
     windowsSigner: WINDOWS_SIGNER,
   });
 

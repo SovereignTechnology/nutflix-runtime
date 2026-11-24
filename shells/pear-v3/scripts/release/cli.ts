@@ -24,6 +24,7 @@
  *   multisig request --config <pear.json> --verlink <verlink>
  *   verify-request --run <id> --commit <sha> --config <pear.json> --verlink <verlink>
  *                --request <r> --work <empty dir> [--signed-target <target>]...
+ *                [--without-apple-check]
  *                                     EACH SIGNER, before `pear multisig sign`
  *   multisig verify  --config <pear.json> --source <link> --request <r> --response <s>...
  *   multisig commit  --config <pear.json> --source <link> --production <link> --out <dir>
@@ -98,7 +99,9 @@ import {
   type AskLine,
 } from './guards.ts';
 import { assertCommit, ghApi, parseRunId, type GitHubApi } from './provenance.ts';
+import { assertReleasable, assertSignable } from './release-gate.ts';
 import { checkRequestInOneHome, compareDrive, type PearInOneHome } from './signer.ts';
+import { productionSigningPolicy, type SigningPolicy } from './signing-policy.ts';
 import { recordSigned } from './signing.ts';
 import { RELEASE_TARGETS, deploymentEntry } from './targets.ts';
 
@@ -131,6 +134,8 @@ export interface Io {
   codesignVerify(bundle: string): { code: number; out: string } | null;
   /** `pear build`, local and offline. */
   runBuild(bin: string, out: string, args: readonly string[]): Promise<void>;
+  /** What signatures a release may carry: `productionSigningPolicy()`, always, outside tests. */
+  signingPolicy(): SigningPolicy;
   nowS(): number;
 }
 
@@ -139,6 +144,8 @@ interface Parsed {
   readonly responses: readonly string[];
   readonly signedTargets: readonly string[];
   readonly execute: boolean;
+  /** `verify-request`: go on without Apple's own check, off a Mac, with a Team ID pinned. */
+  readonly withoutAppleCheck: boolean;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -167,10 +174,15 @@ export function parseOptions(argv: readonly string[]): Parsed {
   const responses: string[] = [];
   const signedTargets: string[] = [];
   let execute = false;
+  let withoutAppleCheck = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] ?? '';
     if (a === '--execute') {
       execute = true;
+      continue;
+    }
+    if (a === '--without-apple-check') {
+      withoutAppleCheck = true;
       continue;
     }
     const v = argv[i + 1];
@@ -182,7 +194,7 @@ export function parseOptions(argv: readonly string[]): Parsed {
     else if (options.has(a)) return refuse(`${a} is given twice`);
     else options.set(a, v);
   }
-  return { options, responses, signedTargets, execute };
+  return { options, responses, signedTargets, execute, withoutAppleCheck };
 }
 
 const need = (p: Parsed, name: string): string =>
@@ -283,6 +295,13 @@ async function multisig(io: Io, sub: string | undefined, rest: readonly string[]
           refuse(`${join(record, PROVISIONED)} is missing: provision with --out ${record} first`);
         if (existsSync(join(record, COMMITTED)))
           refuse(`${join(record, COMMITTED)} exists: this release was committed already`);
+        // macOS ships signed by the owner, and only with a Team ID unless ad hoc was chosen.
+        assertReleasable(
+          readRelease(record),
+          join(record, 'release.json'),
+          io.signingPolicy(),
+          'Nothing was committed.',
+        );
       },
       // The link the signers' keys derive must be the one typed: before anything is written.
       confirmed: async (bin) => {
@@ -319,6 +338,8 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
       return refuse(`--signed-target ${name}: only a macOS or Windows target is signed`);
     signed.add(t.name);
   }
+  // A release that may not ship is not signed: before anything is fetched.
+  assertSignable(signed, io.signingPolicy(), 'Do not sign.');
   const source = `pear://${linkKeyOf(verlink)}`;
   const dump = planDump({ verlink, dir: join(work, 'drive') });
   const check = planVerifyRequest({ config, source, request });
@@ -383,7 +404,11 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
     io.print(
       `ok  ${r.target}  ${r.how === 'exact' ? "CI's bytes" : "CI's package, signed"}  ${r.digest}`,
     );
-  // 4. Apple's own check of a signed bundle, where there is one to ask.
+  // 4. Apple's own check of a signed bundle, where there is one to ask. With a Team ID pinned, a
+  //    signature's chain to Apple is checked only there, so off a Mac this refuses, unless the
+  //    signer says another signer in the quorum ran it on a Mac.
+  const teamPinned = io.signingPolicy().appleTeamId !== null;
+  const unchecked: string[] = [];
   for (const t of RELEASE_TARGETS.filter((x) => x.platform === 'darwin' && signed.has(x.name))) {
     const bundle = join(work, 'drive', ...deploymentEntry(t).split('/'));
     const r = io.codesignVerify(bundle);
@@ -391,6 +416,7 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
       io.print(
         `NOT CHECKED BY APPLE  ${t.name}: there is no codesign on this machine. Its page hashes, special slots and what its signature says were checked here; the resource seal's contents, nested code and any identity's chain to Apple were not. At least one signer must run this on a Mac.`,
       );
+      unchecked.push(t.name);
       continue;
     }
     if (r.code !== 0)
@@ -399,12 +425,36 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
       );
     io.print(`ok  ${t.name}  codesign --verify --strict --deep`);
   }
+  const warning = appleCheck({ teamPinned, unchecked, withoutAppleCheck: p.withoutAppleCheck });
   io.print(
     `This request releases exactly what CI built at ${commit}, version ${built.version}, to ${production}.`,
   );
+  if (warning !== null) io.print(warning);
   for (const l of signInstruction(request)) io.print(l);
   return 0;
 }
+
+/** The refusal off a Mac with a Team ID pinned, and the warning when the signer goes on anyway. */
+export const appleCheckRefusal = (targets: readonly string[]): string =>
+  `Apple's own check of ${targets.join(', ')} was not run: there is no codesign on this machine, and with a Team ID pinned a forged Apple signature would pass every other check here. Run verify-request on a Mac. If another signer in the quorum ran it on a Mac and it passed, you may pass --without-apple-check. Do not sign this request until one of those is true.`;
+
+/**
+ * Whether a signer may go on without Apple's own check: refuses off a Mac with a Team ID pinned,
+ * unless the signer passed `--without-apple-check`, and then returns the warning to print above the
+ * sign line. With no Team ID pinned there is no CMS to check, and nothing changes.
+ */
+export function appleCheck(o: {
+  readonly teamPinned: boolean;
+  readonly unchecked: readonly string[];
+  readonly withoutAppleCheck: boolean;
+}): string | null {
+  if (!o.teamPinned || o.unchecked.length === 0) return null;
+  if (!o.withoutAppleCheck) return refuse(appleCheckRefusal(o.unchecked));
+  return appleCheckWarning(o.unchecked);
+}
+
+export const appleCheckWarning = (targets: readonly string[]): string =>
+  `WARNING: Apple's own check of ${targets.join(', ')} was not run on this machine (--without-apple-check). Sign only if another signer in the quorum ran verify-request on a Mac and it passed.`;
 
 /**
  * What a signer runs next: the exact request checked, with a short hash of it to compare with what
@@ -523,6 +573,12 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
         refuse('--commit is not taken here: the commit is the one the packages carry');
       const production = requireProductionLink(io);
       const out = needPath(p, '--out');
+      assertReleasable(
+        readRelease(out),
+        join(out, 'release.json'),
+        io.signingPolicy(),
+        'No notice was drafted.',
+      );
       const d = readDigests(out);
       const at = p.options.get('--created-at');
       const file = join(out, 'release-event.unsigned.json');
@@ -692,6 +748,7 @@ export const realIo: Io = {
     });
     return { code: r.status ?? 1, out: `${r.stdout}${r.stderr}` };
   },
+  signingPolicy: productionSigningPolicy,
   runBuild: async (bin, out, args) => {
     // `pear build` starts no sidecar and joins no DHT. Its own home, and a loopback bootstrap, so
     // that nothing here can touch the owner's Pear state even if that ever changes.

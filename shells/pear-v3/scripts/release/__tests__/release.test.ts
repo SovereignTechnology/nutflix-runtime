@@ -43,8 +43,27 @@ import {
 } from '../../../src/update/root.ts';
 import type { UpdateStatus } from '../../../src/update/status.ts';
 import { PEAR_PINS, PEAR_VERSION } from '../../pear-ci/pins.ts';
-import { digestTargets, inputName, readDigests, readRelease, type Digest } from '../assemble.ts';
-import { committedVersion, parseOptions, runCli, signInstruction, type Io } from '../cli.ts';
+import {
+  RELEASE_SCHEMA,
+  digestTargets,
+  inputName,
+  readDigests,
+  readRelease,
+  writeReleaseFile,
+  type Digest,
+} from '../assemble.ts';
+import { assertReleasable, noTeamIdRefusal, unsignedMacRefusal } from '../release-gate.ts';
+import { productionSigningPolicy, type SigningPolicy } from '../signing-policy.ts';
+import {
+  appleCheck,
+  appleCheckRefusal,
+  appleCheckWarning,
+  committedVersion,
+  parseOptions,
+  runCli,
+  signInstruction,
+  type Io,
+} from '../cli.ts';
 import {
   PEER_UPDATE_TIMEOUT_MS,
   planBuild,
@@ -75,6 +94,38 @@ import {
   throwawayLaunchRoot,
 } from '../launch-subject.ts';
 import { RELEASE_TARGETS, deploymentEntry } from '../targets.ts';
+
+/** A test policy only: a Team ID pinned, so a release with signed macOS packages may ship. */
+const TEAM_PINNED: SigningPolicy = {
+  label: 'test',
+  appleTeamId: 'ABCDE12345',
+  allowAdHocMacosRelease: false,
+  windowsSigner: null,
+};
+/** A test policy only: no Team ID, and ad hoc chosen, as `ALLOW_AD_HOC_MACOS_RELEASE = true` would. */
+const AD_HOC_CHOSEN: SigningPolicy = {
+  ...TEAM_PINNED,
+  appleTeamId: null,
+  allowAdHocMacosRelease: true,
+};
+
+/** A release.json for `dir`, its macOS rows signed by the owner unless `unsigned` says otherwise. */
+function releaseFile(dir: string, o: { unsigned?: readonly string[] } = {}): void {
+  writeReleaseFile(dir, {
+    schema: RELEASE_SCHEMA,
+    version: '0.2.0',
+    commit: 'ab'.repeat(20),
+    run: 1,
+    targets: RELEASE_TARGETS.map((t) => ({
+      target: t.name,
+      app: join(dir, 'apps', t.name, t.file),
+      ci: { digest: '0'.repeat(64), bytes: 1 },
+      ...(t.platform === 'darwin' && !(o.unsigned ?? []).includes(t.name)
+        ? { signed: { app: join(dir, 'signed', t.name, t.file), digest: '1'.repeat(64), bytes: 1 } }
+        : {}),
+    })),
+  });
+}
 
 const KEY_A = 'y'.repeat(52);
 const KEY_B = 'b'.repeat(52);
@@ -158,6 +209,7 @@ function fakeIo(
     },
     runIsolated: (bin, _home, args) => io.runPublic(bin, args),
     codesignVerify: () => null,
+    signingPolicy: productionSigningPolicy,
     runBuild: (_bin, _out, args) => {
       io.built.push(args);
       return Promise.resolve();
@@ -464,12 +516,13 @@ describe('a step on a real link', () => {
       return f;
     };
     /** A release folder that `provision` recorded. */
-    const provisioned = (): string => {
+    const provisioned = (o: { unsigned?: readonly string[] } = {}): string => {
       const out = tmp();
       writeFileSync(
         join(out, 'provisioned.json'),
         JSON.stringify({ supersedes: `pear://0.3.${KEY_B}` }),
       );
+      releaseFile(out, o);
       return out;
     };
     const commitArgv = (c: string, out = provisioned()): string[] => [
@@ -503,7 +556,7 @@ describe('a step on a real link', () => {
     });
 
     it('commits only when the config derives the link typed, and records the verlink', async () => {
-      const io = fakeIo({ typed: LINK_B, derived: LINK_B });
+      const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => TEAM_PINNED });
       const out = provisioned();
       expect(await runCli([...commitArgv(config(), out), '--execute'], io)).toBe(0);
       expect(io.ran.map((a) => a.slice(0, 2))).toEqual([
@@ -516,12 +569,63 @@ describe('a step on a real link', () => {
         verlink: `pear://0.7.${KEY_B}`,
       });
       // One commit per release folder.
-      const again = fakeIo({ typed: LINK_B, derived: LINK_B });
+      const again = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => TEAM_PINNED });
       await refused(
         runCli([...commitArgv(config(), out), '--execute'], again),
         /committed already/,
       );
       expect(again.ran).toEqual([]);
+    });
+
+    describe('macOS: signed by the owner, and only with a Team ID unless ad hoc was chosen', () => {
+      it('refuses while no Team ID is pinned, before asking anything', async () => {
+        const io = fakeIo({ typed: LINK_B, derived: LINK_B });
+        await refused(
+          runCli([...commitArgv(config()), '--execute'], io),
+          /^macOS is not released ad hoc: no Apple Team ID is pinned\..* Nothing was committed\.$/,
+        );
+        expect(io.asked).toEqual([]);
+        expect(io.ran).toEqual([]);
+      });
+
+      it.each([
+        ['a Team ID pinned', TEAM_PINNED],
+        ['ad hoc chosen in a reviewed change (a test policy here)', AD_HOC_CHOSEN],
+      ])('refuses a macOS package as CI built it, even with %s', async (_n, policy) => {
+        const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => policy });
+        await refused(
+          runCli(
+            [...commitArgv(config(), provisioned({ unsigned: ['darwin-x64'] })), '--execute'],
+            io,
+          ),
+          /^darwin-x64 has no signed package in .*release\.json: CI's own macOS build has no hardened runtime, and it never ships\..* Nothing was committed\.$/,
+        );
+        expect(io.ran).toEqual([]);
+      });
+
+      it('commits with ad hoc chosen and every macOS package signed', async () => {
+        const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => AD_HOC_CHOSEN });
+        expect(await runCli([...commitArgv(config()), '--execute'], io)).toBe(0);
+      });
+
+      it('production says no today: no Team ID, and ad hoc not chosen', () => {
+        expect(productionSigningPolicy()).toMatchObject({
+          appleTeamId: null,
+          allowAdHocMacosRelease: false,
+        });
+        const dir = tmp();
+        releaseFile(dir);
+        expect(() => {
+          assertReleasable(readRelease(dir), 'r', productionSigningPolicy(), 'x');
+        }).toThrow(noTeamIdRefusal('x'));
+        expect(() => {
+          assertReleasable(readRelease(dir), 'r', TEAM_PINNED, 'x');
+        }).not.toThrow();
+        releaseFile(dir, { unsigned: ['darwin-arm64'] });
+        expect(() => {
+          assertReleasable(readRelease(dir), 'r', TEAM_PINNED, 'x');
+        }).toThrow(unsignedMacRefusal('darwin-arm64', 'r', 'x'));
+      });
     });
 
     it('commits nothing for a release folder provision did not record', async () => {
@@ -534,20 +638,20 @@ describe('a step on a real link', () => {
     });
 
     it('refuses when the signers’ config derives another link, and commits nothing', async () => {
-      const io = fakeIo({ typed: LINK_B, derived: LINK_A });
+      const io = fakeIo({ typed: LINK_B, derived: LINK_A, signingPolicy: () => TEAM_PINNED });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /derives/);
       expect(io.ran.map((a) => a[1])).toEqual(['link']);
     });
 
     it('asks Pear for the link only after the link is typed back', async () => {
-      const io = fakeIo({ typed: LINK_A, derived: LINK_B });
+      const io = fakeIo({ typed: LINK_A, derived: LINK_B, signingPolicy: () => TEAM_PINNED });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /not the link/);
       expect(io.ran).toEqual([]);
       expect(io.fetched).toBe(0);
     });
 
     it('refuses when `pear multisig link` fails, whatever it printed', async () => {
-      const io = fakeIo({ typed: LINK_B, linkCode: 3 });
+      const io = fakeIo({ typed: LINK_B, linkCode: 3, signingPolicy: () => TEAM_PINNED });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /exited 3/);
       expect(io.ran.map((a) => a[1])).toEqual(['link']);
     });
@@ -953,10 +1057,26 @@ describe('the notice draft', () => {
         join(out, 'committed.json'),
         JSON.stringify({ production: o.production ?? LINK_A, verlink: o.committed ?? VERLINK_A }),
       );
+      releaseFile(out);
       return out;
     };
     const argv = (out: string): string[] => ['notice-draft', '--out', out];
-    const withLinkA = (): FakeIo => fakeIo({ production: LINK_A });
+    const withLinkA = (): FakeIo =>
+      fakeIo({ production: LINK_A, signingPolicy: () => TEAM_PINNED });
+
+    it('drafts nothing while no Team ID is pinned, or for a macOS package as CI built it', async () => {
+      const out = withDigests();
+      await refused(
+        runCli(argv(out), fakeIo({ production: LINK_A })),
+        /^macOS is not released ad hoc: .* No notice was drafted\.$/,
+      );
+      releaseFile(out, { unsigned: ['darwin-arm64'] });
+      await refused(
+        runCli(argv(out), withLinkA()),
+        /^darwin-arm64 has no signed package in .* No notice was drafted\.$/,
+      );
+      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+    });
 
     it('writes it once, unsigned, with the commit the packages carry', async () => {
       const out = withDigests();
@@ -1017,6 +1137,53 @@ describe('the notice draft', () => {
         await refused(runCli(argv(out), withLinkA()), new RegExp(`${missing} is missing`));
       }
       expect(() => committedVersion(tmp(), LINK_A)).toThrow(ReleaseRefusal);
+    });
+
+    it('a signer refuses, before fetching anything, a release that may not ship', async () => {
+      const argv = (signedTargets: readonly string[]): string[] => [
+        'verify-request',
+        '--run',
+        '1',
+        '--commit',
+        'ab'.repeat(20),
+        '--config',
+        '/c/pear.json',
+        '--verlink',
+        VERLINK_A,
+        '--request',
+        REQUEST,
+        '--work',
+        tmp(),
+        ...signedTargets.flatMap((t) => ['--signed-target', t]),
+        '--execute',
+      ];
+      const both = ['darwin-arm64', 'darwin-x64'];
+      await refused(
+        runCli(argv(both), fakeIo()),
+        /^macOS is not released ad hoc: no Apple Team ID is pinned\..* Do not sign\.$/,
+      );
+      const io = fakeIo({ signingPolicy: () => TEAM_PINNED });
+      await refused(
+        runCli(argv(['darwin-arm64']), io),
+        /^darwin-x64 is not named with --signed-target: .* Do not sign\.$/,
+      );
+      expect(io.asked).toEqual([]);
+      expect(io.ran).toEqual([]);
+    });
+
+    it('with a Team ID pinned, a signer off a Mac stops, unless they say another signer checked on a Mac', () => {
+      const unchecked = ['darwin-arm64', 'darwin-x64'];
+      expect(() => appleCheck({ teamPinned: true, unchecked, withoutAppleCheck: false })).toThrow(
+        appleCheckRefusal(unchecked),
+      );
+      expect(appleCheck({ teamPinned: true, unchecked, withoutAppleCheck: true })).toBe(
+        appleCheckWarning(unchecked),
+      );
+      // Checked on a Mac, or no Team ID (no CMS to check): nothing changes.
+      expect(appleCheck({ teamPinned: true, unchecked: [], withoutAppleCheck: false })).toBeNull();
+      expect(appleCheck({ teamPinned: false, unchecked, withoutAppleCheck: false })).toBeNull();
+      expect(parseOptions(['--without-apple-check']).withoutAppleCheck).toBe(true);
+      expect(parseOptions([]).withoutAppleCheck).toBe(false);
     });
 
     it('tells a signer the exact request to sign, with its hash', () => {

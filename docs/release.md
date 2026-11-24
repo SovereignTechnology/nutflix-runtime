@@ -51,7 +51,7 @@ running keeps serving whatever CLI talks to it, so stop any other one first: `pe
 | 3   | owner       | `pear multisig link --config pear.json` prints the **production link**.                                                                                                                                                                                                                                                               |
 | 4   | owner       | Set `RELEASE_UPGRADE_LINK` to it, in a reviewed commit ([The day the link is set](#the-day-the-link-is-set)).                                                                                                                                                                                                                         |
 | 5   | owner       | In nutflix-pear, set `RUNTIME_PRODUCTION_LINK` to the same link, in a reviewed commit, and move this repository's `vendor/nutflix-pear` submodule to a commit that has it. Until then its publish script refuses this app's notices.                                                                                                  |
-| 6   | owner       | Once there is an Apple Developer account and a Windows code-signing certificate: pin them in `scripts/release/signing-policy.ts` (`APPLE_TEAM_ID`, `WINDOWS_SIGNER`), in a reviewed commit. Until then a signer accepts only an ad-hoc macOS signature and no signed `.msix` ([What a signature may say](#what-a-signature-may-say)). |
+| 6   | owner       | Once there is an Apple Developer account and a Windows code-signing certificate: pin them in `scripts/release/signing-policy.ts` (`APPLE_TEAM_ID`, `WINDOWS_SIGNER`), in a reviewed commit. **Until `APPLE_TEAM_ID` is pinned, `multisig commit` and `notice-draft` refuse every release** ([Releasing macOS ad hoc](#releasing-macos-ad-hoc)), and a signer accepts only an ad-hoc macOS signature and no signed `.msix` ([What a signature may say](#what-a-signature-may-say)). |
 
 ```json
 {
@@ -137,7 +137,12 @@ every signer's `verify-request` hold every Mach-O in a signed bundle to it, re-s
   check the resource seal's contents, the nested code it names, or an identity's CMS signature and
   its chain to Apple: on a Mac, `verify-request` also runs `codesign --verify --strict --deep`,
   which does; elsewhere it says plainly that this was not checked. While no Team ID is pinned there
-  is no CMS to check. **Once one is, at least one signer must run `verify-request` on a Mac.**
+  is no CMS to check. **Once one is, at least one signer in the quorum must run `verify-request`
+  on a Mac**: off a Mac it then refuses and prints no sign line, unless the signer passes
+  `--without-apple-check` to say another signer did ([step 14](#step-14-is-what-the-quorum-is-for)).
+- **macOS, what kind of binary:** a Mach-O must be 64-bit and little-endian, thin or universal
+  (`fat` or `fat64`, both read), with only 64-bit slices. A 32-bit one is refused outright: macOS
+  has not run 32-bit code since 10.15, and this app ships for arm64 and x64.
 - **Windows:** the certificate (`WINDOWS_SIGNER`: its SHA-256, subject and issuer; while it is
   `null`, a signed `.msix` is refused). `[Content_Types].xml` may change only by the entries that
   declare the signature and the code-integrity catalog. A catalog signing adds must be signed by the
@@ -182,8 +187,31 @@ certificate made for the job on Windows. Apple's Developer ID signing, notarizat
 certificate authority's certificate have never been through it. If a real tool changes something
 else, `record-signed` refuses and names the file: that is the point to stop and look.
 
-Without this step a target ships as CI built it: for macOS and Windows, a test build that other
-people's machines will refuse.
+Without this step a target would ship as CI built it. **For macOS the tool refuses that:**
+`multisig commit` and `notice-draft` stop if a macOS row of `release.json` has no signed package,
+because CI's own build has no hardened runtime. For Windows, CI's unsigned `.msix` does not install
+for users.
+
+#### Releasing macOS ad hoc
+
+While `APPLE_TEAM_ID` is `null`, `multisig commit` and `notice-draft` refuse every release: the
+approved plan ships test builds only until Apple signing exists. Only the owner can change that, in
+a reviewed commit that sets `ALLOW_AD_HOC_MACOS_RELEASE` to `true` in
+`scripts/release/signing-policy.ts`, with the date and the reason. What a macOS release signed ad
+hoc costs its users, against Developer ID:
+
+- **No notarization.** A copy that macOS quarantined (a browser download) is blocked by
+  Gatekeeper.
+- **No App Management protection.** `pear install` puts the app in a user-writable
+  `~/Applications`, and macOS does not protect an ad-hoc app's bundle from other code running as
+  the same user.
+- **Privacy grants reset on every update.** An ad-hoc signature's identity is its code hash, which
+  changes with every release, so camera, microphone, files and Keychain grants are asked for again.
+- **Library validation is off in the processes that hold the user's key.** The app, its helpers
+  and `bare` carry `disable-library-validation` while signed ad hoc, so they will load a library
+  planted where they look for one.
+
+Once a Team ID is pinned, set `ALLOW_AD_HOC_MACOS_RELEASE` back to `false` and re-sign under it.
 
 ### Build the deployment
 
@@ -251,6 +279,11 @@ coordinator's word for anything but the verlink and the request**:
    length is refused here.
 6. On a Mac, it runs `codesign --verify --strict --deep` on each signed macOS bundle. Anywhere else
    it prints `NOT CHECKED BY APPLE` for each one ([What a signature may say](#what-a-signature-may-say)).
+   **With a Team ID pinned, that is a refusal:** it exits non-zero and prints no sign line, because
+   off a Mac a forged Apple signature passes every other check. At least one signer in the quorum
+   runs `verify-request` on a Mac. The others may then pass `--without-apple-check`, and get the
+   sign line under a warning that says so. While no Team ID is pinned there is no CMS to check, and
+   `NOT CHECKED BY APPLE` is printed and the check goes on.
 7. It prints the exact `pear multisig sign` line for the request it checked, with a short hash of
    it. Compare the hash with the request you were sent, and sign that line, not a pasted one.
 

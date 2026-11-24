@@ -45,10 +45,12 @@ import {
 import {
   CS_ADHOC,
   CS_RUNTIME,
+  assertShippableMacho,
   assertSignatureValid,
   elfArch,
   machoArches,
   machoCodeDigest,
+  machoFormat,
   machoSignatures,
   parseEntitlementsDer,
   parseEntitlementsXml,
@@ -594,7 +596,12 @@ describe('reading a binary', () => {
     it('each entitlements file is the one the policy pins, ad hoc and with a Team ID', () => {
       const file = (name: string): string =>
         readFileSync(new URL(`../../../packaging/${name}`, import.meta.url), 'utf8');
-      const team: SigningPolicy = { label: 't', appleTeamId: 'ABCDE12345', windowsSigner: null };
+      const team: SigningPolicy = {
+        label: 't',
+        appleTeamId: 'ABCDE12345',
+        allowAdHocMacosRelease: false,
+        windowsSigner: null,
+      };
       const adHoc = expectedEntitlements('Contents/MacOS/Nutflix');
       expect(parseEntitlementsXml(file('entitlements.mac.adhoc.plist'))).toEqual(adHoc);
       expect(parseEntitlementsXml(file('entitlements.mac.plist'))).toEqual(
@@ -604,6 +611,70 @@ describe('reading a binary', () => {
       // With a Team ID, library validation stays on.
       expect(expectedEntitlements('Contents/MacOS/Nutflix', team).size).toBe(1);
       expect(expectedEntitlements('Contents/Resources/app/node_modules/x/y.node').size).toBe(0);
+    });
+  });
+
+  describe('every kind of Mach-O', () => {
+    /** A universal Mach-O with 64-bit offsets (`fat_arch_64`), of one slice. */
+    const fat64 = (slice: Buffer, cpu = 0x0100000c): Buffer => {
+      const out = Buffer.alloc(0x1000 + slice.length);
+      out.writeUInt32BE(0xcafebabf, 0);
+      out.writeUInt32BE(1, 4);
+      out.writeUInt32BE(cpu, 8);
+      out.writeBigUInt64BE(0x1000n, 16);
+      out.writeBigUInt64BE(BigInt(slice.length), 24);
+      out.writeUInt32BE(12, 32);
+      slice.copy(out, 0x1000);
+      return out;
+    };
+    const magic = (bytes: number[]): Buffer =>
+      Buffer.concat([Buffer.from(bytes), Buffer.alloc(56)]);
+
+    it('names each magic', () => {
+      expect(machoFormat(macho())).toBe('thin64');
+      expect(machoFormat(Buffer.from('cafebabe00000002', 'hex'))).toBe('fat');
+      expect(machoFormat(fat64(macho()))).toBe('fat64');
+      expect(machoFormat(magic([0xce, 0xfa, 0xed, 0xfe]))).toBe('thin32');
+      expect(machoFormat(magic([0xfe, 0xed, 0xfa, 0xce]))).toBe('thin32');
+      expect(machoFormat(magic([0xfe, 0xed, 0xfa, 0xcf]))).toBe('big-endian64');
+      // A Java class file, which shares FAT_MAGIC's first four bytes.
+      expect(machoFormat(Buffer.from('cafebabe00000034', 'hex'))).toBeNull();
+      expect(machoFormat(Buffer.from('not a binary'))).toBeNull();
+    });
+
+    it('reads a fat-64 universal Mach-O like a fat one', () => {
+      const f = join(tmp(), 'u');
+      writeFileSync(f, fat64(macho()));
+      expect(machoArches(f)).toEqual(['arm64']);
+      expect(machoCodeDigest(fat64(macho()))).not.toBeNull();
+      expect(machoCodeDigest(fat64(macho({ code: 0x12 })))).not.toBe(
+        machoCodeDigest(fat64(macho())),
+      );
+      expect(() => {
+        assertSignatureValid(fat64(signedMacho()), { infoPlist: null, resources: null }, 'x');
+      }).not.toThrow();
+      expect(() => {
+        assertShippableMacho(fat64(macho()), 'x');
+      }).not.toThrow();
+    });
+
+    it('refuses a 32-bit or big-endian Mach-O outright', () => {
+      for (const bytes of [
+        [0xce, 0xfa, 0xed, 0xfe],
+        [0xfe, 0xed, 0xfa, 0xce],
+      ])
+        refused(() => {
+          assertShippableMacho(magic(bytes), 'x');
+        }, /x is a 32-bit Mach-O: macOS has not run 32-bit code since 10\.15/);
+      refused(() => {
+        assertShippableMacho(magic([0xfe, 0xed, 0xfa, 0xcf]), 'x');
+      }, /big-endian/);
+      // A universal one with a 32-bit slice.
+      const slice32 = Buffer.alloc(64);
+      slice32.writeUInt32LE(0xfeedface, 0);
+      refused(() => {
+        assertShippableMacho(fat64(slice32, 7), 'x');
+      }, /a slice that is not 64-bit/);
     });
   });
 
@@ -1220,22 +1291,25 @@ describe('a signed package', () => {
       const team: SigningPolicy = {
         label: 'test',
         appleTeamId: 'ABCDE12345',
+        allowAdHocMacosRelease: false,
         windowsSigner: null,
       };
 
       it('a policy that pins something malformed is refused, not trusted', async () => {
         const { unsigned, signed } = pair();
         for (const bad of [
-          { label: 'x', appleTeamId: '', windowsSigner: null },
-          { label: 'x', appleTeamId: 'short', windowsSigner: null },
+          { label: 'x', appleTeamId: '', allowAdHocMacosRelease: false, windowsSigner: null },
+          { label: 'x', appleTeamId: 'short', allowAdHocMacosRelease: false, windowsSigner: null },
           {
             label: 'x',
             appleTeamId: null,
+            allowAdHocMacosRelease: false,
             windowsSigner: { sha256: '', subject: 'CN=a', issuer: 'CN=a' },
           },
           {
             label: 'x',
             appleTeamId: null,
+            allowAdHocMacosRelease: false,
             windowsSigner: { sha256: 'AB'.repeat(32), subject: ' ', issuer: 'CN=a' },
           },
         ])
@@ -1330,6 +1404,17 @@ describe('a signed package', () => {
       await refusedAsync(
         compareSigned(mac, bad.unsigned, bad.signed),
         /Contents\/MacOS\/Nutflix: page 0 of the code is not the one its signature hashes/,
+      );
+    });
+
+    it('refuses a 32-bit Mach-O left as CI built it', async () => {
+      const { unsigned, signed } = pair();
+      const old = Buffer.concat([Buffer.from([0xce, 0xfa, 0xed, 0xfe]), Buffer.alloc(60)]);
+      for (const d of [unsigned, signed])
+        writeFileSync(join(d, 'Contents', 'Resources', 'old.dylib'), old);
+      await refusedAsync(
+        compareSigned(mac, unsigned, signed),
+        /Contents\/Resources\/old\.dylib is a 32-bit Mach-O/,
       );
     });
 
@@ -1444,6 +1529,7 @@ describe('a signed package', () => {
     const pinned: SigningPolicy = {
       label: 'test',
       appleTeamId: null,
+      allowAdHocMacosRelease: false,
       windowsSigner: {
         sha256: cert.x509.fingerprint256,
         subject: cert.x509.subject,
