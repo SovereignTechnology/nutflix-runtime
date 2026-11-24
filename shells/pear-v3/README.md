@@ -122,6 +122,19 @@ Bare worker (pear-runtime run() → bare-sidecar's `bare`, Bare.IPC)
 - **A header CSP** on every `app:` response: the renderer's own `<meta>` policy read from the file
   being served, plus `frame-ancestors 'none'` (`src/main/csp.ts`). It refuses to start on a policy
   that allows inline script, `eval` or a frame.
+- **Plain HTTP reaches the worker and nothing else** (`src/main/loopback.ts`). The policy allows
+  `http://127.0.0.1:*`, because the worker's range server and NFX origin take a random port each.
+  Inside that, main cancels every `http:` request of the window's session that is not to
+  `127.0.0.1` on a port the worker serves now, so a compromised page cannot send requests to other
+  HTTP services on the user's machine. Main learns those ports from the worker's `nfx.play.open`
+  answers as they pass the gate, before the page sees them, and forgets them when the worker is gone.
+  The listener has no URL filter: it sees every request, and the port is checked in main's own code,
+  not by Electron's match patterns. `ws://127.0.0.1:*` is left alone: local Nostr relays use it, and
+  the page owns the relay list. A `ws://127.0.0.1` relay's NIP-11 document is `http://` on the
+  relay's port, so it is refused, and search to such a relay is matched in the page. The Electron
+  proof (`scripts/prompt-proof.ts`, below) installs the same guard in the app's session: from a
+  page, a `fetch` and a `<video>` reach a worker port, the server on another loopback port sees no
+  request at all, and after the worker is replaced only the new worker's port passes.
 - `webRTCIPHandlingPolicy: 'default_public_interface_only'`.
 - **Navigation, redirects, `<webview>` and `window.open` are denied** for every webContents.
   Every permission is denied except `fullscreen` for the top frame of `app://nutflix`; no device
@@ -426,7 +439,7 @@ The AppImage carries this repository's patched type-2 runtime
 
 | Path | What it is |
 | --- | --- |
-| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `consent-file.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
+| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `loopback.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `consent-file.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
 | `src/preload/preload.ts` | the preload |
 | `src/update/` | the update gate: `gate.ts`, `notice.ts`, `root.ts`, `relays.ts`, `hash.ts`, and its Bare entry `update-worker.ts` |
 | `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check |

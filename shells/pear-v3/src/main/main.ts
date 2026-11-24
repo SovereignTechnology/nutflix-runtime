@@ -61,6 +61,7 @@ import {
   shouldShowFuseNotice,
 } from './fuse-notice.ts';
 import { event, readyLine } from './log.ts';
+import { WorkerPorts, installLoopbackGuard } from './loopback.ts';
 import {
   NOT_MOUNTED_CODE,
   PROBE_CODE,
@@ -144,6 +145,8 @@ let updater: WorkerHandle | undefined;
 let lastUpdate: UpdateStatus | undefined;
 let mainWindow: BrowserWindow | undefined;
 let unsandboxed = false;
+/** The worker's loopback ports: the only plain-HTTP ports the page may reach (`loopback.ts`). */
+const workerPorts = new WorkerPorts();
 
 const sendTo = (id: number, channel: string, ...args: unknown[]): void => {
   const wc = webContents.fromId(id);
@@ -162,6 +165,7 @@ const gate: RpcGate = new RpcGate({
     sendTo(id, PIPE_CLOSE);
   },
   mainCall: (id, method, args) => mainCalls.answer(id, method, args),
+  loopback: workerPorts,
 });
 
 /** The window a dialog belongs to. */
@@ -342,6 +346,10 @@ async function main(): Promise<void> {
   const rendererDir = join(appDir, 'renderer');
   const csp = headerPolicy(readFileSync(join(rendererDir, 'index.html'), 'utf8'));
   installSessionPolicy(session.defaultSession);
+  // Inside the page's policy: its plain HTTP reaches the worker's own ports and nothing else.
+  installLoopbackGuard(session.defaultSession, workerPorts, (name, fields) => {
+    event(name, fields);
+  });
   // The prompt window's own session: in memory, every permission denied, one file on its network.
   installPromptSession(session.fromPartition(PROMPT_PARTITION, { cache: false }), () =>
     readFile(join(__dirname, 'prompt.html')),

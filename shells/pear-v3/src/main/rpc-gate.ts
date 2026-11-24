@@ -20,7 +20,10 @@
  *   8. `mainMethods` are answered here and never reach the worker (`main-calls.ts`): the file
  *      picker, each thing that starts sharing the user's IP address or deletes a video, and
  *      forgetting the stored choice to run without Chromium's sandbox (each behind a native
- *      confirmation).
+ *      confirmation);
+ *   9. the URLs the worker answers a window's `nfx.play.open` with go to `loopback` before the
+ *      window sees them, and `loopback` is reset when the worker is gone: those are the only
+ *      plain-HTTP ports the page may reach (`loopback.ts`).
  *
  * No window can open secret entry: it is reached only from the native Account menu
  * (`account-menu.ts`), so a page cannot pose as the prompt by being what opens it.
@@ -130,7 +133,18 @@ export interface RpcGateDeps {
    * code and message cross; anything else crosses as `internal`. Absent: such a call is refused.
    */
   mainCall?(windowId: number, method: string, args: Record<string, unknown>): Promise<unknown>;
+  /**
+   * Learns the worker's loopback ports from its `nfx.play.open` answers, and forgets them when the
+   * worker is gone (`loopback.ts`, `WorkerPorts`).
+   */
+  readonly loopback?: {
+    served(url: unknown): void;
+    reset(): void;
+  };
 }
+
+/** The fields of an `nfx.play.open` answer that name one of the worker's loopback servers. */
+const PLAY_URL_FIELDS = ['progressiveUrl', 'originUrl'] as const;
 
 type Pending =
   | {
@@ -419,7 +433,11 @@ export class RpcGate {
       w.inflight.delete(p.id);
       if (ok) {
         if (p.closesSid !== undefined) w.sids.delete(p.closesSid);
-        this.#toWindow(p.windowId, { op: 'res', id: p.id, ok: true, r: msg['r'] });
+        // Before the window has the URLs: it may fetch from them the moment it does.
+        const r = msg['r'];
+        if (p.method === 'nfx.play.open' && isRecord(r))
+          for (const f of PLAY_URL_FIELDS) this.#d.loopback?.served(r[f]);
+        this.#toWindow(p.windowId, { op: 'res', id: p.id, ok: true, r });
       } else {
         if (p.addedSid !== undefined) w.sids.delete(p.addedSid);
         this.#toWindow(p.windowId, { op: 'res', id: p.id, ok: false, e: failure });
@@ -438,6 +456,8 @@ export class RpcGate {
   workerGone(): void {
     if (this.#dead) return;
     this.#dead = true;
+    // A port the gone worker held may be anyone's now.
+    this.#d.loopback?.reset();
     const pending = [...this.#pending];
     this.#pending.clear();
     const down = wire('backend-down', 'the worker is not running');
