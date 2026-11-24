@@ -31,6 +31,7 @@ import type { WorkerHostOptions } from '../../host.js';
 import { WorkerHost } from '../../host.js';
 import { createWorkerLogger } from '../../log.js';
 import type { WorkerEvent } from '../../protocol.js';
+import { renameRetrying, withRenameRetry } from '../../rename-retry.js';
 import { WorkerRpc } from '../../rpc.js';
 import type {
   HttpRequestHandler,
@@ -110,6 +111,8 @@ export const nodeConnectRelay: RelayConnect = (url) => {
   };
 };
 
+const ON_THIS_PLATFORM = { platform: process.platform } as const;
+
 /** What Studio and the signer need of the machine, on Node. */
 export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
   return {
@@ -130,13 +133,13 @@ export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
       if (process.platform !== 'win32') await chmod(dirname(p), 0o700);
       const tmp = `${p}.tmp`;
       await writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
-      await rename(tmp, p);
+      await renameRetrying(rename, tmp, p, ON_THIS_PLATFORM);
       return true;
     },
     writeDurable: async (p, data) => {
       const tmp = `${p}.tmp`;
       await writeFile(tmp, data, { mode: 0o600 });
-      await rename(tmp, p);
+      await renameRetrying(rename, tmp, p, ON_THIS_PLATFORM);
       return true;
     },
     freeBytes: async (p) => {
@@ -150,7 +153,8 @@ export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
 
 export function nodeRuntime(system?: WorkerSystem): WorkerRuntime {
   return {
-    fs: nodeFs,
+    // As the Bare adapter's: every rename rides out a Windows sharing violation.
+    fs: withRenameRetry(nodeFs, ON_THIS_PLATFORM),
     rmTree: (p) => rm(p, { recursive: true, force: true }),
     createHttpServer: nodeHttpServer,
     ...(system === undefined ? {} : { system }),
