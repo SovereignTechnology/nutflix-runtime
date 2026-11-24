@@ -18,6 +18,7 @@ import type { FetchFn } from './net/http.js';
 import type { NfxPlayerLib } from './player/nfx-lib.js';
 import type { PlayerLoader } from './player/load.js';
 import { probeCapabilities, probePlayer, type CapabilityReport, type ProbeEnv } from './probe.js';
+import { installSandboxChoice } from './settings/sandbox-choice.js';
 import { browserSettingsStore, type SettingsStore } from './settings/store.js';
 import { webrtcStatusText } from './settings/webrtc.js';
 import { installWebRtcNote } from './settings/webrtc-note.js';
@@ -138,6 +139,8 @@ export function startRenderer(o: RendererOptions): RendererClient {
     note.refresh();
   });
   const panel = installSeedPublishPanel(o.container, control);
+  // Shown only once the shell says this run is without Chromium's sandbox.
+  const sandboxChoice = installSandboxChoice(o.container, link);
   // Nothing is asked of the worker at launch: it (or the shell) says when something is served.
   const offServing = control.listen();
 
@@ -180,6 +183,7 @@ export function startRenderer(o: RendererOptions): RendererClient {
         offNoteSettings();
         note.stop();
         panel.stop();
+        sandboxChoice.stop();
         offServing();
         control.stop();
         tap.uninstall();

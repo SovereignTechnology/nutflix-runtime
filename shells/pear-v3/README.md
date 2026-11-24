@@ -173,6 +173,9 @@ not asked again for a minute, and turning seeding off is never held up:
   (`signer.check`): the file's name, size and length, the whole npub, the whole title, the tags and
   the start of the description, with every control, format and line-separator character removed.
   "No" deletes the draft. The key the user approved goes back with the request.
+- `app.sandbox.forget`, only while the app runs without Chromium's sandbox, forgets the stored "Run
+  anyway" after a native confirmation (keeping it is the default answer). It takes no argument and
+  can do nothing else. Main tells the window that the sandbox is off with its own `sandbox` event.
 
 **Secret entry is reachable only from the native Account menu** (`src/main/account-menu.ts`): Unlock
 Key, Create Key, Connect Bunker and Lock, with shortcuts main catches in `before-input-event`
@@ -221,9 +224,11 @@ then reports that its sandbox cannot start. Without that, Chromium would abort b
 and the user would never see a warning. If the switch is on the command line, main shows a native warning before any window and before the worker:
 **Quit is the default** (Enter, Escape and closing the box all quit); "Run anyway" is the choice. It
 is stored in `<userData>/sandbox-consent.json`, and a red banner stays at the top of the window
-while the sandbox is off (the title says so too). Start the app with `--forget-sandbox-choice` to
-forget the choice. A stored choice has no effect on a launch without the switch.
-Not done: a control in the renderer's Settings (below).
+while the sandbox is off (the title says so too). Two things forget the choice, so that the next
+start without the sandbox warns again: **Settings › Chromium's sandbox › Forget "Run anyway"**,
+shown only while the sandbox is off (`app.sandbox.forget`, behind a native confirmation; the run
+itself stays as it is), and starting the app with `--forget-sandbox-choice`, which deletes it and
+exits. A stored choice has no effect on a launch without the switch.
 
 ## Packaging
 
@@ -421,7 +426,7 @@ The AppImage carries this repository's patched type-2 runtime
 
 | Path | What it is |
 | --- | --- |
-| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `app-protocol.ts`, `rpc-gate.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
+| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `consent-file.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
 | `src/preload/preload.ts` | the preload |
 | `src/update/` | the update gate: `gate.ts`, `notice.ts`, `root.ts`, `relays.ts`, `hash.ts`, and its Bare entry `update-worker.ts` |
 | `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check |
@@ -437,8 +442,6 @@ is imported from there unchanged. The MSIX settings and the Windows SDK lookup a
 
 - **No asar** (above). Keeping main and the renderer in an archive with the integrity fuses means
   patching where `bare-sidecar` finds `bare`, or loading `pear-runtime` from outside the archive.
-- **No Settings control to forget the sandbox choice**: that is a renderer change. Until then,
-  `--forget-sandbox-choice`.
 - **Bundle id** `xyz.sovit.nutflix.runtime`, **MSIX identity** `SovereignTechnology.Nutflix` and
   **publisher** `CN=Sovereign Technology (TEST)`: the publisher must equal the signing certificate's
   subject and then never change.

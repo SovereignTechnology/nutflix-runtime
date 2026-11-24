@@ -18,8 +18,9 @@
  *   7. a `seeding.segment` or `seeding.watch` must name a play session this window holds: what it
  *      hands over or asks to seed is checked against THAT session's video and hash list;
  *   8. `mainMethods` are answered here and never reach the worker (`main-calls.ts`): the file
- *      picker, and each thing that starts sharing the user's IP address or deletes a video (behind
- *      a native confirmation).
+ *      picker, each thing that starts sharing the user's IP address or deletes a video, and
+ *      forgetting the stored choice to run without Chromium's sandbox (each behind a native
+ *      confirmation).
  *
  * No window can open secret entry: it is reached only from the native Account menu
  * (`account-menu.ts`), so a page cannot pose as the prompt by being what opens it.
@@ -76,6 +77,8 @@ export interface WindowPolicy {
  *             the renderer publishes), `.segment` (a file its own play verified)
  *   Studio    `studio.ffmpeg`, `.probe`, `.publish`, `.cancel`, on the one live token from
  *             `app.pickVideo`. The signature is `app.publish.sign`, after a native confirmation.
+ *   sandbox   main's `sandbox` event says this run is without Chromium's sandbox; Settings may
+ *             then ask `app.sandbox.forget` (no arguments, a native confirmation).
  *
  * Not here, ever: `init` (main sends it, with the storage directory), `nfx.seed.*` and
  * `nfx.endpoint` (the page would pick what this machine serves), every main-only method listed
@@ -98,13 +101,14 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
     'studio.cancel',
   ]),
   events: new Set(['status', 'studio.progress']),
-  mainEvents: new Set(['update', 'serving', 'signer']),
+  mainEvents: new Set(['update', 'serving', 'signer', 'sandbox']),
   mainMethods: new Set([
     'app.pickVideo',
     'app.seeding.set',
     'app.seeding.resume',
     'app.seeding.delete',
     'app.publish.sign',
+    'app.sandbox.forget',
   ]),
   maxInflight: 32,
 };
