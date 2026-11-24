@@ -181,8 +181,8 @@ export interface InitArgs {
   /** The least severe log level sent as `log` events; default `info`. */
   readonly logLevel?: 'debug' | 'info' | 'warn' | 'error';
   /**
-   * Whether this shell may hold a passphrase-sealed key. Absent means NO: shape (b) has no sandbox
-   * and ADR 0001's amendment allows it no signing key on disk, so it signs through a bunker only.
+   * Whether this shell may hold a passphrase-sealed key. Absent means NO. Shape (b) has no sandbox
+   * and, by ADR 0001's amendment, signs nothing at all: it runs the worker with no `system`.
    */
   readonly localKey?: boolean;
 }

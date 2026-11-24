@@ -36,15 +36,20 @@ pear run pear://<fork>.<length>.<key>
 
 - **Run on any other platform.** At start the Bare main compares the Pear version, the Bare version
   and the platform's key, fork and length with what its build names, and exits on any difference.
-- **Sign anything, or hold a wallet.** There is no sign-in in this build, and two separate things
-  stop a local signing key. The page gate refuses every `signer.*` method by name. And the shell
-  gives the worker its data plane only (`src/bare/data-plane.ts`), without the `system` that
-  builds the worker's signer, so the worker itself answers those methods `unsupported-input` and
-  writes no key file. Staging fails if the shared renderer ever offers sign-in. If signing comes
-  to this shape, it may only be a NIP-46 bunker.
-- **Seed or publish.** The page gate allows `status`, `nfx.play.open` and `nfx.play.close`, and
-  nothing else, including any method a later worker adds. The worker's seeder key is a network
-  identity and is treated as exposed.
+- **Sign, publish or seed.** This shape is watch only (ADR 0001 amendment, item 1): its window has
+  Node access and no sandbox, so it has no safe place to type a passphrase or a bunker link. There
+  is no Account menu, no secret prompt, and no signer, Studio, publishing or seeding control
+  (the renderer runs with `seedPublish: false`). Three separate things hold this:
+  - the page gate allows `status`, `nfx.play.open` and `nfx.play.close` and nothing else, so every
+    `signer.*`, `studio.*`, `seeding.*` and `app.*` method is refused, including any a later worker
+    adds;
+  - the worker gets its data plane only (`src/bare/data-plane.ts`), with no `system`, so it has no
+    signer and no Studio and answers their methods `unsupported-input`, and it starts with
+    `localKey: false`;
+  - main turns seeding off at every start and refuses to open a window if the worker does not
+    confirm it.
+
+  The worker's seeder key is a network identity and is treated as exposed.
 - **Show remote images, or read relay information over `https:`.** The window's network list is
   `http://127.0.0.1` alone, because decoding a stranger's image here needs no click and has no
   sandbox around it. So thumbnails are blank and NIP-11 search hints are not read. Relays still
@@ -117,8 +122,15 @@ From its source, and not fixable from an app:
 | Bare modules | [`app/package-lock.json`](app/package-lock.json), its own lockfile |
 
 The worker's locked `bare-fs` needs Bare 1.28, so `app/package.json` holds `bare-fs` 4.7.1 and
-overrides the other `bare-*` modules to the versions Pear v2.6.5 itself locks. A test refuses any
-package that needs a newer Bare. Shape (a)'s lockfile is unchanged.
+`bare-http1` 4.5.6 and overrides the other `bare-*` modules to the versions Pear v2.6.5 itself
+locks. Every other dependency of the worker and of nutflix-pear's packages is pinned at the same
+version as shape (a), and a test says so. Shape (a)'s lockfile is unchanged.
+
+`bare-ws`, `bare-subprocess` and `bare-env` are not pinned here at all. Only the worker's `system`
+needs them: Studio's ffmpeg and the NIP-46 bunker's relay socket. Shape (b) has neither, so it loads
+the worker's `adapters/bare-data.ts`, which imports none of them. `scripts/stage.ts` copies only the
+worker modules its entry reaches, and fails if one of them imports any of the three, or imports a
+package the app's lockfile does not install.
 
 `RELEASE_LINE` in `src/shared/pins.ts` is `null`. Creating that line means republishing Holepunch's
 platform on a key SovTech holds, and seeding it, which is the maintainer's step. Until then
@@ -137,9 +149,10 @@ on the public DHT. So **GitHub never runs `pear`.**
   `127.0.0.1`. It then stages the app to a versioned link there and starts it with `pear run`. The
   checks read the real window over the debugger port: the pinned runtime, the CSP, a page-to-worker
   round trip, the label, WebRTC off, refused injections, a real video playing with a stranger's HTML
-  as its title and no ICE gathering, refused methods and links, no RPC on any socket, no
-  signing key on disk, a clean exit, settings kept across a restart, and a refusal on the wrong
-  platform.
+  as its title and no ICE gathering, no seeding or account controls, every signer, Studio,
+  seeding and `app.*` method refused, checked links, no RPC on any socket, no listener after a
+  play, no signing key or signer directory on disk, a clean exit, settings kept across a restart,
+  and a refusal on the wrong platform.
 
 Not proved: a real SovTech release line, a real signed notice, a WebRTC mesh playback here, any
 target but Linux x64, and any attack on the Chromium 130 engine itself.

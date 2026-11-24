@@ -1,4 +1,4 @@
-import { FrameDecoder, WORKER_METHODS, encodeFrame } from '@nutflix-runtime/worker';
+import { FrameDecoder, WINDOW_METHODS, WORKER_METHODS, encodeFrame } from '@nutflix-runtime/worker';
 import { describe, expect, it } from 'vitest';
 
 import { MAX_INFLIGHT, PAGE_EVENTS, PAGE_METHODS, PageGate } from '../bare/page-gate.ts';
@@ -50,12 +50,17 @@ describe('what the page may ask', () => {
     expect([...PAGE_EVENTS]).toEqual(['status']);
   });
 
-  it.each(WORKER_METHODS.filter((m) => !PAGE_METHODS.has(m)))('refuses %s', (m) => {
-    const r = rig();
-    r.gate.fromPage(req(7, m));
-    expect(r.toWorker).toEqual([]);
-    expect(r.toPage).toMatchObject([{ op: 'res', id: 7, ok: false }]);
-  });
+  // Every worker method but the three, and every method a v3 window asks main for: this shell's
+  // main answers none of them, and the gate never passes one on.
+  it.each([...WORKER_METHODS.filter((m) => !PAGE_METHODS.has(m)), ...WINDOW_METHODS])(
+    'refuses %s',
+    (m) => {
+      const r = rig();
+      r.gate.fromPage(req(7, m));
+      expect(r.toWorker).toEqual([]);
+      expect(r.toPage).toMatchObject([{ op: 'res', id: 7, ok: false }]);
+    },
+  );
 
   // ADR 0001 amendment, item 1: no signing key on disk in this shape. Named here, not taken from
   // the worker's method list, so that they are refused before and after the worker has them.
@@ -68,9 +73,16 @@ describe('what the page may ask', () => {
     'signer.check',
     'signer.sign',
     'studio.source',
+    'studio.publish',
+    'studio.ffmpeg',
     'seeding.set',
-  ])('refuses %s, with a passphrase in its arguments or not', (m) => {
-    for (const a of [{}, { passphrase: 'correct horse battery staple' }]) {
+    'seeding.watch',
+    'seeding.status',
+    'app.seeding.set',
+    'app.publish.sign',
+    'app.pickVideo',
+  ])('refuses %s, whatever its arguments', (m) => {
+    for (const a of [{}, { passphrase: 'correct horse battery staple' }, { watched: true }]) {
       const r = rig();
       r.gate.fromPage(req(5, m, a));
       expect(r.toWorker).toEqual([]);

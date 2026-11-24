@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The real `pear run` proof of shells/pear-v2. Runs ONLY in a throwaway VM with network access
-# (`kata-run --net`), never on a developer machine and never on GitHub: it fetches Pear v2.6.5 from
-# the public DHT as a client, because that platform has no other download.
+# The real `pear run` proof of shells/pear-v2. Runs ONLY in a throwaway VM with network access, as
+# root, never on a developer machine and never on GitHub: it fetches Pear v2.6.5 from the public
+# DHT as a client, because that platform has no other download.
 #
-#   kata-run --cwd <repo> --net --no-setup --timeout 2400 -- bash shells/pear-v2/proof/run.sh
+#   bash shells/pear-v2/proof/run.sh        (from the repository's root, in that VM)
 #
 # Everything after the fetch runs on a private DHT on 127.0.0.1: the platform is copied to a key
 # made in this VM, installed from it, and the app is staged and run on that network.

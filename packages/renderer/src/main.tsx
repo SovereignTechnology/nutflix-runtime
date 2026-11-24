@@ -50,6 +50,12 @@ export interface RendererOptions {
   readonly loadPlayer?: PlayerLoader | undefined;
   /** Default: this runtime's own (`probePlayer`). Given: no library is loaded. */
   readonly capabilities?: CapabilityReport | undefined;
+  /**
+   * `false`: watch only, for the pinned `pear run` shell (ADR 0001 amendment, item 1). No seeding,
+   * publishing or signer section in Settings, no segment hand-over, and no call to any of their
+   * worker methods. Default: on.
+   */
+  readonly seedPublish?: boolean | undefined;
 }
 
 export interface RendererClient {
@@ -80,9 +86,12 @@ export function startRenderer(o: RendererOptions): RendererClient {
   const pool = o.pool ?? new SimplePoolAdapter();
   const link = new WorkerLink({ pipe: o.pipe });
   // Seeding and publishing (Settings' own section): the worker holds every key and does the work.
-  const control = new SeedPublish({ worker: link, pool, settings });
-  const tap = new SegmentTap({ worker: link, enabled: () => control.watching });
-  tap.install(
+  // A watch-only shell has none of it.
+  const control =
+    o.seedPublish === false ? null : new SeedPublish({ worker: link, pool, settings });
+  const tap =
+    control === null ? null : new SegmentTap({ worker: link, enabled: () => control.watching });
+  tap?.install(
     (win as unknown as { SourceBuffer?: { prototype: Parameters<SegmentTap['install']>[0] } })
       .SourceBuffer?.prototype,
   );
@@ -97,13 +106,13 @@ export function startRenderer(o: RendererOptions): RendererClient {
       URL.revokeObjectURL(url);
     },
     onPlay: (play) => {
-      control.onPlay(play);
+      control?.onPlay(play);
     },
     onVerified: (sha256, sid) => {
-      tap.verified(sha256, sid);
+      tap?.verified(sha256, sid);
     },
     onPlayEnded: (sid) => {
-      tap.ended(sid);
+      tap?.ended(sid);
     },
   });
   const model = createShellModel(adapter, routeFromLocation(win.location));
@@ -137,9 +146,9 @@ export function startRenderer(o: RendererOptions): RendererClient {
   const offNoteSettings = settings.onChange(() => {
     note.refresh();
   });
-  const panel = installSeedPublishPanel(o.container, control);
+  const panel = control === null ? null : installSeedPublishPanel(o.container, control);
   // Nothing is asked of the worker at launch: it (or the shell) says when something is served.
-  const offServing = control.listen();
+  const offServing = control === null ? (): void => undefined : control.listen();
 
   const probed: Promise<CapabilityReport> = (async () => {
     if (o.capabilities === undefined) {
@@ -179,10 +188,10 @@ export function startRenderer(o: RendererOptions): RendererClient {
         offSettings();
         offNoteSettings();
         note.stop();
-        panel.stop();
+        panel?.stop();
         offServing();
-        control.stop();
-        tap.uninstall();
+        control?.stop();
+        tap?.uninstall();
         root.unmount();
         await adapter.close();
         link.dispose();

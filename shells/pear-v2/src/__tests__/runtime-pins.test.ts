@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { SYSTEM_ONLY_PACKAGES } from '../../scripts/stage-checks.ts';
 import { PEAR_V2, RELEASE_LINE, isReleaseLine, runtimeMismatch } from '../shared/pins.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +115,29 @@ describe("the app's own pins", () => {
 
   it('lets the window reach loopback and nothing else', () => {
     expect(appPkg.pear.links).toEqual({ loopback: 'http://127.0.0.1' });
+  });
+
+  it('pins what the worker and nutflix-pear declare, but for two older modules and no system ones', () => {
+    // Older for Bare 1.24.3 (S1): the worker's own versions need Bare 1.28 or later.
+    const older: Record<string, string> = { 'bare-fs': '4.7.1', 'bare-http1': '4.5.6' };
+    const declared = [
+      read(repo, 'packages', 'worker', 'package.json'),
+      read(repo, 'vendor', 'nutflix-pear', 'packages', 'core', 'package.json'),
+      read(repo, 'vendor', 'nutflix-pear', 'packages', 'seeder', 'package.json'),
+    ] as { dependencies: Record<string, string> }[];
+    const drift: string[] = [];
+    for (const { dependencies } of declared)
+      for (const [name, version] of Object.entries(dependencies)) {
+        if (name.startsWith('@sovit/') || name.startsWith('@nutflix-runtime/')) continue;
+        if (SYSTEM_ONLY_PACKAGES.includes(name)) {
+          if (name in appPkg.dependencies) drift.push(`${name} is system-only, and pinned`);
+          continue;
+        }
+        const want = older[name] ?? version;
+        if (appPkg.dependencies[name] !== want)
+          drift.push(`${name}: app ${String(appPkg.dependencies[name])}, want ${want}`);
+      }
+    expect(drift).toEqual([]);
   });
 
   it("leaves shape (a)'s own bare-fs where it was", () => {

@@ -5,7 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { PEAR_V2 } from '../../src/shared/pins.ts';
-import { checkStagedHtml, insertLegacyTags, parseTestLine, sri } from '../stage-checks.ts';
+import {
+  SYSTEM_ONLY_PACKAGES,
+  checkStagedHtml,
+  importsOf,
+  insertLegacyTags,
+  moduleClosure,
+  parseTestLine,
+  sri,
+} from '../stage-checks.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(
@@ -108,5 +116,57 @@ describe('a test line', () => {
     `${'y'.repeat(52)}:0:1:2`,
   ])('refuses %j', (raw) => {
     expect(() => parseTestLine(raw)).toThrow(/--test-line/);
+  });
+});
+
+describe('the staged worker', () => {
+  const tree: Record<string, string> = {
+    'host.js': [
+      "import { a } from './a.js';",
+      "export { b } from './sub/b.js';",
+      "import '@sovit/core';",
+      "import corestore from 'corestore';",
+      '// import x from "./not-a-module.js";',
+      "export const NAME = 'from x';",
+    ].join('\n'),
+    'a.js':
+      "import {\n  x,\n  y,\n} from '@scope/pkg/deep/path';\nconst h = await import('bare-http1');",
+    'sub/b.js': "import { c } from '../c.js';",
+    'c.js': 'export const c = 1;',
+    'adapters/bare.js': "import { spawn } from 'bare-subprocess';\nimport ws from 'bare-ws';",
+    'evil.js': "import '../../outside.js';",
+  };
+  const read = (rel: string): string | null => tree[rel] ?? null;
+
+  it('finds what is imported, statically and dynamically, and nothing in comments or strings', () => {
+    expect(importsOf(tree['a.js'] ?? '')).toEqual({
+      relative: [],
+      packages: ['@scope/pkg', 'bare-http1'],
+    });
+    expect(importsOf(tree['host.js'] ?? '').relative).toEqual(['./a.js', './sub/b.js']);
+  });
+
+  it('copies only what the entry reaches, with the packages each imports', () => {
+    const r = moduleClosure(read, ['host.js']);
+    expect(r.files).toEqual(['a.js', 'c.js', 'host.js', 'sub/b.js']);
+    expect([...r.packages.keys()].sort()).toEqual([
+      '@scope/pkg',
+      '@sovit/core',
+      'bare-http1',
+      'corestore',
+    ]);
+  });
+
+  it('sees a reached module that needs what only `system` needs', () => {
+    const r = moduleClosure(read, ['adapters/bare.js']);
+    expect(SYSTEM_ONLY_PACKAGES.filter((p) => r.packages.has(p))).toEqual([
+      'bare-subprocess',
+      'bare-ws',
+    ]);
+  });
+
+  it('refuses a path out of the worker, and a module that is not there', () => {
+    expect(() => moduleClosure(read, ['evil.js'])).toThrow(/leaves the worker/);
+    expect(() => moduleClosure(read, ['gone.js'])).toThrow(/has no gone\.js/);
   });
 });

@@ -13,6 +13,7 @@ import type { NostrPubkey } from '@sovit/core';
 import { FakeRelayPool } from '@sovit/core/nostr';
 
 import { startRenderer, type RendererClient } from '../main.js';
+import { PANEL_ID } from '../seeding/panel.js';
 import { SettingsStore } from '../settings/store.js';
 import type { WorkerPipe } from '../worker/pipe.js';
 import { Key, addrOf, manifest } from './support/nfx.js';
@@ -76,6 +77,7 @@ async function start(
   url = '/',
   w = world(),
   openLink?: (u: string) => void,
+  seedPublish?: boolean,
 ): Promise<{
   client: RendererClient;
   container: HTMLElement;
@@ -95,6 +97,7 @@ async function start(
       openLink,
       settings: new SettingsStore({ storage: null }),
       fetch: () => Promise.resolve(new Response('', { status: 404 })),
+      ...(seedPublish === undefined ? {} : { seedPublish }),
     });
   });
   if (client === undefined) throw new Error('not started');
@@ -261,5 +264,34 @@ describe('a stranger’s words are text, and their links go nowhere on their own
     // The http link is dropped (and logged nowhere); the https ones are normalised and passed on.
     expect(opened).toEqual(['https://good.example/watch?v=1', 'https://good.example/b']);
     expect(window.location.hash).toBe(`#/watch/${w.addr}`);
+  });
+});
+
+/** The methods the page asked the worker for, from the frames it wrote. */
+function methodsWritten(written: readonly Uint8Array[]): string[] {
+  const out: string[] = [];
+  for (const f of written) {
+    const len = new DataView(f.buffer, f.byteOffset).getUint32(0);
+    const msg = JSON.parse(new TextDecoder().decode(f.subarray(4, 4 + len))) as { m?: unknown };
+    if (typeof msg.m === 'string') out.push(msg.m);
+  }
+  return out;
+}
+
+describe('watch only (the pinned `pear run` shell)', () => {
+  it('has the seeding and publishing section by default', async () => {
+    const { container } = await start('/#/settings');
+    expect(container.querySelector(`#${PANEL_ID}`)).not.toBeNull();
+  });
+
+  it('shows no seeding, publishing or account section, and asks the worker for none of it', async () => {
+    const { container, pipe } = await start('/#/settings', world(), undefined, false);
+    expect(route(container)).toBe('settings');
+    expect(container.querySelector(`#${PANEL_ID}`)).toBeNull();
+    expect(container.textContent).not.toMatch(/Account menu|Seeding and publishing|passphrase/);
+    await goHash('#/');
+    await flush();
+    const asked = methodsWritten(pipe.written);
+    expect(asked.filter((m) => /^(signer|seeding|studio|app)\./.test(m))).toEqual([]);
   });
 });

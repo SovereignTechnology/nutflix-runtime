@@ -4,7 +4,7 @@
  *   package.json   `app/package.json`'s name, version and `pear` config
  *   index.js       `src/bare/entry.ts`, bundled, with the platform line and page list written in
  *   page/          the renderer's own build, plus `legacy.js` and `legacy.css` (with SRI)
- *   worker/        the worker package's `tsc` output
+ *   worker/        the worker package's `tsc` output, only the modules the entry reaches
  *   node_modules/  `app/package-lock.json`'s versions (those that run on Bare 1.24.3), linux-x64
  *                  prebuilds only, plus `@sovit/core` and `@sovit/seeder` from the submodule
  *
@@ -35,7 +35,15 @@ import { policyOf } from '../../../packages/renderer/scripts/policy.ts';
 import { RUNTIME_OFFER } from '../../../packages/renderer/src/shell/offer.ts';
 import { contentType } from '../src/bare/page-server.ts';
 import { PEAR_V2, RELEASE_LINE, isReleaseLine, type ReleaseLine } from '../src/shared/pins.ts';
-import { checkStagedHtml, insertLegacyTags, parseTestLine, sri } from './stage-checks.ts';
+import {
+  SYSTEM_ONLY_PACKAGES,
+  checkStagedHtml,
+  importsOf,
+  insertLegacyTags,
+  moduleClosure,
+  parseTestLine,
+  sri,
+} from './stage-checks.ts';
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = resolve(PKG, '..', '..');
@@ -88,15 +96,40 @@ const workerExternal: Plugin = {
   },
 };
 
-function copyWorker(out: string): void {
+/**
+ * The worker's `tsc` output, but only the modules the staged entry points reach: a module that
+ * imports what only `system` needs (Studio, the bunker) must not be among them, and every package
+ * they import must be in the staged `node_modules`.
+ */
+function copyWorker(out: string, entries: readonly string[]): string[] {
   const src = join(REPO, 'packages', 'worker', 'dist');
   if (!existsSync(join(src, 'host.js'))) fail('the worker is not built: run `npm run build`');
-  cpSync(src, join(out, 'worker'), {
-    recursive: true,
-    filter: (p) => !p.includes('__tests__') && !p.endsWith('.d.ts') && !p.endsWith('.map'),
-  });
-  rmSync(join(out, 'worker', 'tsconfig.build.tsbuildinfo'), { force: true });
+  const roots = entries.flatMap((e) =>
+    importsOf(readFileSync(join(out, e), 'utf8'))
+      .relative.filter((r) => r.startsWith('./worker/'))
+      .map((r) => r.slice('./worker/'.length)),
+  );
+  const { files, packages } = moduleClosure((rel) => {
+    const p = join(src, rel);
+    return existsSync(p) ? readFileSync(p, 'utf8') : null;
+  }, roots);
+  for (const blocked of SYSTEM_ONLY_PACKAGES) {
+    const by = packages.get(blocked);
+    if (by !== undefined) fail(`the staged worker imports ${blocked} (${by.join(', ')})`);
+  }
+  for (const f of files) {
+    mkdirSync(dirname(join(out, 'worker', f)), { recursive: true });
+    cpSync(join(src, f), join(out, 'worker', f));
+  }
   writeFileSync(join(out, 'worker', 'package.json'), '{ "type": "module" }\n');
+  return [...packages.keys()];
+}
+
+/** Every package the staged code imports must be in its `node_modules`. */
+function assertInstalled(out: string, names: Iterable<string>): void {
+  for (const n of names)
+    if (!existsSync(join(out, 'node_modules', n, 'package.json')))
+      fail(`the staged code imports ${n}, which app/package-lock.json does not install`);
 }
 
 function keepPrebuild(p: string): boolean {
@@ -224,8 +257,13 @@ export async function stage(o: {
       logLevel: 'warning',
     });
 
-  copyWorker(o.out);
+  const entries = ['index.js', ...(o.smoke === true ? ['smoke.js'] : [])];
+  const workerPackages = copyWorker(o.out, entries);
   copyModules(o.out);
+  assertInstalled(o.out, [
+    ...workerPackages,
+    ...entries.flatMap((e) => importsOf(readFileSync(join(o.out, e), 'utf8')).packages),
+  ]);
 
   const manifest = JSON.parse(readFileSync(join(PKG, 'app', 'package.json'), 'utf8')) as Record<
     string,

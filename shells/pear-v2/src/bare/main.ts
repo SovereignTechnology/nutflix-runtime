@@ -18,10 +18,10 @@ import PearElectron, { type UiPipe } from 'pear-electron';
 import { WorkerHost } from '@nutflix-runtime/worker/host';
 import { WorkerRpc } from '@nutflix-runtime/worker/rpc';
 
-import { bareRuntime } from '../../../../packages/worker/src/adapters/bare.js';
+import { bareDataPlane } from '../../../../packages/worker/src/adapters/bare-data.js';
 import { openCorestoreKeyring } from '../../../../packages/worker/src/keys.js';
 import { runtimeMismatch, type ReleaseLine } from '../shared/pins.ts';
-import { dataPlaneOnly } from './data-plane.ts';
+import { dataPlaneOnly, watchOnly } from './data-plane.ts';
 import { PageGate } from './page-gate.ts';
 import { PAGE_PORT_TRIES, pagePort } from './page-port.ts';
 import { BASE_HEADERS, answerPageRequest } from './page-server.ts';
@@ -159,7 +159,7 @@ export async function main(): Promise<void> {
     },
   });
   const host: WorkerHost = new WorkerHost({
-    runtime: dataPlaneOnly(bareRuntime()),
+    runtime: dataPlaneOnly(bareDataPlane()),
     emit: (ev) => {
       rpc.emit(ev);
     },
@@ -175,7 +175,16 @@ export async function main(): Promise<void> {
     v: 1,
     storage: `${Pear.config.storage}/worker`,
     bootstrap: Pear.config.dht?.bootstrap ?? null,
+    // No passphrase-sealed key: this window has no safe place to type one (ADR 0001 amendment).
+    localKey: false,
   });
+  // Watch only: seeding is off at every start, whatever a file on disk says, and the page can
+  // never turn it on (`PageGate`). A worker that says otherwise does not get a window.
+  await gate.request('seeding.set', { watched: false });
+  if (!watchOnly(await gate.request('seeding.status', {}))) {
+    console.error('nutflix: refusing to start: the worker would not turn seeding off.');
+    Bare.exit(1);
+  }
 
   const { page, port } = await listenPage(ipc, Pear.config.link ?? Pear.config.storage);
 

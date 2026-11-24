@@ -1,5 +1,6 @@
 /** The pure parts of `stage.ts`: what the staged page must look like. Unit-tested. */
 import { createHash } from 'node:crypto';
+import { posix } from 'node:path';
 
 import { policyOf } from '../../../packages/renderer/scripts/policy.ts';
 import { isReleaseLine, type ReleaseLine } from '../src/shared/pins.ts';
@@ -64,3 +65,52 @@ export function checkStagedHtml(html: string): string[] {
   if (/javascript:/i.test(body)) problems.push('a javascript: URL');
   return problems;
 }
+
+/** What a module of tsc's (or esbuild's) ES output imports: relative paths and package names. */
+export function importsOf(source: string): { relative: string[]; packages: string[] } {
+  const specs = [
+    ...source.matchAll(/^\s*import\s+['"]([^'"\n]+)['"]/gm),
+    ...source.matchAll(/^\s*(?:import|export)\b[^'";]*?\bfrom\s*['"]([^'"\n]+)['"]/gm),
+    ...source.matchAll(/\bimport\(\s*['"]([^'"\n]+)['"]\s*\)/g),
+  ].map((m) => m[1] ?? '');
+  const relative = new Set<string>();
+  const packages = new Set<string>();
+  for (const s of specs) {
+    if (s.startsWith('./') || s.startsWith('../')) relative.add(s);
+    else if (s !== '') {
+      const parts = s.split('/');
+      packages.add(s.startsWith('@') ? parts.slice(0, 2).join('/') : (parts[0] ?? s));
+    }
+  }
+  return { relative: [...relative].sort(), packages: [...packages].sort() };
+}
+
+/**
+ * Every module reachable from `roots` by static or dynamic import, inside one directory
+ * (`read(rel)` gives a file's text, or `null`), and the packages each imports. A path that leaves
+ * the directory, or a module that is not there, is an error.
+ */
+export function moduleClosure(
+  read: (rel: string) => string | null,
+  roots: readonly string[],
+): { files: string[]; packages: Map<string, string[]> } {
+  const files = new Set<string>();
+  const packages = new Map<string, string[]>();
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const rel = posix.normalize(queue.shift() ?? '');
+    if (rel.startsWith('../') || rel.startsWith('/'))
+      throw new Error(`stage: ${rel} leaves the worker`);
+    if (files.has(rel)) continue;
+    const text = read(rel);
+    if (text === null) throw new Error(`stage: the worker has no ${rel}`);
+    files.add(rel);
+    const { relative, packages: pkgs } = importsOf(text);
+    for (const p of pkgs) packages.set(p, [...(packages.get(p) ?? []), rel]);
+    for (const r of relative) queue.push(posix.join(posix.dirname(rel), r));
+  }
+  return { files: [...files].sort(), packages };
+}
+
+/** What a watch-only build must not load: Studio's process runner, the bunker's socket, `env`. */
+export const SYSTEM_ONLY_PACKAGES: readonly string[] = ['bare-env', 'bare-subprocess', 'bare-ws'];

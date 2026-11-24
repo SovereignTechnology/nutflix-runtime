@@ -144,8 +144,11 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
      lint, and anything that cannot be text goes in an `<iframe sandbox="allow-scripts">`.
    - Remote URLs never reach navigation or `window.open`, which the runtime passes to
      `shell.openExternal` with no scheme check. Links go through an `https:` check.
-   - No signing key is on disk: shape (b) signs only through a NIP-46 bunker, and holds no wallet.
-     The seeder key is a network identity and is treated as exposed.
+   - Shape (b) v1 is watch only: no signing, no publishing, no seeding, and no wallet. Its window
+     has Node access and no sandbox, so it has no safe place to type a passphrase or a bunker link,
+     and anything a stranger's string ran there could read them. Seeding and publishing would
+     also put the user's address on the network from that same unconfined process. The seeder key
+     is a network identity and is treated as exposed.
    - An authenticated renderer-to-worker channel works. S1 did not confirm this pipe.
    - The window, the README and the install instructions say plainly that this is unsandboxed
      legacy software, and point to shape (a).

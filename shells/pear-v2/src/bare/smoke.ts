@@ -7,13 +7,13 @@
  */
 import '../../../../packages/worker/src/bare-globals.js';
 
-import { FrameDecoder, encodeFrame } from '@nutflix-runtime/worker';
+import { FrameDecoder, WorkerError, encodeFrame } from '@nutflix-runtime/worker';
 import { WorkerHost } from '@nutflix-runtime/worker/host';
 import { WorkerRpc } from '@nutflix-runtime/worker/rpc';
 
-import { bareRuntime } from '../../../../packages/worker/src/adapters/bare.js';
+import { bareDataPlane } from '../../../../packages/worker/src/adapters/bare-data.js';
 import { openCorestoreKeyring } from '../../../../packages/worker/src/keys.js';
-import { dataPlaneOnly } from './data-plane.ts';
+import { dataPlaneOnly, watchOnly } from './data-plane.ts';
 import { PageGate } from './page-gate.ts';
 
 interface Answer {
@@ -53,29 +53,64 @@ async function main(): Promise<void> {
     },
   });
   const host: WorkerHost = new WorkerHost({
-    runtime: dataPlaneOnly(bareRuntime()),
+    runtime: dataPlaneOnly(bareDataPlane()),
     emit: (ev) => {
       rpc.emit(ev);
     },
     openKeyring: openCorestoreKeyring,
   });
   // A loopback bootstrap nothing listens on: the node stays idle and could not leave this host.
-  await gate.request('init', { v: 1, storage, bootstrap: [{ host: '127.0.0.1', port: 9 }] });
+  await gate.request('init', {
+    v: 1,
+    storage,
+    bootstrap: [{ host: '127.0.0.1', port: 9 }],
+    localKey: false,
+  });
+  await gate.request('seeding.set', { watched: false });
+  if (!watchOnly(await gate.request('seeding.status', {}))) throw new Error('seeding is not off');
+  // The worker's own barrier, behind the gate: with no `system` it has no signer and no Studio.
+  for (const [m, a] of [
+    ['signer.local.create', { passphrase: 'correct horse battery staple' }],
+    [
+      'signer.nip46.connect',
+      { uri: 'bunker://' + 'a'.repeat(64) + '?relay=wss%3A%2F%2Fr.example' },
+    ],
+    ['studio.ffmpeg', {}],
+  ] as const) {
+    const code = await gate.request(m, a).then(
+      () => 'ok',
+      (e: unknown) => (e instanceof WorkerError ? e.code : 'other'),
+    );
+    if (code !== 'unsupported-input') throw new Error(`the worker answered ${m} with ${code}`);
+  }
 
   gate.fromPage(encodeFrame({ op: 'req', id: 11, m: 'status', a: {} }));
   gate.fromPage(encodeFrame({ op: 'req', id: 12, m: 'init', a: { v: 1, storage: '/tmp/x' } }));
-  gate.fromPage(encodeFrame({ op: 'req', id: 13, m: 'nfx.seed.list', a: {} }));
+  const refusedIds: number[] = [];
+  for (const [i, m] of [
+    'nfx.seed.list',
+    'signer.local.create',
+    'signer.status',
+    'seeding.set',
+    'studio.publish',
+    'app.seeding.set',
+    'app.publish.sign',
+  ].entries()) {
+    refusedIds.push(13 + i);
+    gate.fromPage(encodeFrame({ op: 'req', id: 13 + i, m, a: { watched: true } }));
+  }
   const end = Date.now() + 10_000;
-  while (answers.size < 3 && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  while (answers.size < 2 + refusedIds.length && Date.now() < end)
+    await new Promise((r) => setTimeout(r, 10));
 
   const status = answers.get(11);
-  const refused = [answers.get(12), answers.get(13)];
+  const refused = [answers.get(12), ...refusedIds.map((id) => answers.get(id))];
   if (status?.ok !== true || status.r?.dht !== 'idle' || status.r.playSessions !== 0)
     throw new Error('the worker did not answer status through the gate');
   if (refused.some((a) => a?.ok !== false || a.e?.code !== 'invalid-argument'))
     throw new Error('the gate did not refuse a method the page may not call');
 
-  const server = await bareRuntime().createHttpServer((_req, res) => {
+  const server = await bareDataPlane().createHttpServer((_req, res) => {
     res.end();
   });
   await new Promise<void>((resolve) => {

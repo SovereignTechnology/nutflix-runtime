@@ -429,6 +429,13 @@ describe('a real `pear run` of a staged versioned link', () => {
       `document.getElementById(${JSON.stringify(LEGACY_NOTE_ID)}).textContent`,
     );
     expect(note).toBe(WEBRTC_LEGACY_NOTE);
+    // Watch only: Settings has no seeding, publishing or account section, and says nothing of one.
+    const settings = await cdp.eval<{ panel: boolean; text: string }>(`({
+      panel: !!document.getElementById('nutflix-seed-publish'),
+      text: document.body.textContent,
+    })`);
+    expect(settings.panel).toBe(false);
+    expect(settings.text).not.toMatch(/Account menu|Seeding and publishing|passphrase|bunker/i);
     // What a peer could learn here if it were on: counted, never printed.
     const c = await cdp.eval<{ total: number; rawHost: number; mdns: number }>(`(async () => {
       const pc = new RTCPeerConnection();
@@ -575,6 +582,11 @@ describe('a real `pear run` of a staged versioned link', () => {
     const t2 = await cdp.eval<number>(`document.querySelector('video').currentTime`);
     expect(t2).toBeGreaterThan(v.t);
     say(`played to ${t2.toFixed(1)} s, ${String(v.w)}x${String(v.h)}, from the worker's loopback`);
+    // Watching seeds nothing: the worker listens nowhere after a play.
+    const st = await cdp.eval<Record<string, Answer>>(
+      rpcExpr([{ id: 1_900_000_050, m: 'status', a: {} }]),
+    );
+    expect(st['1900000050']?.r).toHaveProperty('listening', []);
     expect(await cdp.eval<unknown>('window.__pwned ?? null')).toBeNull();
     expect(await cdp.eval<unknown>('globalThis.__rtc')).toEqual({
       constructed: 1,
@@ -588,15 +600,28 @@ describe('a real `pear run` of a staged versioned link', () => {
       process.stdout.write(`PROOF_SHOT ${await cdp.screenshot()}\n`);
   });
 
-  it('the page cannot reach any worker method but its three', async () => {
+  it('the page cannot reach any worker method but its three: no signer, Studio or seeding', async () => {
     const calls = [
       'init',
       'nfx.seed.start',
       'nfx.seed.stop',
       'nfx.seed.list',
       'nfx.endpoint',
+      'signer.status',
       'signer.local.create',
       'signer.local.unlock',
+      'signer.nip46.connect',
+      'signer.sign',
+      'seeding.status',
+      'seeding.set',
+      'seeding.watch',
+      'seeding.segment',
+      'studio.ffmpeg',
+      'studio.source',
+      'studio.publish',
+      'app.pickVideo',
+      'app.seeding.set',
+      'app.publish.sign',
     ].map((m, i) => ({ id: 1_900_000_100 + i, m, a: { v: 1, storage: '/tmp/x' } }));
     calls.push({ id: 1_900_000_200, m: 'key.export', a: { v: 1, storage: '' } });
     const got = await cdp.eval<Record<string, Answer>>(rpcExpr(calls));
@@ -690,7 +715,12 @@ describe('a real `pear run` of a staged versioned link', () => {
   it('holds no signing key: the only key on disk is the seeder network identity', async () => {
     const storage = await cdp.eval<string>('Pear.config.storage');
     const worker = join(storage, 'worker');
-    expect(readdirSync(worker).sort()).toEqual(['keys', 'nfx', 'tmp']);
+    // `seeding.json` holds the switch main turned off; there is no `signer` directory at all.
+    expect(readdirSync(worker).sort()).toEqual(['keys', 'nfx', 'seeding.json', 'tmp']);
+    const seeding = JSON.parse(readFileSync(join(worker, 'seeding.json'), 'utf8')) as {
+      watched?: unknown;
+    };
+    expect(seeding.watched).toBe(false);
     const walk = (d: string): string[] =>
       readdirSync(d).flatMap((n) => {
         const p = join(d, n);
