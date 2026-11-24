@@ -355,6 +355,18 @@ export class MainCalls {
 
   /** From the native Account menu only. Never rejects: what went wrong is for a native box. */
   async account(windowId: number, action: AccountAction): Promise<AccountOutcome> {
+    // Locking is never made to wait for a dialog, as turning seeding off is not: a page that keeps
+    // a dialog open must not be able to keep the key unlocked.
+    if (action === 'lock') {
+      try {
+        return {
+          status: (await this.#d.worker('signer.lock', {})) as SignerStatusWire,
+          problem: null,
+        };
+      } catch (e) {
+        return { status: null, problem: promptProblem(e) };
+      }
+    }
     if (this.#dialogOpen)
       return { status: null, problem: 'Another Nutflix dialog is open. Finish that one first.' };
     this.#dialogOpen = true;
@@ -367,9 +379,11 @@ export class MainCalls {
     }
   }
 
-  async #accountAction(windowId: number, action: AccountAction): Promise<SignerStatusWire> {
+  async #accountAction(
+    windowId: number,
+    action: Exclude<AccountAction, 'lock'>,
+  ): Promise<SignerStatusWire> {
     const d = this.#d;
-    if (action === 'lock') return (await d.worker('signer.lock', {})) as SignerStatusWire;
     const key = `account:${action}`;
     this.#notJustDeclined(key, 'in a few seconds');
     if (action !== 'connect') {
@@ -395,8 +409,12 @@ export class MainCalls {
     switch (method) {
       case 'app.pickVideo': {
         this.#noArgs(args);
+        this.#notJustDeclined('pick', 'in a few seconds');
         const path = await d.pickFile(windowId);
-        return path === null ? null : d.worker('studio.source', { path });
+        if (path !== null) return d.worker('studio.source', { path });
+        // A page cannot hold the picker open by reopening it the moment it closes.
+        this.#decline('pick', PROMPT_DECLINED_WAIT_MS);
+        return null;
       }
       case 'app.seeding.set': {
         if (!onlyKeys(args, ['on']) || args['on'] !== true)
@@ -418,7 +436,12 @@ export class MainCalls {
         };
         const v = status.videos.find((x) => x.video === video);
         if (v === undefined) throw new WorkerError('not-found', 'no such video');
-        if (!(await d.confirmVideo(windowId, action, v))) {
+        // Titles are not in the bulk status: the box asks for the one it names.
+        const { title } = (await d.worker('seeding.title', { video })) as {
+          readonly title?: string | null;
+        };
+        const named = typeof title === 'string' ? { ...v, title } : v;
+        if (!(await d.confirmVideo(windowId, action, named))) {
           this.#decline(action);
           return status;
         }

@@ -1,7 +1,8 @@
 /**
  * Main's prompt window in real Electron, driven by this script (`executeJavaScript` plays the user).
- * It uses the code `main.ts` uses: `installPromptSession`, `openPrompt`, `promptSender`, `PromptHost`,
- * the real preload and the real page. It checks, from outside the page:
+ * It uses the code `main.ts` uses: `wireAccountMenu`, `MainCalls`, `installPromptSession`, `openPrompt`,
+ * `promptSender`, `PromptHost`, the real preload and the real page. Only the worker and the native
+ * message box are stand-ins. It checks, from outside the page:
  *
  *   - the renderer process is under a seccomp-bpf filter;
  *   - the page's world has no Node, no Electron and nothing from the preload;
@@ -18,7 +19,9 @@
  *     the next prompt opens and answers normally;
  *   - so does one whose renderer dies once it is on screen, and the log says how it died;
  *   - the real window keeps the real Account menu on screen, its item opens the prompt, a real key
- *     event reaches main's shortcut before the page, and a page's synthetic one does not.
+ *     event reaches main's shortcut before the page, and a page's synthetic one does not;
+ *   - a real click can take the page to fullscreen, a real Esc leaves it and the menu bar is back.
+ *     What the menu bar does during fullscreen is recorded in the log, not asserted.
  *
  * The verdict is `prompt-proof-verdict.ts`: a failure is final, and the success line is printed only
  * when every check above ran and held. The menu item is clicked and the keys are sent by this
@@ -41,14 +44,14 @@ import {
   type WebContents,
 } from 'electron';
 
+import { WorkerError } from '@nutflix-runtime/worker';
+
 import {
   ACCOUNT_ITEMS,
   ACCOUNT_MENU_LABEL,
-  AccountRunner,
   accountMenuPresent,
-  accountShortcut,
-  applicationMenu,
   menuBarState,
+  wireAccountMenu,
   type AccountAction,
 } from '../src/main/account-menu.ts';
 import { MainCalls, PROMPT_DECLINED_WAIT_MS } from '../src/main/main-calls.ts';
@@ -63,8 +66,8 @@ import {
   type PromptSpec,
 } from '../src/main/prompt-window.ts';
 import { fromProcStatus } from '../src/main/sandbox-proof.ts';
-import { APP_SCHEME, privilegedSchemes } from '../src/main/schemes.ts';
-import { hardenWebContents } from '../src/main/security.ts';
+import { APP_SCHEME, APP_URL, privilegedSchemes } from '../src/main/schemes.ts';
+import { hardenWebContents, installSessionPolicy } from '../src/main/security.ts';
 import { createMainWindow } from '../src/main/window.ts';
 import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../src/shared/ids.ts';
 import { ProofVerdict, runProof, withDeadline, type VerdictIo } from './prompt-proof-verdict.ts';
@@ -109,8 +112,9 @@ async function until<T>(what: string, f: () => Promise<T | null> | T | null): Pr
   }
 }
 
+/** With no user gesture: the only activation a page gets here is from a real input event. */
 const inPage = <T>(wc: WebContents, js: string): Promise<T> =>
-  wc.executeJavaScript(js, true) as Promise<T>;
+  wc.executeJavaScript(js, false) as Promise<T>;
 
 const fill = (wc: WebContents, id: string, value: string): Promise<void> =>
   inPage(
@@ -174,15 +178,128 @@ const WORLD_PROBE = `JSON.stringify({
   exposed: Object.getOwnPropertyNames(globalThis).filter((k) => /electron|nutflix|ipc/i.test(k)),
 })`;
 
+/** `true` once `f` holds, `false` if it has not within `ms`. For observing, not for asserting. */
+async function holdsWithin(f: () => Promise<boolean>, ms: number): Promise<boolean> {
+  const end = Date.now() + ms;
+  for (;;) {
+    if (await f()) return true;
+    if (Date.now() > end) return false;
+    await sleep(50);
+  }
+}
+
+interface FullscreenPageState {
+  readonly clicks: number;
+  readonly activated: boolean;
+  readonly request: string | null;
+  readonly inFullscreen: boolean;
+}
+
+/**
+ * Takes the page to fullscreen with a real click, leaves with a real Esc, and reports what the window
+ * did at each stage. It never throws for what it sees: the checks come at the end of the proof, so
+ * that this observation is in the log whatever the other steps do.
+ */
+async function observeFullscreen(win: BrowserWindow): Promise<{
+  readonly clicked: boolean;
+  readonly activated: boolean;
+  readonly request: string | null;
+  readonly entered: boolean;
+  readonly leftByEsc: boolean;
+  readonly before: Record<string, unknown>;
+  readonly during: Record<string, unknown>;
+  readonly after: Record<string, unknown>;
+  readonly menuBarBack: boolean;
+}> {
+  const wc = win.webContents;
+  const windowState = (): Record<string, unknown> => ({
+    menuBarVisible: win.isMenuBarVisible(),
+    menuBarAutoHide: win.isMenuBarAutoHide(),
+    windowFullScreen: win.isFullScreen(),
+    contentSize: win.getContentSize(),
+  });
+  const pageState = async (): Promise<FullscreenPageState> =>
+    JSON.parse(
+      await inPage<string>(
+        wc,
+        `JSON.stringify({ ...globalThis.__fullscreen, inFullscreen: document.fullscreenElement !== null })`,
+      ),
+    ) as FullscreenPageState;
+  await inPage(
+    wc,
+    `(() => {
+      globalThis.__fullscreen = { clicks: 0, activated: false, request: null };
+      const b = document.createElement('button');
+      b.id = 'go-fullscreen';
+      b.textContent = 'fullscreen';
+      b.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%';
+      b.addEventListener('click', () => {
+        const s = globalThis.__fullscreen;
+        s.clicks += 1;
+        s.activated = navigator.userActivation.isActive;
+        document.documentElement.requestFullscreen().then(
+          () => { s.request = 'entered'; },
+          (e) => { s.request = 'refused: ' + e.name; },
+        );
+      });
+      document.body.append(b);
+    })()`,
+  );
+  await sleep(300);
+  const before = windowState();
+  win.focus();
+  wc.focus();
+  wc.sendInputEvent({ type: 'mouseMove', x: 100, y: 100 });
+  wc.sendInputEvent({ type: 'mouseDown', x: 100, y: 100, button: 'left', clickCount: 1 });
+  wc.sendInputEvent({ type: 'mouseUp', x: 100, y: 100, button: 'left', clickCount: 1 });
+  const entered = await holdsWithin(async () => (await pageState()).inFullscreen, 8_000);
+  // Long enough for the window to have acted on it.
+  await sleep(700);
+  const during = windowState();
+  const clickedState = await pageState();
+  wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+  wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+  const leftByEsc =
+    entered && (await holdsWithin(async () => !(await pageState()).inFullscreen, 8_000));
+  await sleep(500);
+  // Whatever Esc did, the steps after this one need the window back.
+  if ((await pageState()).inFullscreen) {
+    await inPage(wc, `document.exitFullscreen().catch(() => undefined)`);
+    await sleep(500);
+  }
+  const after = windowState();
+  await inPage(wc, `document.getElementById('go-fullscreen').remove()`);
+  return {
+    clicked: clickedState.clicks === 1,
+    activated: clickedState.activated,
+    request: clickedState.request,
+    entered,
+    leftByEsc,
+    before,
+    during,
+    after,
+    menuBarBack: win.isMenuBarVisible() && !win.isMenuBarAutoHide(),
+  };
+}
+
 async function run(v: ProofVerdict): Promise<void> {
   const ses = session.fromPartition(PROMPT_PARTITION, { cache: false });
   installPromptSession(ses, () => readFile(join(__dirname, 'prompt.html')));
   const preload = join(__dirname, 'prompt-preload.cjs');
 
-  // The app's real window options, so that what hides or shows its menu bar is what ships.
+  // The app's real window options, origin and permission policy, so that what hides or shows its
+  // menu bar, and what lets a page go fullscreen, is what ships.
+  installSessionPolicy(session.defaultSession);
+  protocol.handle(
+    APP_SCHEME,
+    () =>
+      new Response('<!doctype html><title>Nutflix</title><p>the other window</p>', {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      }),
+  );
   const parent = createMainWindow(BrowserWindow, join(__dirname, 'proof-preload.cjs'));
   parent.show();
-  await parent.loadURL('data:text/html,<p>the other window</p>');
+  await parent.loadURL(APP_URL);
 
   let current: WebContents | null = null;
   const gone: {
@@ -234,33 +351,53 @@ async function run(v: ProofVerdict): Promise<void> {
     return wc;
   };
 
-  // ---- the Account menu: on screen, and the one thing that opens the prompt -------------------
+  // ---- the Account menu: the real wiring, on the real dialog lock ------------------------------
   const got: string[] = [];
   const answers: (string | null)[] = ['not that one', null];
-  const actions: AccountAction[] = [];
-  const opened: { first: Promise<boolean> | null } = { first: null };
-  const account = new AccountRunner((action) => {
-    actions.push(action);
-    if (action === 'connect')
-      opened.first = host.ask(parent.webContents.id, SPEC, (value) => {
-        got.push(value);
-        return Promise.resolve(answers.shift() ?? null);
-      });
-    return Promise.resolve();
+  const workerCalls: { method: string; args: Record<string, unknown> }[] = [];
+  const clock = { skew: 0 };
+  const route: { host: PromptHost } = { host };
+  const calls = new MainCalls({
+    pickFile: () => Promise.resolve(null),
+    confirmSeeding: () => Promise.resolve(false),
+    confirmPublish: () => Promise.resolve(false),
+    confirmVideo: () => Promise.resolve(false),
+    askSecret: (id, spec, submit) => route.host.ask(id, spec, submit),
+    // The one stand-in: it refuses the first passphrase, and nobody has a signer.
+    worker: (method, args) => {
+      workerCalls.push({ method, args });
+      if (method !== 'signer.local.create') return Promise.resolve(NO_SIGNER);
+      const value = args['passphrase'];
+      got.push(typeof value === 'string' ? value : '');
+      const problem = answers.shift() ?? null;
+      return problem === null
+        ? Promise.resolve(NO_SIGNER)
+        : Promise.reject(new WorkerError('bad-passphrase', problem));
+    },
+    now: () => Date.now() + clock.skew,
   });
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate(
-      applicationMenu(process.platform, (action) => {
-        account.trigger(action);
-      }),
-    ),
-  );
-  parent.webContents.on('before-input-event', (e, input) => {
-    const action = accountShortcut(input, process.platform);
-    if (action === null) return;
-    e.preventDefault();
-    account.trigger(action);
+  const outcomes: { action: AccountAction; problem: string | null }[] = [];
+  const pageTold = { times: 0 };
+  const wiring = wireAccountMenu({
+    platform: process.platform,
+    menu: Menu,
+    window: () => parent,
+    account: async (id, action) => {
+      const out = await calls.account(id, action);
+      outcomes.push({ action, problem: out.problem });
+      return out;
+    },
+    tellPage: () => {
+      pageTold.times += 1;
+    },
+    showProblem: (_win, problem) => {
+      v.note('account-problem', { problem });
+      return Promise.resolve();
+    },
   });
+  wiring.attach(parent.webContents);
+  const locks = (): number => workerCalls.filter((c) => c.method === 'signer.lock').length;
+
   const menu = Menu.getApplicationMenu();
   v.check('accountMenuPresent', accountMenuPresent(menu));
   const menuBar = menuBarState(process.platform, parent);
@@ -269,11 +406,11 @@ async function run(v: ProofVerdict): Promise<void> {
   await inPage(
     parent.webContents,
     `document.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'O', code: 'KeyO', ctrlKey: true, shiftKey: true, bubbles: true,
+      key: 'L', code: 'KeyL', ctrlKey: true, shiftKey: true, bubbles: true,
     }))`,
   );
   await sleep(200);
-  v.check('syntheticKeyIgnored', actions.length === 0);
+  v.check('syntheticKeyIgnored', locks() === 0);
 
   await inPage(
     parent.webContents,
@@ -286,37 +423,43 @@ async function run(v: ProofVerdict): Promise<void> {
   parent.webContents.focus();
   parent.webContents.sendInputEvent({
     type: 'keyDown',
-    keyCode: 'O',
+    keyCode: 'L',
     modifiers: ['control', 'shift'],
   });
   parent.webContents.sendInputEvent({
     type: 'keyUp',
-    keyCode: 'O',
+    keyCode: 'L',
     modifiers: ['control', 'shift'],
   });
-  await until('the shortcut', () => (actions.includes('unlock') ? true : null));
-  v.check('realKeyReachedMain', true);
+  await until('the shortcut', () => (pageTold.times === 1 ? true : null));
+  v.check(
+    'realKeyReachedMain',
+    locks() === 1 && outcomes[0]?.action === 'lock' && outcomes[0].problem === null,
+    `locks ${String(locks())}, outcome ${JSON.stringify(outcomes[0] ?? null)}`,
+  );
   await sleep(200);
   v.check(
     'pageDidNotSeeKey',
     (await inPage<number>(parent.webContents, 'globalThis.__keys')) === 0,
   );
 
-  const connect = ACCOUNT_ITEMS.find((x) => x.action === 'connect')?.label;
+  // Observed here, checked at the end, so that this is in the log whatever the later steps do.
+  const fullscreen = await observeFullscreen(parent);
+  v.note('fullscreen', fullscreen);
+
+  const create = ACCOUNT_ITEMS.find((x) => x.action === 'create')?.label;
   const item = menu?.items
     .find((i) => i.label === ACCOUNT_MENU_LABEL)
-    ?.submenu?.items.find((i) => i.label === connect);
-  if (item === undefined) throw new Error('no Connect Bunker item');
+    ?.submenu?.items.find((i) => i.label === create);
+  if (item === undefined) throw new Error('no Create Key item');
   (item as unknown as { click(): void }).click();
-  const { first } = opened;
-  if (first === null) throw new Error('the menu item did not open the prompt');
-  v.check('menuItemOpensPrompt', true);
 
   // ---- the first prompt: confinement, the sender check, a refusal, then an accepted value ----
   const wc = await form();
+  v.check('menuItemOpensPrompt', host.open, 'the menu item did not open the prompt');
   const win = BrowserWindow.fromWebContents(wc);
   await until('the window to show', () => (win?.isVisible() === true ? true : null));
-  v.check('promptWasVisible', true);
+  v.check('promptWasVisible', win?.isVisible() === true);
 
   const sandbox = fromProcStatus(
     readFileSync(`/proc/${String(wc.getOSProcessId())}/status`, 'utf8'),
@@ -324,7 +467,7 @@ async function run(v: ProofVerdict): Promise<void> {
   v.check('rendererSandboxed', sandbox === 'enforced', `the renderer's sandbox is ${sandbox}`);
   v.check('modal', win?.isModal() === true, 'the window is not modal');
   v.check('modal', win?.getParentWindow()?.id === parent.id, 'it does not belong to its parent');
-  v.check('oneFileOnly', wc.getURL() === PROMPT_URL);
+  v.check('showsPromptUrl', wc.getURL() === PROMPT_URL);
 
   const world = JSON.parse(await inPage<string>(wc, WORLD_PROBE)) as Record<string, unknown>;
   for (const k of ['require', 'process', 'module', 'Buffer', 'ipcRenderer', 'electron'])
@@ -384,7 +527,11 @@ async function run(v: ProofVerdict): Promise<void> {
   await fill(wc, 'prompt-value', SECOND);
   await fill(wc, 'prompt-repeat', SECOND);
   await click(wc, 'prompt-submit');
-  v.check('acceptedCloses', await withDeadline(first, ANSWER_MS, 'the accepted value'));
+  const created = await until(
+    'the menu action to answer',
+    () => outcomes.find((o) => o.action === 'create') ?? null,
+  );
+  v.check('acceptedCloses', created.problem === null, `problem ${String(created.problem)}`);
   v.check('valueReachedMain', got[1] === SECOND);
   await until('the window to close', () => (wc.isDestroyed() ? true : null));
 
@@ -503,22 +650,9 @@ async function run(v: ProofVerdict): Promise<void> {
     },
   });
 
-  // The app's real dialog lock, around the prompt. Only the worker is a stand-in.
-  const workerCalls: { method: string; args: Record<string, unknown> }[] = [];
-  const clock = { skew: 0 };
-  const route: { host: PromptHost } = { host: earlyHost };
-  const calls = new MainCalls({
-    pickFile: () => Promise.resolve(null),
-    confirmSeeding: () => Promise.resolve(false),
-    confirmPublish: () => Promise.resolve(false),
-    confirmVideo: () => Promise.resolve(false),
-    askSecret: (id, spec, submit) => route.host.ask(id, spec, submit),
-    worker: (method, args) => {
-      workerCalls.push({ method, args });
-      return Promise.resolve(NO_SIGNER);
-    },
-    now: () => Date.now() + clock.skew,
-  });
+  // The same real dialog lock as the menu uses.
+  route.host = earlyHost;
+  workerCalls.length = 0;
 
   const diesEarly = calls.account(parent.webContents.id, 'connect');
   const earlyWc = await until('the no-paint prompt', () => heardEarly().wc);
@@ -648,6 +782,15 @@ async function run(v: ProofVerdict): Promise<void> {
     !answer && died.reason !== null,
     `answer ${String(answer)}, render-process-gone ${String(died.reason)}`,
   );
+
+  // ---- fullscreen, as observed earlier -----------------------------------------------------------
+  v.check(
+    'fullscreenFromRealClick',
+    fullscreen.clicked && fullscreen.activated && fullscreen.entered,
+    `clicked ${String(fullscreen.clicked)}, activated ${String(fullscreen.activated)}, request ${String(fullscreen.request)}`,
+  );
+  v.check('escLeavesFullscreen', fullscreen.leftByEsc);
+  v.check('menuBarBackAfterEsc', fullscreen.menuBarBack, JSON.stringify(fullscreen.after));
 }
 
 protocol.registerSchemesAsPrivileged(privilegedSchemes());

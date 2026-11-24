@@ -536,7 +536,13 @@ describe('seed and publish, on loopback', () => {
     expect(st.videos).toHaveLength(1);
     expect(st.videos[0]).toMatchObject({ video, origin: 'published', served: true });
     expect(st.listening).toHaveLength(1);
-    root = st.videos[0]?.root ?? '';
+    const stored = (await publisher.request('nfx.seed.list', {})) as {
+      videos: readonly { video: string; root: string }[];
+    };
+    root = stored.videos.find((x) => x.video === video)?.root ?? '';
+    expect(root).toMatch(/^[0-9a-f]{64}$/);
+    expect(st.videos[0]).not.toHaveProperty('root');
+    expect(st.videos[0]).not.toHaveProperty('title');
     report('published', {
       video,
       files: st.videos[0]?.files,

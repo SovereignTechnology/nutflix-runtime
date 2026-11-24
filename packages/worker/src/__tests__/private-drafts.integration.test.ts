@@ -7,8 +7,8 @@
  * come through nutflix-pear's own seeder, so that no encode is needed. The real encode is in
  * `packages/renderer/e2e/publish/`.
  */
-import { readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFileSync, readdirSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { hyperdhtEndpoint, listenNfx, nodeFs, type NfxFileSource } from '@sovit/seeder';
@@ -19,7 +19,17 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
-import { SEEDING_FILE, SeedPolicy, type SeedRecord } from '../nfx/seed-policy.js';
+import { MAX_FRAME_BYTES, encodeFrame } from '../framing.js';
+import {
+  MAX_SEEDING_FILE_BYTES,
+  MAX_STORED_TITLE_BYTES,
+  SEEDING_FILE,
+  SeedPolicy,
+  seedingStatusOf,
+  storedTitle,
+  type SeedRecord,
+} from '../nfx/seed-policy.js';
+import { MAX_NFX_STORED_VIDEOS } from '../protocol.js';
 import type { NfxHyperdhtEndpointWire, SignedEventWire } from '../protocol.js';
 import type { WorkerRuntime } from '../runtime.js';
 import { nodeRuntime, startWorker, tempDir, until, type RunningWorker } from './helpers/harness.js';
@@ -489,6 +499,21 @@ describe('private until confirmed', () => {
     expect(s.listening).toEqual([]);
   });
 
+  it('a seeding.json it cannot read is kept aside, and the worker starts', async () => {
+    const d = await tempDir('nf-private-');
+    cleanups.push(() => d.rm());
+    const damaged = '{"v":1,"watched":true,"videos":{ this is not json';
+    await writeFile(join(d.dir, SEEDING_FILE), damaged);
+    const { w } = await worker(d.dir);
+    expect((await w.client.request('status', {})).dht).toBe('idle');
+    expect((await w.client.request('seeding.status', {})).watched).toBe(false);
+    const bad = readdirSync(d.dir).filter((f) => f.endsWith('.bad'));
+    expect(bad).toHaveLength(1);
+    expect(readFileSync(join(d.dir, bad[0] ?? ''), 'utf8')).toBe(damaged);
+    await w.client.request('seeding.set', { watched: true });
+    expect(readFileSync(join(d.dir, bad[0] ?? ''), 'utf8')).toBe(damaged);
+  });
+
   it('records the title of what it seeds, for the native dialogs', async () => {
     const v = testNfxVideo();
     const endpoint = await seeder(v);
@@ -507,8 +532,14 @@ describe('private until confirmed', () => {
       manifest: signedManifest(v),
       peers: [endpoint],
     });
+    // Not in the bulk status: main asks for the one a dialog needs.
     const [shown] = (await w.client.request('seeding.status', {})).videos;
-    expect(shown?.title).toBe('Test video');
+    expect(shown).not.toHaveProperty('title');
+    expect(await w.client.request('seeding.title', { video: v.video })).toEqual({
+      title: 'Test video',
+    });
+    const other = `nfx:testnet:1:nutflix-${'f'.repeat(32)}`;
+    expect(await w.client.request('seeding.title', { video: other })).toEqual({ title: null });
   });
 
   it('deleting and fetching again does not reset the hourly byte budget', async () => {
@@ -601,7 +632,7 @@ describe('the seed policy on disk', () => {
     expect(onDisk(d).videos[VIDEO]?.author).toBe(AUTHOR);
   });
 
-  it('keeps a title, and treats an oversized one as a damaged record', async () => {
+  it('keeps a title, held to the stored limit, and an oversized one does not lose its record', async () => {
     const d = await dir();
     const first = new SeedPolicy(nodeFs, d);
     await first.set(VIDEO, { ...DRAFT, author: AUTHOR, title: 'A title' });
@@ -613,11 +644,191 @@ describe('the seed policy on disk', () => {
       JSON.stringify({
         v: 1,
         watched: false,
-        videos: { [VIDEO]: { ...DRAFT, title: 'x'.repeat(257) } },
+        videos: { [VIDEO]: { ...DRAFT, author: AUTHOR, title: 'x'.repeat(5000) } },
       }),
     );
-    const damaged = new SeedPolicy(nodeFs, d);
-    await damaged.load();
-    expect(damaged.record(VIDEO)).toBeUndefined();
+    const longTitle = new SeedPolicy(nodeFs, d);
+    await longTitle.load();
+    expect(longTitle.record(VIDEO)?.author).toBe(AUTHOR);
+    expect(longTitle.record(VIDEO)?.title).toHaveLength(MAX_STORED_TITLE_BYTES);
+    expect(badFiles(d)).toEqual([]);
+  });
+
+  it('strips control characters and caps a title by UTF-8 bytes, on whole characters', () => {
+    expect(storedTitle('a\u0000b\u0007c\u2028d\ud800e')).toBe('abcde');
+    expect(new TextEncoder().encode(storedTitle('x'.repeat(1000)))).toHaveLength(
+      MAX_STORED_TITLE_BYTES,
+    );
+    // Two and three bytes in turn: whatever does not fit is left out whole.
+    const cut = storedTitle('\u05d0\u4e2d'.repeat(200));
+    expect(new TextEncoder().encode(cut).length).toBeLessThanOrEqual(MAX_STORED_TITLE_BYTES);
+    expect(new TextDecoder('utf-8', { fatal: true }).decode(new TextEncoder().encode(cut))).toBe(
+      cut,
+    );
+    // Four bytes each, as surrogate pairs: never cut in half.
+    const emoji = storedTitle('\u{1F3AC}'.repeat(100));
+    expect(Array.from(emoji).every((c) => c === '\u{1F3AC}')).toBe(true);
+    expect(new TextEncoder().encode(emoji)).toHaveLength(256);
+  });
+
+  const badFiles = (d: string): string[] => readdirSync(d).filter((f) => f.endsWith('.bad'));
+
+  it.each([
+    ['corrupt JSON', '{"v":1,"videos":{"x"'],
+    ['the wrong version', '{"v":2,"watched":false,"videos":{}}'],
+    ['the wrong shape', '[1,2,3]'],
+    ['no switch', '{"v":1,"videos":{}}'],
+    ['videos that are not an object', '{"v":1,"watched":false,"videos":[]}'],
+  ])('moves aside a file with %s, and never overwrites it', async (_name, text) => {
+    const d = await dir();
+    await writeFile(join(d, SEEDING_FILE), text);
+    const warned: string[] = [];
+    const policy = new SeedPolicy(nodeFs, d, { warn: (t) => warned.push(t) });
+    await policy.load();
+    const bad = badFiles(d);
+    expect(bad).toHaveLength(1);
+    expect(readFileSync(join(d, bad[0] ?? ''), 'utf8')).toBe(text);
+    expect(warned.join()).toContain('.bad');
+    expect(policy.record(VIDEO)).toBeUndefined();
+    await policy.set(VIDEO, { ...DRAFT, author: AUTHOR });
+    expect(readFileSync(join(d, bad[0] ?? ''), 'utf8')).toBe(text);
+    expect(onDisk(d).videos[VIDEO]?.author).toBe(AUTHOR);
+  });
+
+  it('moves aside a file over the size limit, whole', async () => {
+    const d = await dir();
+    const big = `{"v":1,"watched":true,"videos":{},"pad":"${'x'.repeat(MAX_SEEDING_FILE_BYTES)}"}`;
+    await writeFile(join(d, SEEDING_FILE), big);
+    const policy = new SeedPolicy(nodeFs, d);
+    await policy.load();
+    const bad = badFiles(d);
+    expect(bad).toHaveLength(1);
+    expect(readFileSync(join(d, bad[0] ?? ''), 'utf8')).toHaveLength(big.length);
+    expect(policy.watched).toBe(false);
+  });
+
+  it('keeps the valid records of a damaged file, and keeps the original too', async () => {
+    const d = await dir();
+    const other = `nfx:testnet:1:nutflix-${'b'.repeat(32)}`;
+    const text = JSON.stringify({
+      v: 1,
+      watched: true,
+      videos: { [VIDEO]: { ...DRAFT, author: AUTHOR }, [other]: { origin: 'nonsense' } },
+    });
+    await writeFile(join(d, SEEDING_FILE), text);
+    const policy = new SeedPolicy(nodeFs, d);
+    await policy.load();
+    expect(policy.record(VIDEO)?.author).toBe(AUTHOR);
+    expect(policy.record(other)).toBeUndefined();
+    expect(policy.watched).toBe(true);
+    const bad = badFiles(d);
+    expect(bad).toHaveLength(1);
+    expect(readFileSync(join(d, bad[0] ?? ''), 'utf8')).toBe(text);
+    // What was valid is on disk again at once.
+    expect(onDisk(d).videos[VIDEO]?.author).toBe(AUTHOR);
+    expect(onDisk(d).videos[other]).toBeUndefined();
+  });
+
+  it('gives each damaged file its own name', async () => {
+    const d = await dir();
+    for (const text of ['one', 'two', 'three']) {
+      await writeFile(join(d, SEEDING_FILE), text);
+      await new SeedPolicy(nodeFs, d).load();
+    }
+    const kept = badFiles(d).map((f) => readFileSync(join(d, f), 'utf8'));
+    expect(kept.sort()).toEqual(['one', 'three', 'two']);
+  });
+
+  it('a file it cannot move aside is never replaced', async () => {
+    const d = await dir();
+    const text = 'not json, and the disk will not let it be renamed';
+    await writeFile(join(d, SEEDING_FILE), text);
+    let broken = true;
+    const fs = {
+      ...nodeFs,
+      rename: (from: string, to: string): Promise<void> =>
+        broken ? Promise.reject(new Error('read-only')) : nodeFs.rename(from, to),
+    };
+    const durable = vi.fn((p: string, data: Uint8Array) => writeFile(p, data).then(() => true));
+    const policy = new SeedPolicy(fs, d, { durable });
+    await policy.load();
+    await expect(policy.set(VIDEO, { ...DRAFT, author: AUTHOR })).rejects.toThrow('read-only');
+    expect(durable).not.toHaveBeenCalled();
+    expect(readFileSync(join(d, SEEDING_FILE), 'utf8')).toBe(text);
+    // Once it can move, it moves first, and only then is the new file written.
+    broken = false;
+    await policy.set(VIDEO, { ...DRAFT, author: AUTHOR });
+    const bad = badFiles(d);
+    expect(bad).toHaveLength(1);
+    expect(readFileSync(join(d, bad[0] ?? ''), 'utf8')).toBe(text);
+    expect(onDisk(d).videos[VIDEO]?.author).toBe(AUTHOR);
+  });
+
+  it('no file is nothing to move aside', async () => {
+    const d = await dir();
+    await mkdir(d, { recursive: true });
+    const policy = new SeedPolicy(nodeFs, d);
+    await policy.load();
+    expect(badFiles(d)).toEqual([]);
+    expect(policy.watched).toBe(false);
+  });
+
+  /** The longest address and the worst title JSON can be made to spend bytes on. */
+  const fullStore = (): { video: string; record: SeedRecord }[] =>
+    Array.from({ length: MAX_NFX_STORED_VIDEOS }, (_x, i) => ({
+      video: `nfx:${'n'.repeat(32)}:18446744073709551615:${String(i).padStart(63, 'a')}`,
+      record: {
+        origin: 'published' as const,
+        root: 'ab'.repeat(32),
+        author: AUTHOR,
+        stopped: true as const,
+        title: storedTitle('"'.repeat(5000)),
+      },
+    }));
+
+  it('a full store with the worst titles fits its file, and reads back whole', async () => {
+    const d = await dir();
+    const store = fullStore();
+    const text = JSON.stringify({
+      v: 1,
+      watched: true,
+      videos: Object.fromEntries(store.map((x) => [x.video, x.record])),
+    });
+    expect(new TextEncoder().encode(text).length).toBeLessThan(MAX_SEEDING_FILE_BYTES);
+    await writeFile(join(d, SEEDING_FILE), text);
+    const policy = new SeedPolicy(nodeFs, d);
+    await policy.load();
+    expect(badFiles(d)).toEqual([]);
+    expect(policy.record(store[4095]?.video ?? '')?.author).toBe(AUTHOR);
+  });
+
+  it('the status of a full store with the longest titles stays under the frame cap', async () => {
+    const d = await dir();
+    const store = fullStore();
+    await writeFile(
+      join(d, SEEDING_FILE),
+      JSON.stringify({
+        v: 1,
+        watched: true,
+        videos: Object.fromEntries(store.map((x) => [x.video, x.record])),
+      }),
+    );
+    const policy = new SeedPolicy(nodeFs, d);
+    await policy.load();
+    const status = seedingStatusOf(policy, {
+      videos: store.map((x) => ({
+        video: x.video,
+        root: 'ab'.repeat(32),
+        segs: Number.MAX_SAFE_INTEGER,
+        files: Number.MAX_SAFE_INTEGER,
+        bytes: Number.MAX_SAFE_INTEGER,
+      })),
+      listening: [{ namespace: `nfx:${'n'.repeat(32)}:18446744073709551615`, connections: 64 }],
+    });
+    expect(status.videos).toHaveLength(MAX_NFX_STORED_VIDEOS);
+    expect(JSON.stringify(status)).not.toContain('"title"');
+    expect(JSON.stringify(status)).not.toContain('"root"');
+    const frame = encodeFrame({ op: 'res', id: 2 ** 31, ok: true, r: status });
+    expect(frame.length).toBeLessThanOrEqual(MAX_FRAME_BYTES);
   });
 });

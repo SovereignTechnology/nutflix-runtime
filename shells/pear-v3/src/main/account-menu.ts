@@ -123,3 +123,71 @@ export class AccountRunner {
     void this.#run(action).catch(() => undefined);
   }
 }
+
+/** The window the Account menu acts for. */
+export interface AccountWindow {
+  readonly webContents: { readonly id: number };
+  isDestroyed(): boolean;
+}
+
+export interface AccountWiringDeps<W extends AccountWindow, M> {
+  readonly platform: string;
+  /** Electron's `Menu`. */
+  readonly menu: {
+    buildFromTemplate(template: MenuItemConstructorOptions[]): M;
+    setApplicationMenu(menu: M): void;
+  };
+  readonly window: () => W | undefined;
+  /** `MainCalls.account`. */
+  readonly account: (
+    windowId: number,
+    action: AccountAction,
+  ) => Promise<{ readonly problem: string | null }>;
+  /** The page hears only that the signer may have changed. */
+  readonly tellPage: () => void;
+  /** A native box. */
+  readonly showProblem: (win: W, problem: string) => Promise<unknown>;
+}
+
+export interface AccountWiring {
+  /** Catches the shortcuts on this window, before its page sees them. */
+  attach(wc: {
+    on(
+      event: 'before-input-event',
+      listener: (event: { preventDefault(): void }, input: KeyInput) => void,
+    ): unknown;
+  }): void;
+}
+
+/**
+ * The whole of the Account menu: the application menu, its shortcuts and what each does. `main.ts`
+ * and the Electron proof both call this, so what the proof drives is the code that ships.
+ */
+export function wireAccountMenu<W extends AccountWindow, M>(
+  d: AccountWiringDeps<W, M>,
+): AccountWiring {
+  const runner = new AccountRunner(async (action) => {
+    const win = d.window();
+    if (win === undefined || win.isDestroyed()) return;
+    const out = await d.account(win.webContents.id, action);
+    d.tellPage();
+    if (out.problem !== null && !win.isDestroyed()) await d.showProblem(win, out.problem);
+  });
+  d.menu.setApplicationMenu(
+    d.menu.buildFromTemplate(
+      applicationMenu(d.platform, (action) => {
+        runner.trigger(action);
+      }),
+    ),
+  );
+  return {
+    attach: (wc) => {
+      wc.on('before-input-event', (e, input) => {
+        const action = accountShortcut(input, d.platform);
+        if (action === null) return;
+        e.preventDefault();
+        runner.trigger(action);
+      });
+    },
+  };
+}

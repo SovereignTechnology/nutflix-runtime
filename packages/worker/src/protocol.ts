@@ -307,8 +307,6 @@ export type SeedOrigin = 'published' | 'watched' | 'host' | 'unknown';
 
 export interface SeedingVideoWire {
   readonly video: string;
-  /** The title recorded when it was published or first seeded, for the native dialogs. */
-  readonly title?: string;
   readonly files: number;
   readonly bytes: number;
   readonly origin: SeedOrigin;
@@ -316,9 +314,6 @@ export interface SeedingVideoWire {
   readonly served: boolean;
   /** The user stopped serving it. Its bytes are kept until they delete it. */
   readonly stopped: boolean;
-  /** Absent while the video is private (an unsigned draft, or one no record explains). */
-  readonly root?: string;
-  readonly segs?: number;
 }
 
 export interface SeedingStatusWire {
@@ -487,6 +482,8 @@ export interface WorkerMethodTable {
   /** MAIN ONLY, after a native confirmation: serve a stopped video again. */
   'seeding.resume': [args: { readonly video: string }, result: { readonly resumed: boolean }];
   /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
+  /** MAIN ONLY: the one title a native dialog needs. Titles are not in the bulk status. */
+  'seeding.title': [args: { readonly video: string }, result: { readonly title: string | null }];
   'seeding.delete': [args: { readonly video: string }, result: { readonly removed: boolean }];
   /** A fresh signed kind-20464 beacon for every video served now, for the renderer to publish. */
   'seeding.beacons': [
@@ -530,6 +527,7 @@ export const WORKER_METHODS = [
   'seeding.watch',
   'seeding.stop',
   'seeding.resume',
+  'seeding.title',
   'seeding.delete',
   'seeding.beacons',
   'seeding.segment',

@@ -64,8 +64,6 @@ const servedStatus = (over: Partial<SeedingStatusWire> = {}): SeedingStatusWire 
   videos: [
     {
       video: `${NS}:nutflix-${'a'.repeat(32)}`,
-      root: 'ab'.repeat(32),
-      segs: 4,
       files: 4,
       bytes: 100,
       origin: 'published',

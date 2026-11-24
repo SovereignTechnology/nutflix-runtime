@@ -66,6 +66,7 @@ export type ControlMethod =
       | 'nfx.endpoint'
       | 'seeding.set'
       | 'seeding.resume'
+      | 'seeding.title'
       | 'seeding.delete'
       | 'studio.source'
       | 'studio.discard'

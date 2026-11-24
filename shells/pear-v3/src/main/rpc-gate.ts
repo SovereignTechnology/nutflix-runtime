@@ -26,7 +26,8 @@
  *
  * What the worker checks is the arguments, strictly, for every method (`guards.ts`). The methods
  * that take a path or a secret, turn the switch, sign, or delete (`studio.source`, `signer.local.*`,
- * `signer.nip46.connect`, `signer.lock`, `seeding.set`, `seeding.resume`, `seeding.delete`,
+ * `signer.nip46.connect`, `signer.lock`, `seeding.set`, `seeding.resume`, `seeding.title`,
+ * `seeding.delete`,
  * `studio.discard`, `signer.check`, `signer.sign`) are in no window's list: only main's own `request()` reaches them.
  *
  * Main itself uses the same id space through `request()` (`init`, `status`). Runtime-neutral and

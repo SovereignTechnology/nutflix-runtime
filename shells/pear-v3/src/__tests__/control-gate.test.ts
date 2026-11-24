@@ -29,6 +29,7 @@ import {
   accountShortcut,
   applicationMenu,
   menuBarState,
+  wireAccountMenu,
   type KeyInput,
 } from '../main/account-menu.ts';
 import {
@@ -134,6 +135,7 @@ describe('the window’s allow-list', () => {
     'init',
     'seeding.set',
     'seeding.resume',
+    'seeding.title',
     'seeding.delete',
     'studio.source',
     'studio.discard',
@@ -418,6 +420,7 @@ function deps(
       calls.push([m, a]);
       if (m === 'signer.check') return Promise.resolve(CHECK);
       if (m === 'signer.status') return Promise.resolve(o.status ?? NO_KEY);
+      if (m === 'seeding.title') return Promise.resolve({ title: 'The stored title' });
       if (m === 'seeding.status')
         return Promise.resolve({
           answered: m,
@@ -467,6 +470,36 @@ describe('the file picker', () => {
     });
     expect(t.picks()).toBe(0);
     expect(t.calls).toEqual([]);
+  });
+
+  it('a cancelled picker cannot be reopened at once', async () => {
+    const t = deps({ path: null });
+    await t.m.answer(1, 'app.pickVideo', {});
+    await expect(t.m.answer(1, 'app.pickVideo', {})).rejects.toMatchObject({
+      code: 'rate-limited',
+    });
+    expect(t.picks()).toBe(1);
+    t.clock.t += PROMPT_DECLINED_WAIT_MS;
+    await t.m.answer(1, 'app.pickVideo', {});
+    expect(t.picks()).toBe(2);
+  });
+
+  it('a page reopening the picker cannot keep the user from locking the key', async () => {
+    let close: (p: string | null) => void = () => undefined;
+    const t = deps();
+    const m = new MainCalls({
+      ...t.d,
+      pickFile: () =>
+        new Promise((r) => {
+          close = r;
+        }),
+    });
+    const open = m.answer(1, 'app.pickVideo', {});
+    await flush();
+    expect((await m.account(1, 'lock')).problem).toBeNull();
+    expect(t.calls).toEqual([['signer.lock', {}]]);
+    close(null);
+    await open;
   });
 
   it('opens one file and no directory', () => {
@@ -606,10 +639,12 @@ describe('publishing', () => {
     });
     const open = m.answer(1, 'app.publish.sign', { video: VIDEO });
     await flush();
-    for (const action of ['connect', 'unlock', 'create', 'lock'] as const)
+    for (const action of ['connect', 'unlock', 'create'] as const)
       expect((await m.account(1, action)).problem).toMatch(/dialog is open/);
     expect(t.specs).toEqual([]);
-    expect(t.calls.some(([x]) => x === 'signer.lock')).toBe(false);
+    // Lock is not held up by it: a page cannot keep the key unlocked by keeping a dialog open.
+    expect((await m.account(1, 'lock')).problem).toBeNull();
+    expect(t.calls.filter(([x]) => x === 'signer.lock')).toHaveLength(1);
     close(true);
     await open;
     expect(t.calls.at(-1)).toEqual(['signer.sign', { event: CHECK.event, signer: KEY }]);
@@ -696,13 +731,19 @@ describe('stopping, deleting, and seeding again', () => {
     const t = deps({ video: true });
     await t.m.answer(1, method, { video: VIDEO });
     expect(t.videos.map(([a]) => a)).toEqual([action]);
-    expect(t.calls.map(([m]) => m)).toEqual(['seeding.status', workerMethod, 'seeding.status']);
+    expect(t.calls.map(([m]) => m)).toEqual([
+      'seeding.status',
+      'seeding.title',
+      workerMethod,
+      'seeding.status',
+    ]);
+    expect(t.videos[0]?.[1].title).toBe('The stored title');
   });
 
   it.each(['app.seeding.delete', 'app.seeding.resume'])('%s: a "no" does nothing', async (m) => {
     const t = deps({ video: false });
     await t.m.answer(1, m, { video: VIDEO });
-    expect(t.calls.map(([x]) => x)).toEqual(['seeding.status']);
+    expect(t.calls.map(([x]) => x)).toEqual(['seeding.status', 'seeding.title']);
     await expect(t.m.answer(1, m, { video: VIDEO })).rejects.toMatchObject({
       code: 'rate-limited',
     });
@@ -905,6 +946,127 @@ describe('the Account menu', () => {
     ])
       expect(accountShortcut(bad, 'linux')).toBeNull();
     expect(accountShortcut(input({}), 'darwin')).toBeNull();
+  });
+
+  describe('its wiring, as main.ts and the proof both use it', () => {
+    class FakeContents extends EventEmitter {}
+    function wired(
+      answer: (id: number, a: string) => Promise<{ problem: string | null }> = () =>
+        Promise.resolve({ problem: null }),
+      win: { webContents: { id: number }; isDestroyed(): boolean } | undefined = {
+        webContents: { id: 5 },
+        isDestroyed: () => false,
+      },
+    ): {
+      set: unknown[];
+      account: ReturnType<typeof vi.fn>;
+      told: () => number;
+      problems: string[];
+      wc: FakeContents;
+      items: MenuItemConstructorOptions[];
+    } {
+      const set: unknown[] = [];
+      const account = vi.fn(answer);
+      let told = 0;
+      const problems: string[] = [];
+      let template: MenuItemConstructorOptions[] = [];
+      const wiring = wireAccountMenu({
+        platform: 'linux',
+        menu: {
+          buildFromTemplate: (t) => {
+            template = t;
+            return 'the menu';
+          },
+          setApplicationMenu: (m) => set.push(m),
+        },
+        window: () => win,
+        account,
+        tellPage: () => {
+          told += 1;
+        },
+        showProblem: (_w, p) => {
+          problems.push(p);
+          return Promise.resolve();
+        },
+      });
+      const wc = new FakeContents();
+      wiring.attach(wc);
+      const items = template[0]?.submenu as MenuItemConstructorOptions[];
+      return { set, account, told: () => told, problems, wc, items };
+    }
+    const press = (key: string): { prevented: boolean; run(wc: EventEmitter): void } => {
+      const out = {
+        prevented: false,
+        run: (wc: EventEmitter): void => {
+          wc.emit(
+            'before-input-event',
+            {
+              preventDefault: () => {
+                out.prevented = true;
+              },
+            },
+            input({ key }),
+          );
+        },
+      };
+      return out;
+    };
+
+    it('puts the menu in place', () => {
+      expect(wired().set).toEqual(['the menu']);
+    });
+
+    it('a menu item asks main, on the window, then tells the page', async () => {
+      const w = wired();
+      (w.items[2]?.click as () => void)();
+      await flush();
+      expect(w.account).toHaveBeenCalledWith(5, 'connect');
+      expect(w.told()).toBe(1);
+      expect(w.problems).toEqual([]);
+    });
+
+    it('shows what went wrong in the native box', async () => {
+      const w = wired(() => Promise.resolve({ problem: 'no key here' }));
+      (w.items[0]?.click as () => void)();
+      await flush();
+      expect(w.problems).toEqual(['no key here']);
+    });
+
+    it('a real shortcut runs before the page, and any other key is left alone', async () => {
+      const w = wired();
+      const lock = press('L');
+      lock.run(w.wc);
+      await flush();
+      expect(lock.prevented).toBe(true);
+      expect(w.account).toHaveBeenCalledWith(5, 'lock');
+      const other = press('x');
+      other.run(w.wc);
+      expect(other.prevented).toBe(false);
+      expect(w.account).toHaveBeenCalledTimes(1);
+    });
+
+    it('with no window, does nothing', async () => {
+      const account = vi.fn(() => Promise.resolve({ problem: null }));
+      const set: unknown[] = [];
+      let template: MenuItemConstructorOptions[] = [];
+      wireAccountMenu({
+        platform: 'linux',
+        menu: {
+          buildFromTemplate: (t) => {
+            template = t;
+            return 'm';
+          },
+          setApplicationMenu: (m) => set.push(m),
+        },
+        window: () => undefined,
+        account,
+        tellPage: () => undefined,
+        showProblem: () => Promise.resolve(),
+      });
+      ((template[0]?.submenu as MenuItemConstructorOptions[])[0]?.click as () => void)();
+      await flush();
+      expect(account).not.toHaveBeenCalled();
+    });
   });
 
   it('runs once per press, and a failure stays inside', async () => {

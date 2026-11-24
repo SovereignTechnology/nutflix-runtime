@@ -106,6 +106,12 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
 - **Known limit: an encode can outlive a crashed worker off Linux.** On Linux the kernel kills
   ffmpeg with its parent (`setpriv --pdeathsig`). On macOS and Windows, or on Linux without
   `setpriv`, ffmpeg is killed on a normal exit and on cancel, but not after a crash of the worker.
+- **Known limit: on Windows, a power cut just after publishing can lose the video.** The signed
+  record is written and synced before the signed event is returned. On Linux and macOS its directory
+  is synced too. On Windows that step is skipped and the rename is not written through, so a power
+  cut in the seconds after publishing can bring back the file from before the signature. The video
+  then reads as an unsigned draft, the next start deletes its bytes, and its manifest stays on the
+  relays pointing at nothing.
 - **Known limit: free space is read once, per job.** Studio reads the real free space
   (`statfs`) and holds a job to a third of it, because the encode, the packaged files and the store's
   copy are on disk at once. Anything else filling the disk during the job can still end it with an

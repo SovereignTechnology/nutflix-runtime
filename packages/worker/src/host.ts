@@ -37,7 +37,7 @@ import { DhtNode } from './net/dht-node.js';
 import { signBeacons, type BeaconTarget } from './nfx/beacons.js';
 import { NfxPeerPool } from './nfx/hyperdht-fetcher.js';
 import { OFFERED_DIR, SegmentOffers } from './nfx/offers.js';
-import { SeedPolicy, type SeedRecord } from './nfx/seed-policy.js';
+import { SeedPolicy, seedingStatusOf, titleField } from './nfx/seed-policy.js';
 import { SeederKeys } from './nfx/seeder-key.js';
 import { NfxSeeds } from './nfx/seeds.js';
 import { NFX_PLAY_DIR, NfxWatching, watcherKeyName } from './nfx/watching.js';
@@ -56,7 +56,6 @@ import type {
 } from './protocol.js';
 import {
   MAX_NFX_STORED_VIDEOS,
-  MAX_TITLE,
   MAX_WATCHED_BYTES,
   MAX_WATCH_BYTES_PER_HOUR,
   MAX_WATCH_STARTS_PER_HOUR,
@@ -123,19 +122,6 @@ const needs = <T>(x: T | null): T => {
 };
 
 type Call = { [M in WorkerMethod]: { readonly m: M; readonly a: ArgsOf<M> } }[WorkerMethod];
-
-/** A manifest's title, whole characters only, within what a record keeps. */
-function cappedTitle(t: string): string {
-  let out = '';
-  for (const ch of t) {
-    if (out.length + ch.length > MAX_TITLE) break;
-    out += ch;
-  }
-  return out;
-}
-
-const titleOf = (r: SeedRecord | undefined): { readonly title?: string } =>
-  r?.title === undefined ? {} : { title: r.title };
 
 export class WorkerHost implements WorkerRpcHandler {
   private readonly o: WorkerHostOptions;
@@ -242,6 +228,8 @@ export class WorkerHost implements WorkerRpcHandler {
         await r.seeds.refresh();
         return { resumed };
       }
+      case 'seeding.title':
+        return { title: r.policy.record(c.a.video)?.title ?? null };
       case 'seeding.delete':
         return this.deleteVideo(r, c.a.video);
       case 'seeding.beacons':
@@ -284,22 +272,7 @@ export class WorkerHost implements WorkerRpcHandler {
   }
 
   private seedingStatus(r: Running): SeedingStatusWire {
-    const { videos, listening } = r.seeds.list();
-    return {
-      watched: r.policy.watched,
-      videos: videos.map((v) => ({
-        video: v.video,
-        files: v.files,
-        bytes: v.bytes,
-        origin: r.policy.origin(v.video),
-        served: r.policy.served(v.video),
-        stopped: r.policy.record(v.video)?.stopped === true,
-        ...titleOf(r.policy.record(v.video)),
-        // A private video's hash list stays private: a page has no use for it.
-        ...(r.policy.isPrivate(v.video) ? {} : { root: v.root, segs: v.segs }),
-      })),
-      listening,
-    };
+    return seedingStatusOf(r.policy, r.seeds.list());
   }
 
   /** Every video served now with a known author: each gets a beacon. */
@@ -415,7 +388,7 @@ export class WorkerHost implements WorkerRpcHandler {
           origin: 'watched',
           root: m.root,
           author: m.author,
-          title: cappedTitle(m.title),
+          ...titleField(m.title),
         });
       // The switch can go off during that write, when there was no fetch yet to abandon.
       if (!switchOn()) fail('invalid-argument', 'seeding what you watch is off');
@@ -621,7 +594,7 @@ export class WorkerHost implements WorkerRpcHandler {
         },
         canSign: () => userSigner.signingKey !== null,
         onPackaged: (video, root, title) =>
-          policy.set(video, { origin: 'published', root, author: null, title }),
+          policy.set(video, { origin: 'published', root, author: null, ...titleField(title) }),
         onAbandoned: (video) => policy.remove(video),
         room: async () => {
           const quota = cap?.freeBytes ?? null;

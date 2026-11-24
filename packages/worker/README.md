@@ -120,7 +120,8 @@ Error codes:
 | `signer.lock` (main only) | `{}` | the status |
 | `signer.check` (main only) | `{ video }` | `{ video, event, signer, npub, title, tags, description, file }` |
 | `signer.sign` (main only) | `{ event: { kind, created_at, tags, content }, signer }` | the signed event |
-| `seeding.status` | `{}` | `{ watched, videos: [{ video, title?, files, bytes, origin, served, stopped, root?, segs? }], listening }` (no `root` or `segs` for a private video) |
+| `seeding.status` | `{}` | `{ watched, videos: [{ video, files, bytes, origin, served, stopped }], listening }`: no titles or hash lists, so that a full store fits one frame |
+| `seeding.title` (main only) | `{ video }` | `{ title }`: the one title a native dialog needs, or `null` |
 | `seeding.set` (main only) | `{ watched }` | the seeding status |
 | `seeding.watch` | `{ sid, manifest, peers }` | `{ video, root, segs, files, bytes }` |
 | `seeding.stop` | `{ video }` | `{ stopped }`: stops serving and keeps the bytes |
@@ -172,7 +173,13 @@ wrong passphrase costs a full KDF run, and from the second failure an increasing
 #### Seeding
 
 `seeding.json` records why each video may be served, and **a stored video with no record is not
-served**:
+served**. A file that is there but cannot be read as valid is never overwritten: it is moved aside
+to a uniquely named `seeding.json.<time>-<random>.bad`, the worker logs that and starts, and any
+valid records in it are kept. If it cannot be moved, nothing is saved until it can. A stored title
+has control characters removed and is capped at 256 UTF-8 bytes. **Known limit:** on Windows, a
+power cut in the seconds after publishing can restore the file from before the signature, and the
+next start then deletes the video (ADR 0001, Consequences).
+
 - "Seed what you watch" (`seeding.set`) is off by default, and main turns it on only after a native
   confirmation. With it on, `seeding.watch` stores the video of an open play of the same window,
   within 16 GiB and 20 new videos an hour.

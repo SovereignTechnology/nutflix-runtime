@@ -409,6 +409,7 @@ export const validateArgs: { readonly [M in WorkerMethod]: Guard<ArgsOf<M>> } = 
   'seeding.watch': isSeedingWatchArgs,
   'seeding.stop': obj<ArgsOf<'seeding.stop'>>({ video: isVideoAddr }),
   'seeding.resume': obj<ArgsOf<'seeding.resume'>>({ video: isVideoAddr }),
+  'seeding.title': obj<ArgsOf<'seeding.title'>>({ video: isVideoAddr }),
   'seeding.delete': obj<ArgsOf<'seeding.delete'>>({ video: isVideoAddr }),
   'seeding.beacons': isEmpty,
   'seeding.segment': isSeedingSegmentArgs,

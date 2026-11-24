@@ -25,7 +25,7 @@ export const PROOF_FIELDS = [
   'promptWasVisible',
   'rendererSandboxed',
   'modal',
-  'oneFileOnly',
+  'showsPromptUrl',
   'pageWorldClean',
   'policyRefusesAll',
   'otherWindowDropped',
@@ -48,6 +48,9 @@ export const PROOF_FIELDS = [
   'deathBeforePaintWindowDestroyed',
   'lockReleasedAfterDeath',
   'rendererDeathIsCancel',
+  'fullscreenFromRealClick',
+  'escLeavesFullscreen',
+  'menuBarBackAfterEsc',
 ] as const;
 
 export type ProofField = (typeof PROOF_FIELDS)[number];

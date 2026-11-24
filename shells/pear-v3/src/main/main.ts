@@ -49,13 +49,7 @@ import {
   updateBannerText,
 } from '../../../../packages/renderer/src/update-text.ts';
 import type { UpdateStatus } from '../update/status.ts';
-import {
-  AccountRunner,
-  accountMenuPresent,
-  accountShortcut,
-  applicationMenu,
-  menuBarState,
-} from './account-menu.ts';
+import { accountMenuPresent, menuBarState, wireAccountMenu } from './account-menu.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
@@ -226,19 +220,6 @@ const mainCalls = new MainCalls({
   worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
 });
 
-/**
- * The Account menu, and its shortcuts. It is the only way to secret entry. The page hears only that
- * the signer may have changed, and asks `signer.status`.
- */
-const account = new AccountRunner(async (action) => {
-  const win = mainWindow;
-  if (win === undefined || win.isDestroyed()) return;
-  const out = await mainCalls.account(win.webContents.id, action);
-  gate.fromMain('signer', { changed: true });
-  if (out.problem !== null && !win.isDestroyed())
-    await dialog.showMessageBox(win, accountProblemDialog(out.problem));
-});
-
 const links = new LinkOpener({
   open: (url) => {
     shell.openExternal(url).catch(() => {
@@ -326,13 +307,18 @@ if (app.commandLine.hasSwitch(SANDBOX_PREFLIGHT_SWITCH)) {
 
 async function main(): Promise<void> {
   await app.whenReady();
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate(
-      applicationMenu(process.platform, (action) => {
-        account.trigger(action);
-      }),
-    ),
-  );
+  // The Account menu is the only way to secret entry. The page hears only that the signer may have
+  // changed, and asks `signer.status`.
+  const accountMenu = wireAccountMenu({
+    platform: process.platform,
+    menu: Menu,
+    window: () => mainWindow,
+    account: (id, action) => mainCalls.account(id, action),
+    tellPage: () => {
+      gate.fromMain('signer', { changed: true });
+    },
+    showProblem: (win, problem) => dialog.showMessageBox(win, accountProblemDialog(problem)),
+  });
 
   // The page's policy is the renderer's own, read from the file the protocol serves.
   const rendererDir = join(appDir, 'renderer');
@@ -473,12 +459,7 @@ async function main(): Promise<void> {
     win.show();
   });
   // Before the page: a page cannot swallow these, and its own synthetic key events never get here.
-  win.webContents.on('before-input-event', (e, input) => {
-    const action = accountShortcut(input, process.platform);
-    if (action === null) return;
-    e.preventDefault();
-    account.trigger(action);
-  });
+  accountMenu.attach(win.webContents);
   win.webContents.setWebRTCIPHandlingPolicy(WEBRTC_IP_POLICY);
   if (unsandboxed) win.setTitle('Nutflix (NO SANDBOX)');
   win.webContents.on('did-fail-load', (_e, code) => {

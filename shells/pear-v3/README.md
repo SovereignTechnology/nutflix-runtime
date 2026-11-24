@@ -182,7 +182,9 @@ opens the real one. The page says only: use the Account menu, and Nutflix never 
 bunker link inside this page. The menu bar is kept on screen (`autoHideMenuBar: false`) on Linux and
 Windows, and is in the system's menu bar on macOS. Every packaged launch on all five targets reads
 back from Electron that the menu is in place and, on Linux and Windows, that the bar is visible
-(`accountMenu` and `menuBar` in the ready line); a launch that fails this fails CI.
+(`accountMenu` and `menuBar` in the ready line); a launch that fails this fails CI. Lock never
+waits for another dialog, so a page that keeps one open cannot keep the key unlocked, and a cancelled
+file picker stays closed for a few seconds.
 
 Main's **prompt window** (`src/main/prompt-window.ts`, `src/prompt/`) sends what is typed to the
 worker, so a passphrase or bunker URI never enters the page. It is modal, sandboxed and isolated, in
@@ -193,7 +195,8 @@ that call and reports what really happened. The proof kills the renderer process
 that never loads is destroyed by a 30 s watchdog. For a renderer killed before its first paint, the
 proof requires a cancel by a named path, no value delivered, a destroyed window, and a next prompt
 that opens and answers normally through the real dialog lock. Each run's `death-before-paint` log
-line names the path that ended it (`load-failed`, `render-process-gone` or `watchdog`). **Known
+line names the path that ended it (`load-failed`, `render-process-gone` or `watchdog`). In the
+one CI run this was first recorded in, the path was `load-failed`. **Known
 limit:** a renderer that has crashed but not exited does not end the prompt until the process is
 gone. In CI, `forcefullyCrashRenderer` left it alive for at least 12 s, and only the proof's kill
 ended it.
