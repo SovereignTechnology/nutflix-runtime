@@ -81,11 +81,11 @@ export function isSignatureType(entry: string, catalogAdded = false): boolean {
 
 /**
  * The files a Mach-O at `path` may seal besides its code: its bundle's Info.plist and resource seal,
- * when it is that bundle's main executable (an app's `Contents/MacOS/*`, or a framework version's
- * own binary). Anything else seals neither.
+ * when it is that bundle's main executable (an app's, XPC service's or extension's
+ * `Contents/MacOS/*`, or a framework version's own binary). Anything else seals neither.
  */
 export function sealedFilesOf(path: string): { infoPlist: string; resources: string } | null {
-  const app = /^((?:.+\.app\/)?Contents)\/MacOS\/[^/]+$/.exec(path);
+  const app = /^((?:.+\.(?:app|xpc|appex)\/)?Contents)\/MacOS\/[^/]+$/.exec(path);
   if (app !== null)
     return {
       infoPlist: `${app[1] ?? ''}/Info.plist`,

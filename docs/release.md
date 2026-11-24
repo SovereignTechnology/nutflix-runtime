@@ -113,9 +113,18 @@ every signer's `verify-request` hold every Mach-O in a signed bundle to it, re-s
   ad-hoc signature is accepted), the hardened runtime on every executable, and exactly the
   entitlements the policy names for each binary: `com.apple.security.cs.allow-jit` for the app, its
   helpers and the Bare runtime, and none for anything else. A signature that adds an entitlement
-  (say `get-task-allow` or `disable-library-validation`), drops the hardened runtime, or comes from
-  another team is refused. Only a bundle's own `Contents/_CodeSignature/`, a framework version's
-  `_CodeSignature/` and the stapled `Contents/CodeResources` may be added.
+  (say `get-task-allow`), drops the hardened runtime, or comes from another team is refused. Only a
+  bundle's own `Contents/_CodeSignature/`, a framework version's `_CodeSignature/` and the stapled
+  `Contents/CodeResources` may be added.
+- **macOS, ad hoc only: library validation off on three binaries.** The hardened runtime turns on
+  library validation, which lets a process load only Apple's libraries and those of its own Team
+  ID. Ad-hoc code has no Team ID, so an ad-hoc app with the hardened runtime cannot load its own
+  Electron Framework, nor Bare its addons ([Apple DTS](https://developer.apple.com/forums/thread/782645):
+  "you can only load platform libraries"). So while `APPLE_TEAM_ID` is `null`, the app, its helpers
+  and `bare` also carry `com.apple.security.cs.disable-library-validation`
+  (`packaging/entitlements.mac.adhoc.plist`), and nothing else does. Once a Team ID is pinned,
+  every library carries that team's signature, library validation stays on, and that entitlement is
+  refused (`packaging/entitlements.mac.plist`).
 - **macOS, whether it is valid:** every code directory must hash each page of its binary's code as
   it is, and each special slot it fills must hash what that slot names: the bundle's `Info.plist`
   and resource seal (`_CodeSignature/CodeResources`) for a bundle's main executable, the
@@ -135,23 +144,29 @@ every signer's `verify-request` hold every Mach-O in a signed bundle to it, re-s
 Sign inside out, ad hoc today, with `--sign "Developer ID Application: …" --timestamp` in place of
 `--sign -` once a Team ID is pinned (the CI proof signs exactly this way, `prove-signing.ts`):
 
-1. every Mach-O under `Contents/Resources` on its own: the node modules' native addons (`.node`,
-   `.bare`) and the Bare runtime, which `--deep` does not reach because they are not in a bundle
-   location. Only `bare` gets the entitlements file;
-2. the nested code in bundle locations, `--deep`;
+1. every Mach-O in the bundle but the app's own executable, each on its own (the order does not
+   matter: no bundle is sealed yet): this reaches what `--deep` does not, such as the node modules' native addons (`.node`, `.bare`), the
+   Bare runtime and a framework's tools (`ShipIt`). Only the helpers' executables and `bare` get the
+   entitlements file;
+2. the nested code in bundle locations, `--deep`, which seals each framework and helper;
 3. each helper app, with the entitlements file;
 4. the app, with the entitlements file.
 
+Every Mach-O must be signed this way: the tool holds each one to the policy, and an executable left
+as CI built it has no hardened runtime.
+
 ```sh
-E=shells/pear-v3/packaging/entitlements.mac.plist
-find Nutflix.app/Contents/Resources -type f -print0 | while IFS= read -r -d '' f; do
-  file -b "$f" | grep -q '^Mach-O' || continue
-  case "$f" in
-    */node_modules/bare-sidecar/prebuilds/darwin-*/bare) ent=(--entitlements "$E") ;;
-    *) ent=() ;;
-  esac
-  codesign --force --options runtime "${ent[@]}" --sign - "$f"
-done
+E=shells/pear-v3/packaging/entitlements.mac.adhoc.plist   # entitlements.mac.plist once a Team ID is pinned
+find Nutflix.app -type f ! -path 'Nutflix.app/Contents/MacOS/Nutflix' -print0 |
+  while IFS= read -r -d '' f; do
+    file -b "$f" | grep -q '^Mach-O' || continue
+    case "$f" in
+      */node_modules/bare-sidecar/prebuilds/darwin-*/bare | \
+        Nutflix.app/Contents/Frameworks/Nutflix\ Helper*.app/Contents/MacOS/*) ent=(--entitlements "$E") ;;
+      *) ent=() ;;
+    esac
+    codesign --force --options runtime "${ent[@]}" --sign - "$f"
+  done
 codesign --force --deep --options runtime --sign - Nutflix.app
 for h in Nutflix.app/Contents/Frameworks/Nutflix\ Helper*.app; do
   codesign --force --options runtime --entitlements "$E" --sign - "$h"

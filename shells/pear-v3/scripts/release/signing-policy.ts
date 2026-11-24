@@ -6,7 +6,8 @@
  *   - macOS: the Apple Team ID (`null` until the owner has an Apple Developer account; while it is,
  *     only an ad-hoc signature is accepted), the hardened runtime on every executable, and exactly
  *     the entitlements below, per binary. `packaging/entitlements.mac.plist` is the file to sign
- *     the entitled binaries with; a test holds the two together.
+ *     the entitled binaries with once a Team ID is pinned, `entitlements.mac.adhoc.plist` while
+ *     none is (`AD_HOC_LIBRARY_VALIDATION`); a test holds both to this policy.
  *   - Windows: the signing certificate (`null` until the owner has one; while it is, a signed
  *     `.msix` is refused).
  *
@@ -42,7 +43,9 @@ const JIT: Readonly<Record<string, boolean>> = { 'com.apple.security.cs.allow-ji
 
 /**
  * The entitlements each signed binary carries, by its path in the bundle. V8 needs JIT in the app,
- * its helpers and the Bare runtime that runs the worker. Every other binary carries none.
+ * its helpers and the Bare runtime that runs the worker. Every other binary carries none. These
+ * three are also the binaries that load our own libraries: the app and its helpers load Electron
+ * Framework, and Bare loads its addons (see `AD_HOC_LIBRARY_VALIDATION`).
  */
 export const MAC_ENTITLEMENTS: readonly {
   readonly path: RegExp;
@@ -97,9 +100,24 @@ export function assertSigningPolicy(p: SigningPolicy): SigningPolicy {
   return p;
 }
 
-export function expectedEntitlements(path: string): Entitlements {
+/**
+ * Library validation off, for an ad-hoc signature only. The hardened runtime turns on library
+ * validation, which lets a process load only Apple's libraries and those of its own Team ID. Ad-hoc
+ * code has no Team ID, so an ad-hoc app with the hardened runtime cannot load Electron Framework,
+ * nor Bare its addons (Apple DTS, developer.apple.com/forums/thread/782645, "you can only load
+ * platform libraries"). While no Team ID is pinned, the binaries that load our libraries carry
+ * this as well; once one is, every library carries that team's signature and it is refused.
+ */
+export const AD_HOC_LIBRARY_VALIDATION = 'com.apple.security.cs.disable-library-validation';
+
+export function expectedEntitlements(
+  path: string,
+  policy: SigningPolicy = productionSigningPolicy(),
+): Entitlements {
   const rule = MAC_ENTITLEMENTS.find((r) => r.path.test(path));
-  return new Map(Object.entries(rule?.entitlements ?? {}));
+  const e = new Map(Object.entries(rule?.entitlements ?? {}));
+  if (rule !== undefined && policy.appleTeamId === null) e.set(AD_HOC_LIBRARY_VALIDATION, true);
+  return e;
 }
 
 const show = (e: Entitlements): string =>
@@ -125,7 +143,7 @@ export function assertMacSignature(
     (sig.flags & REQUIRED_EXECUTABLE_FLAGS) !== REQUIRED_EXECUTABLE_FLAGS
   )
     refuse(`${path} is not signed with the hardened runtime`);
-  const want = expectedEntitlements(path);
+  const want = expectedEntitlements(path, policy);
   const got = sig.entitlements;
   if (got.size !== want.size || [...want].some(([k, v]) => got.get(k) !== v))
     refuse(`${path} has the entitlements ${show(got)}, not ${show(want)}`);

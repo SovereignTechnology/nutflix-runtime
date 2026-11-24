@@ -48,7 +48,16 @@ import { RELEASE_TARGETS, type ReleaseTarget } from './targets.ts';
 import { extractZip } from './zip.ts';
 
 const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pear-ci');
-const ENTITLEMENTS = resolve(SCRIPTS_DIR, '..', '..', 'packaging', 'entitlements.mac.plist');
+/** The file the runbook signs entitled binaries with: ad hoc, while no Team ID is pinned. */
+const ENTITLEMENTS = resolve(
+  SCRIPTS_DIR,
+  '..',
+  '..',
+  'packaging',
+  productionSigningPolicy().appleTeamId === null
+    ? 'entitlements.mac.adhoc.plist'
+    : 'entitlements.mac.plist',
+);
 const say = (l: string): void => {
   process.stdout.write(`${l}\n`);
 };
@@ -119,39 +128,35 @@ function filesDeepestFirst(dir: string, rel = ''): string[] {
 
 /**
  * Signs `app` the way the runbook does, ad hoc, inside out:
- *   1. every Mach-O under `Contents/Resources` on its own (the node modules' native addons, and the
- *      Bare runtime), with the hardened runtime, and the entitlements the policy gives it;
- *   2. the nested code in bundle locations (frameworks, helpers, their tools), `--deep`;
+ *   1. every Mach-O in the bundle but the app's own executable, on its own, deepest first, with the
+ *      hardened runtime and the entitlements the policy gives it: this reaches what `--deep` does
+ *      not (the node modules' addons, the Bare runtime, a framework's tools such as ShipIt);
+ *   2. the nested code in bundle locations, `--deep`, which seals each framework and helper;
  *   3. each helper app the policy entitles, again, with its entitlements;
  *   4. the app, with its entitlements.
- * `last` is the last step's options, so a negative can make one bad signature; `entitlements` is
- * the plist for every entitled binary.
+ * `last` is the last step's options, so a negative can make one bad signature.
  */
-function signLikeTheRunbook(
-  app: string,
-  last: readonly string[] = ['--options', 'runtime'],
-  entitlements: string = ENTITLEMENTS,
-): void {
+function signLikeTheRunbook(app: string, last: readonly string[] = ['--options', 'runtime']): void {
   const sign = (opts: readonly string[], path: string): void => {
     run('codesign', ['--force', ...opts, '--sign', '-', path]);
   };
   const entitled = (rel: string): boolean => MAC_ENTITLEMENTS.some((r) => r.path.test(rel));
-  for (const f of filesDeepestFirst(join(app, 'Contents', 'Resources'), 'Contents/Resources'))
-    if (isMachoFile(join(app, ...f.split('/'))))
+  for (const f of filesDeepestFirst(app))
+    if (f !== `Contents/MacOS/${APP.productName}` && isMachoFile(join(app, ...f.split('/'))))
       sign(
-        ['--options', 'runtime', ...(entitled(f) ? ['--entitlements', entitlements] : [])],
+        ['--options', 'runtime', ...(entitled(f) ? ['--entitlements', ENTITLEMENTS] : [])],
         join(app, ...f.split('/')),
       );
   sign(['--deep', '--options', 'runtime'], app);
   for (const f of filesDeepestFirst(app)) {
     const helper = /^(Contents\/Frameworks\/[^/]+\.app)\/Contents\/MacOS\/[^/]+$/.exec(f)?.[1];
     if (helper !== undefined && entitled(f))
-      sign(['--options', 'runtime', '--entitlements', entitlements], join(app, helper));
+      sign(['--options', 'runtime', '--entitlements', ENTITLEMENTS], join(app, helper));
   }
-  sign([...last, '--entitlements', entitlements], app);
+  sign([...last, '--entitlements', ENTITLEMENTS], app);
 }
 
-/** The Mach-Os of a bundle: how many, and how many are signed with the hardened runtime. */
+/** The Mach-Os of a bundle: how many, and how many are outside a bundle location. */
 function machoCount(app: string): { all: number; outsideCode: number } {
   const files = filesDeepestFirst(app).filter((f) => isMachoFile(join(app, ...f.split('/'))));
   return {
@@ -205,32 +210,13 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
   await assertSinkholed(hosts);
   const launched = await launchSigned(signed);
   if (!launched.ok) {
-    // What the system said, and whether library validation is the reason: the same bundle with
-    // `disable-library-validation` added, launched once, for the record only. The proof fails.
-    const say = (l: string): void => {
-      process.stdout.write(`${l}\n`);
-    };
-    say(`the signed bundle did not reach ready: ${launched.reason}`);
+    // What the system said: code signing, library validation, dyld.
     for (const l of launched.tail
       .filter((x) =>
-        /code ?sign|Library Validation|dyld|Team ID|AMFI|killed|Code Signature/i.test(x),
+        /code ?sign|Library Validation|dyld|Team ID|AMFI|killed|Code Signature|not valid/i.test(x),
       )
-      .slice(-20))
-      say(`  ${l}`);
-    const lv = join(work, 'disable-library-validation.plist');
-    writeFileSync(
-      lv,
-      readFileSync(ENTITLEMENTS, 'utf8').replace(
-        '</dict>',
-        '  <key>com.apple.security.cs.disable-library-validation</key>\n  <true/>\n</dict>',
-      ),
-    );
-    const probe = copy('library-validation-probe');
-    signLikeTheRunbook(probe, ['--options', 'runtime'], lv);
-    const second = await launchSigned(probe);
-    say(
-      `the same bundle with disable-library-validation: ${second.ok ? 'reached ready' : `did not reach ready either (${second.reason})`}`,
-    );
+      .slice(-30))
+      process.stdout.write(`  ${l}\n`);
     throw new Error(`the signed bundle does not run: ${launched.reason}`);
   }
 

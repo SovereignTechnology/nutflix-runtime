@@ -341,6 +341,8 @@ function macho(
 }
 
 const JIT = { 'com.apple.security.cs.allow-jit': true };
+/** What an entitled binary carries while signatures are ad hoc: JIT, and library validation off. */
+const AD_HOC = { ...JIT, 'com.apple.security.cs.disable-library-validation': true };
 
 interface SigSpec {
   flags?: number;
@@ -378,7 +380,7 @@ function sigBlob(o: SigSpec = {}, code?: Buffer, sealed: Sealed = {}): Buffer {
     return Buffer.concat([h, body]);
   };
   const team = o.team === undefined ? null : o.team;
-  const ents = o.entitlements === undefined ? JIT : o.entitlements;
+  const ents = o.entitlements === undefined ? AD_HOC : o.entitlements;
   const derEnts = o.der === undefined ? ents : o.der;
   const requirements = blob(0xfade0c01, Buffer.alloc(4));
   const xml = ents === null ? null : blob(0xfade7171, Buffer.from(entitlementsXml(ents)));
@@ -543,7 +545,7 @@ describe('reading a binary', () => {
         flags: CS_ADHOC | CS_RUNTIME,
         teamId: null,
         identity: false,
-        entitlements: new Map(Object.entries(JIT)),
+        entitlements: new Map(Object.entries(AD_HOC)),
       });
       const team = read(sigBlob({ flags: CS_RUNTIME, team: 'ABCDE12345', identity: true }));
       expect(team?.teamId).toBe('ABCDE12345');
@@ -583,14 +585,18 @@ describe('reading a binary', () => {
       refused(() => parseEntitlementsDer(Buffer.from([0x30, 0])), /not one/);
     });
 
-    it('the entitlements file is the one the policy pins', () => {
-      const file = readFileSync(
-        new URL('../../../packaging/entitlements.mac.plist', import.meta.url),
-        'utf8',
+    it('each entitlements file is the one the policy pins, ad hoc and with a Team ID', () => {
+      const file = (name: string): string =>
+        readFileSync(new URL(`../../../packaging/${name}`, import.meta.url), 'utf8');
+      const team: SigningPolicy = { label: 't', appleTeamId: 'ABCDE12345', windowsSigner: null };
+      const adHoc = expectedEntitlements('Contents/MacOS/Nutflix');
+      expect(parseEntitlementsXml(file('entitlements.mac.adhoc.plist'))).toEqual(adHoc);
+      expect(parseEntitlementsXml(file('entitlements.mac.plist'))).toEqual(
+        expectedEntitlements('Contents/MacOS/Nutflix', team),
       );
-      const pinned = expectedEntitlements('Contents/MacOS/Nutflix');
-      expect(parseEntitlementsXml(file)).toEqual(pinned);
-      expect(pinned.size).toBeGreaterThan(0);
+      expect(adHoc.get('com.apple.security.cs.disable-library-validation')).toBe(true);
+      // With a Team ID, library validation stays on.
+      expect(expectedEntitlements('Contents/MacOS/Nutflix', team).size).toBe(1);
       expect(expectedEntitlements('Contents/Resources/app/node_modules/x/y.node').size).toBe(0);
     });
   });
@@ -1240,11 +1246,11 @@ describe('a signed package', () => {
 
       it('refuses a bundle re-signed with an entitlement added', async () => {
         const { unsigned, signed } = pair({
-          entitlements: { ...JIT, 'com.apple.security.get-task-allow': true },
+          entitlements: { ...AD_HOC, 'com.apple.security.get-task-allow': true },
         });
         await refusedAsync(
           compareSigned(mac, unsigned, signed),
-          /Contents\/MacOS\/Nutflix has the entitlements .*get-task-allow=true, not com\.apple\.security\.cs\.allow-jit=true$/,
+          /Contents\/MacOS\/Nutflix has the entitlements .*get-task-allow=true, not com\.apple\.security\.cs\.allow-jit=true, com\.apple\.security\.cs\.disable-library-validation=true$/,
         );
       });
 
@@ -1274,7 +1280,12 @@ describe('a signed package', () => {
       });
 
       it('with a Team ID pinned, takes that team and refuses another, or ad hoc', async () => {
-        const ours = pair({ flags: CS_RUNTIME, team: 'ABCDE12345', identity: true });
+        const ours = pair({
+          flags: CS_RUNTIME,
+          team: 'ABCDE12345',
+          identity: true,
+          entitlements: JIT,
+        });
         await expect(compareSigned(mac, ours.unsigned, ours.signed, team)).resolves.toBeUndefined();
         const other = pair({ flags: CS_RUNTIME, team: 'OTHER12345', identity: true });
         await refusedAsync(
