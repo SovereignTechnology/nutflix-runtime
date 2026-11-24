@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The retry rule of npm-audit-signatures.sh, against a fake `npm` that prints what the test hands it
-# and a fake `sleep` that only records: the attestations glitch is tried again, at most three
+# and a fake `sleep` that only records: the attestations glitch is tried again, at most four
 # attempts in all; nothing else ever is, above all a missing or invalid signature or attestation.
 #
 #   bash .github/scripts/npm-audit-signatures.test.sh
@@ -152,16 +152,19 @@ plan 0 "$(passed)"
 expect 'a clean pass runs once' 0 1 ''
 
 plan 1 "$(glitch)" 0 "$(passed)"
-expect 'the glitch, then a pass: tried again once, after 5 s' 0 2 '5'
+expect 'the glitch, then a pass: tried again once, after 30 s' 0 2 '30'
 expect_in_log 'the glitch is in the log' 'attestations/undici-types@7.24.6'
 expect_in_log 'the pass is in the log' 'have verified registry signatures'
 expect_in_log 'the retry is a warning' '::warning title=npm audit signatures::'
 
 plan 1 "$(glitch)" 1 "$(glitch typescript-eslint@8.72.2)" 0 "$(passed)"
-expect 'the glitch twice, then a pass: three attempts' 0 3 '5 15'
+expect 'the glitch twice, then a pass: three attempts' 0 3 '30 60'
 
 plan 1 "$(glitch)" 1 "$(glitch)" 1 "$(glitch)" 0 "$(passed)"
-expect 'the glitch three times: gives up after three, with npm'"'"'s status' 1 3 '5 15'
+expect 'the glitch three times, then a pass: four attempts' 0 4 '30 60 120'
+
+plan 1 "$(glitch)" 1 "$(glitch)" 1 "$(glitch)" 1 "$(glitch typescript-eslint@8.72.2)" 0 "$(passed)"
+expect 'the glitch four times: gives up after four, with npm'"'"'s status' 1 4 '30 60 120'
 
 plan 1 "$(invalid_signature)"
 expect 'an invalid registry signature fails at once' 1 1 ''
@@ -173,10 +176,10 @@ plan 1 "$(invalid_attestation)"
 expect 'an invalid attestation fails at once' 1 1 ''
 
 plan 1 "$(glitch)" 1 "$(invalid_signature)" 0 "$(passed)"
-expect 'the glitch, then an invalid signature: fails at the second, no third' 1 2 '5'
+expect 'the glitch, then an invalid signature: fails at the second, no third' 1 2 '30'
 
 plan 1 "$(glitch)" 1 "$(invalid_attestation)" 0 "$(passed)"
-expect 'the glitch, then an invalid attestation: fails at the second, no third' 1 2 '5'
+expect 'the glitch, then an invalid attestation: fails at the second, no third' 1 2 '30'
 
 plan 1 "$(glitch)
 $(invalid_signature)"
@@ -215,13 +218,13 @@ plan 1 ''
 expect 'a failure with no output: fails at once' 1 1 ''
 
 plan 2 "$(glitch)" 0 "$(passed)"
-expect 'the glitch with another exit status, then a pass' 0 2 '5'
+expect 'the glitch with another exit status, then a pass' 0 2 '30'
 
 plan 1 "$(invalid_signature)" 0 "$(passed)"
 expect 'a signature failure is never re-run to green' 1 1 ''
 
 plan 1 "$(glitch | sed 's/$/\r/')" 0 "$(passed)"
-expect 'the glitch with CRLF line ends: tried again' 0 2 '5'
+expect 'the glitch with CRLF line ends: tried again' 0 2 '30'
 
 if ((failures > 0)); then
   echo "$failures case(s) failed"

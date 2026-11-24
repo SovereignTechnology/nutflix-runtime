@@ -59,8 +59,9 @@ jobs:
             const bad = Object.entries(p).filter(([k, v]) => k.startsWith("node_modules/") && !v.link && v.resolved && !/^https:\/\/registry\.npmjs\.org\//.test(v.resolved));
             if (bad.length) { console.error("non-registry resolutions:", bad.map(([k]) => k)); process.exit(1); }'
       # The registry's attestations endpoint sometimes answers with no JSON (FETCH_ERROR, four times
-      # on 2026-11-24). Only that is tried again, three attempts at most; a missing or invalid
-      # signature or attestation fails at once. The rule's own test runs first, on fake outputs.
+      # on 2026-11-24, for minutes at a time). Only that is tried again, four attempts at most, 30,
+      # 60 and 120 s apart; a missing or invalid signature or attestation fails at once. The rule's
+      # own test runs first, on fake outputs.
       - name: the retry rule of the next step, on fake npm outputs
         run: bash .github/scripts/npm-audit-signatures.test.sh
       - name: registry signatures and provenance

@@ -9,18 +9,20 @@
 #   npm error invalid json response body at https://registry.npmjs.org/-/npm/v1/attestations/<pkg>@<ver> reason: ...
 #
 # before it had verified anything. That, and only that, is tried again: at most MAX_ATTEMPTS runs in
-# all, BACKOFF_S apart. Each attempt is a whole new `npm audit signatures`, which must pass on its
-# own. Anything else fails at once with npm's own exit status, above all a missing or invalid
-# registry signature or attestation: an attempt is retried only when every line it printed is an
-# `npm error` line, its one error code is FETCH_ERROR, one line is that attestations URL on
-# registry.npmjs.org, and no line says "signature", "tamper", EINTEGRITY or EATTESTATION in any
-# case. The rule is an allow-list: output it does not know is a failure.
+# all, BACKOFF_S apart (30, 60 and 120 s, about three and a half minutes in all), because the glitch
+# can last minutes: on PR #27 three attempts within 20 s all met it. Each attempt is a whole new
+# `npm audit signatures`, which must pass on its own. Anything else fails at once with npm's own
+# exit status, above all a missing or invalid registry signature or attestation: an attempt is
+# retried only when every line it printed is an `npm error` line, its one error code is
+# FETCH_ERROR, one line is that attestations URL on registry.npmjs.org, and no line says
+# "signature", "tamper", EINTEGRITY or EATTESTATION in any case. The rule is an allow-list: output
+# it does not know is a failure.
 #
 # `npm` and `sleep` are found on PATH: .github/scripts/npm-audit-signatures.test.sh puts fakes there.
 set -uo pipefail
 
-readonly MAX_ATTEMPTS=3
-readonly BACKOFF_S=(5 15)
+readonly MAX_ATTEMPTS=4
+readonly BACKOFF_S=(30 60 120)
 readonly GLITCH_URL='^npm error invalid json response body at https://registry\.npmjs\.org/-/npm/v1/attestations/[^[:space:]]+ reason: '
 
 # Exit 0 when the output in file $1 is the attestations glitch and nothing else.
