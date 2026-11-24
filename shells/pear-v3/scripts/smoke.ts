@@ -395,7 +395,8 @@ function report(label: string, r: LaunchResult): void {
   if (r.ok && r.ready !== null)
     process.stdout.write(
       `SMOKE   proved: window loaded, renderer mounted, worker answered status, page round trip ${JSON.stringify(r.ready.pipe)}, sandbox ${JSON.stringify(r.ready.sandbox)}, OS reports renderer ${JSON.stringify(r.ready.rendererSandbox)}\n` +
-        `SMOKE   engine: webrtc player ${JSON.stringify(r.ready.player)}, webrtc ip policy ${JSON.stringify(r.ready.webrtcPolicy)}, vp9-in-mp4 ${JSON.stringify(r.ready.vp9)}, h264 ${JSON.stringify(r.ready.h264)}\n`,
+        `SMOKE   engine: webrtc player ${JSON.stringify(r.ready.player)}, webrtc ip policy ${JSON.stringify(r.ready.webrtcPolicy)}, vp9-in-mp4 ${JSON.stringify(r.ready.vp9)}, h264 ${JSON.stringify(r.ready.h264)}\n` +
+        `SMOKE   account menu ${JSON.stringify(r.ready.accountMenu)}, menu bar ${JSON.stringify(r.ready.menuBar)}\n`,
     );
   if (!r.ok) for (const l of r.tail.slice(-60)) process.stdout.write(`SMOKE   | ${l}\n`);
 }
