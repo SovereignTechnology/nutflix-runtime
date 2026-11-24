@@ -37,13 +37,14 @@ which both `pear-runtime`'s `run()` and `bare-sidecar` provide.
 | `src/signer/` | The user's signer: a sealed local key or a NIP-46 session | core's `LocalSigner` and `Nip46Signer` |
 | `src/studio/` | The system's ffmpeg behind a guard, and publishing | `worker/ffmpeg.ts`, `worker/studio/nfx.ts`, adapted |
 | `src/net/dht-node.ts` | The one HyperDHT node | `worker/net/peer-node.ts` and the own-DHT part of `worker/nfx/watching.ts` |
-| `src/keys.ts` | Corestore-derived key pairs `nfx:<ns>:seeder` and `nfx:<ns>:watcher` | the names of `worker/nfx/seeding.ts` and `watching.ts` |
+| `src/net/no-local-addresses.ts` | No local addresses to any peer, but on a node bound to 127.0.0.1; also exported as `./no-local-addresses` for shape (a)'s updater | new |
+| `src/keys.ts` | The Corestore-derived seeder key pairs `nfx:<ns>:seeder`, and the watcher's random key pairs, one per network and run, never stored | the seeder name of `worker/nfx/seeding.ts`; nutflix-pear derived the watcher pair too |
 | `src/adapters/bare.ts`, `src/runtime.ts` | bare-fs, bare-path and bare-http1, loaded lazily | `worker/adapters/bare.ts` and `worker/runtime.ts`, cut down |
 | `src/log.ts`, `src/crypto.ts`, `src/bare-globals.ts` | A redacting logger as events; libsodium sha256 and randomness; `TextEncoder` and `TextDecoder` for Bare | `worker/log.ts`, `worker/crypto.ts`, `worker/bare-globals.ts` |
 
 The package exports its host-side modules for the shells and the tests: `.` (the protocol, framing
-and `WorkerClient`, which a renderer can import), `./host`, `./rpc` and `./runtime`, and `./main` (the
-Bare entry).
+and `WorkerClient`, which a renderer can import), `./host`, `./rpc` and `./runtime`, `./main` (the
+Bare entry), and `./no-local-addresses` (it loads no module; shape (a)'s updater uses it).
 
 Its tests (`src/__tests__/`) run under Node with injected dependencies: node:http, `nodeFs`,
 and a hyperdht testnet on loopback. They include the ported nutflix-pear tests:
@@ -146,7 +147,9 @@ Every other request fails `not-ready` until `init` has answered. A second `init`
   - `nfx/` is the NFX store;
   - `tmp/` is wiped at every start and holds the play spools.
 - **`bootstrap`** lists 1 to 16 `{ host, port }` nodes. When it is absent or `null`, the node uses
-  HyperDHT's public bootstrap.
+  HyperDHT's public bootstrap. When every node is `127.0.0.1`, the node's socket is bound to
+  127.0.0.1, and only then does it keep hyperdht's defaults on local addresses; otherwise it tells
+  no peer any local address (`src/net/no-local-addresses.ts`).
 - **`diskCapBytes`** caps the store. Without it there is no cap.
 - **`logLevel`** is the least severe level sent as `log` events. The default is `info`.
 
@@ -296,8 +299,11 @@ Every stored video is seeded. Each network (namespace) has its own listener:
 - its key pair is Corestore's `nfx:<namespace>:seeder`;
 - it serves only that network's videos.
 
-The worker dials with `nfx:<namespace>:watcher`. Neither key pair is used for anything else
-(NFX-12 §1).
+The worker dials with a watcher key pair of its own per network: random, made when the run first
+dials on that network, held only in memory and overwritten at shutdown (`src/keys.ts`
+`WatcherKeys`). A seeder sees a new key every run, so the key cannot link one viewer's plays across
+runs; it is the same for every play of a run, which shares one connection per seeder. Neither key
+pair is used for anything else (NFX-12 §1).
 
 #### `nfx.seed.stop`
 

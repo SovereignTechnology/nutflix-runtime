@@ -13,6 +13,10 @@
       "default": "./dist/index.js"
     },
     "./main": "./dist/main.js",
+    "./no-local-addresses": {
+      "types": "./dist/net/no-local-addresses.d.ts",
+      "default": "./dist/net/no-local-addresses.js"
+    },
     "./host": {
       "types": "./dist/host.d.ts",
       "default": "./dist/host.js"

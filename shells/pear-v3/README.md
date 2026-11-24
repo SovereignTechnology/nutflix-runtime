@@ -51,6 +51,14 @@ whose Bare path loads `bare-thread`, which needs a newer Bare (1.33) than the sh
 - not the data worker, because it parses strangers' video and serves the renderer's RPC, so a bug
   there must not be able to reach `applyUpdate()`.
 
+On a release root its swarm dials from a HyperDHT node that tells no peer this machine's local
+addresses (`hideLocalAddressesOn`, `packages/worker/src/net/no-local-addresses.ts`), as the worker's
+does: anyone can announce on the public drive's topic. A test build's root, whose private DHT on
+`127.0.0.1` a release root refuses, keeps the swarm's own node and hyperdht's defaults, because its
+peer there is Pear's sidecar bound to every interface, and on one host hyperdht carries data only
+between peers that share local addresses and bind alike. `pear install` itself is Pear's CLI, with
+a swarm this app does not configure.
+
 Main reads the process's status frames, checks each against fixed lists (`src/update/status.ts`) and
 passes the state on through `RpcGate.fromMain`. That event is on the window's `mainEvents`
 allow-list: the same name from the data worker is dropped, so a compromised worker cannot tell the

@@ -93,7 +93,9 @@ async function start(): Promise<World> {
   cleanups.push(() => testnet.destroy());
 
   // The seeder: nutflix-pear's own NFX-12 listener, on its own node of the testnet.
-  const seederDht = new DHT({ bootstrap: testnet.bootstrap });
+  // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+  // connects two peers only when they bind alike (packages/worker/src/net/no-local-addresses.ts).
+  const seederDht = new DHT({ bootstrap: testnet.bootstrap, host: '127.0.0.1' });
   cleanups.push(() => seederDht.destroy());
   await seederDht.fullyBootstrapped();
   const keyPair = DHT.keyPair();

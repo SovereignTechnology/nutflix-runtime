@@ -440,6 +440,17 @@ describe('updates: only the gate can apply one, and a shipped build has no link'
       );
   });
 
+  it('the updater dials from a node that tells no peer its local addresses', () => {
+    const worker = code(readFileSync(join(pkg, 'src', 'update', 'update-worker.ts'), 'utf8'));
+    // One swarm. On a release root (no DHT named) it is given one node, built here and hidden; only
+    // a test build's private 127.0.0.1 DHT, which a release root refuses, keeps the swarm's own.
+    expect(worker.match(/new Hyperswarm\(/g)).toHaveLength(1);
+    expect(worker.match(/new DHT\(/g)).toHaveLength(1);
+    expect(worker).toMatch(
+      /root\.dht === null\s*\?\s*\{ dht: hideLocalAddressesOn\(new DHT\(\)\) \}\s*:\s*\{ bootstrap: root\.dht\.map\(dhtNode\) \}/,
+    );
+  });
+
   it('the shell has no upgrade field of its own to point anywhere', () => {
     const own = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')) as Record<
       string,

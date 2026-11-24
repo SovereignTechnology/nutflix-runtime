@@ -192,6 +192,7 @@ declare module 'hyperblobs' {
 declare module 'hyperswarm' {
   import type { EventEmitter } from 'node:events';
   import type { ReplicationStream } from 'hypercore';
+  import type DHT from 'hyperdht';
 
   export interface PeerInfo {
     readonly publicKey: Uint8Array;
@@ -211,6 +212,8 @@ declare module 'hyperswarm' {
     readonly seed?: Uint8Array;
     readonly maxPeers?: number;
     readonly bootstrap?: readonly { host: string; port: number }[];
+    /** A node to use instead of a new one (then `bootstrap` is not read); the swarm destroys it. */
+    readonly dht?: DHT;
     /** Return `true` to REJECT the connection. Must be synchronous. */
     readonly firewall?: (remotePublicKey: Uint8Array) => boolean;
   }

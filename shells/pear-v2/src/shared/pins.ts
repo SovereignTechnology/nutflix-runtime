@@ -19,9 +19,20 @@ export const PEAR_V2 = Object.freeze({
     fork: 0,
     length: 3243,
   }),
-  /** The Electron UI drive `pear-electron` 1.7.28 names: a versioned link, so fixed bytes. */
+  /**
+   * The Electron UI drive `pear-electron` 1.7.28 names, on Holepunch's key: a versioned link, which
+   * fixes a fork and length, not the bytes (its key holder can sign another tree at that length).
+   */
   uiAsset: 'pear://0.940.cktxzetiwt6un3ado5kgqedge6ya4nfazjckzq76zcapefwxakdy',
 });
+
+/**
+ * The Electron UI drive this build runs, as the staged `pear-electron` names it. It is still
+ * Holepunch's (`PEAR_V2.uiAsset`), and no release may run that (ADR 0001 amendment, item 1):
+ * re-homing it on a SovTech key, or checking its bytes when it runs, is the owner's step. Until this
+ * names another key, `scripts/stage.ts` makes test builds only.
+ */
+export const UI_DRIVE: string = PEAR_V2.uiAsset;
 
 /** A platform drive at one exact version. */
 export interface ReleaseLine {

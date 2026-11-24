@@ -122,7 +122,9 @@ async function main(cfg: PeerConfig): Promise<void> {
   };
 
   const testnet = await createTestnet(3);
-  const seederDht = new DHT({ bootstrap: testnet.bootstrap });
+  // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+  // connects two peers only when they bind alike (packages/worker/src/net/no-local-addresses.ts).
+  const seederDht = new DHT({ bootstrap: testnet.bootstrap, host: '127.0.0.1' });
   await seederDht.fullyBootstrapped();
   const keyPair = DHT.keyPair();
   const listener = await listenNfx(seederDht, { keyPair, source });

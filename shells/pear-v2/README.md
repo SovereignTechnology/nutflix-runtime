@@ -89,14 +89,19 @@ cannot set it.** Measured in the real window: all 4 ICE candidates were raw host
 hidden behind mDNS. With WebRTC on, a WebRTC peer could learn your local network and VPN addresses
 as well as your public IP.
 
-HyperDHT, which plays with WebRTC off, is set never to share them, in both shapes: the worker dials
-with `localConnection: false` and listens with `shareLocalAddress: false`
+The worker's HyperDHT node, which plays with WebRTC off, is set never to share them, in both
+shapes: it dials with `localConnection: false` and listens with `shareLocalAddress: false`
 (`packages/worker/src/net/no-local-addresses.ts`). Left at hyperdht's defaults, every connection
 would carry every local IPv4 address of this machine to the other side. A seeder still learns your
 public address, as any peer does. The cost: a seeder on your own LAN, behind a router without NAT
 loopback, may not be reachable. nutflix-pear's desktop app still shares local addresses; that is
-not changed here. The one exception is a test network on this machine (every bootstrap node
-`127.0.0.1`: the tests and the proof), where the local address is how two processes meet.
+not changed here. The one exception is a node bound to `127.0.0.1`, which the worker's is when
+every bootstrap node is `127.0.0.1` (the tests and the proof): it reaches nothing off this machine,
+and the local address is how two processes on it meet. This covers the worker only. Pear's own
+sidecar has a swarm of its own (see the runtime's known weaknesses below).
+
+The key the worker dials seeders with is random, made each run and never stored, so a seeder cannot
+link your plays across runs by it (`packages/worker/src/keys.ts`). It still sees your IP address.
 
 So this shape starts with WebRTC off and plays over HyperDHT alone, and Settings says why. You can
 turn it on there, and that choice is kept across restarts. If the window has no working storage,
@@ -152,6 +157,10 @@ From its source, and not fixable from an app:
 - `pear-electron` carries a patch for its boot bundle, but Pear v2.6.5 never applies it: the patch
   waits for a message this sidecar does not send. The installed bundle differs from the patch by 89
   bytes. S1 and the two points above read the patch's source.
+- The sidecar replicates the app, platform and Electron UI drives with a swarm of its own, which
+  this app does not configure. It plausibly shares this machine's local addresses with the peers of
+  those drives, as hyperdht does by default; that is not verified (its source was not read for it).
+  Anyone can announce on a public drive's topic, so such a peer can be anyone.
 
 ## Pins
 
@@ -178,19 +187,30 @@ Electron, at the versions this lockfile holds (5.2.3 and 3.0.0). `bare-ws` is no
 `scripts/stage.ts` ships nothing already on disk: it installs the app's modules with a clean
 `npm ci` of `app/package-lock.json` in a new directory (which checks every integrity hash), copies
 them without `.bin`, then checks every staged package's name and version against the lockfile and
-fails on any difference. It prints one sha256 over the staged tree. The worker and nutflix-pear
-packages are the `tsc` output of the checked-out source, built in the same job.
+fails on any difference. It prints one sha256 over the staged tree.
+
+The bundles (`index.js`, the page's `app.js` and `legacy.js`) and the worker and nutflix-pear
+modules come from the root `node_modules` and the `tsc` output. A test build takes those as they are
+on disk, which is what CI builds just before. **A release never does:** `stage.ts` without
+`--test-line` exports the commit checked out (HEAD, and the submodule at its pinned commit, from
+the local object stores) into a new directory, runs a clean `npm ci --ignore-scripts` of the root
+lockfile and `npm run build` there, and stages with that copy's own `stage.ts`. A checkout with
+local changes is refused, because what is staged is a commit. `--clean` makes a test build the
+same way.
 
 **The Electron UI drive is not on a SovTech key.** `pear-electron` 1.7.28 names
 `pear://0.940.cktxz…`, a versioned link on Holepunch's key: it fixes the fork and length, not a
 content hash, and nothing of ours checks its bytes at run time. Its key holder could sign a
 different tree at that length for users who have not fetched it yet, and Holepunch may stop
 seeding it. Re-homing it, or checking its bytes, is an open condition before any release (ADR 0001
-amendment, item 1).
+amendment, item 1). `UI_DRIVE` in `src/shared/pins.ts` names it, every stage checks that the
+staged `pear-electron` names the same link, and **a release is refused while it is on Holepunch's
+key**: closing that is the maintainer's step.
 
 `RELEASE_LINE` in `src/shared/pins.ts` is `null`. Creating that line means republishing Holepunch's
-platform on a key SovTech holds, and seeding it, which is the maintainer's step. Until then
-`scripts/stage.ts` makes test builds only, and a test line cannot be Holepunch's key.
+platform on a key SovTech holds, and seeding it, which is the maintainer's step. Until both are done
+`scripts/stage.ts` makes test builds only, and says which step is open. A test line cannot be
+Holepunch's key.
 
 ## What CI proves, and what it does not
 

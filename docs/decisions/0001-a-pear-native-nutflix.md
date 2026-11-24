@@ -46,7 +46,9 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
 3. **One worker, one renderer, two thin shells.**
    - **The Bare worker is the data plane:** a HyperDHT node, NFX-12 fetch and serve, the NFX store
      (every file sha256-checked, NFX-05 §4), a loopback progressive range server and a loopback
-     NFX origin, the seeder key, and Studio packaging with the system's ffmpeg.
+     NFX origin, the seeder key, and Studio packaging with the system's ffmpeg. The seeder key is
+     derived from the worker's storage and stable, because beacons name it; the key the worker
+     dials seeders with is random, made each run and never stored (Consequences).
    - **The renderer** runs `@sovit/ui`, talks to Nostr relays over the browser's WebSocket, and
      plays.
    - **The shells** (`shells/pear-v3`, `shells/pear-v2`) only start these and carry the update
@@ -122,17 +124,40 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   cut in the seconds after publishing can bring back the file from before the signature. The video
   then reads as an unsigned draft, the next start deletes its bytes, and its manifest stays on the
   relays pointing at nothing.
-- **HyperDHT tells no peer this machine's local addresses, in both shapes.** By default hyperdht
-  puts every local IPv4 address (LAN, VPN, container bridges) into each connection: a dialer in
-  its first handshake, a server in every reply. The worker turns both off (`localConnection: false`,
+- **The HyperDHT connections this app makes tell no peer this machine's local addresses: the
+  worker's, in both shapes, and shape (a)'s updater.** By default hyperdht puts every local IPv4
+  address (LAN, VPN, container bridges) into each connection: a dialer in its first handshake, a
+  server in every reply. The worker and the updater turn both off (`localConnection: false`,
   `shareLocalAddress: false`; `packages/worker/src/net/no-local-addresses.ts`). This is nutflix-pear
   ADR 0023 rule 5, which keeps LAN candidates from WebRTC peers, applied to HyperDHT; without it,
   turning WebRTC off would not keep those addresses from strangers. The cost: a viewer and a seeder
   on the same LAN, behind a router without NAT loopback, may fail to connect, because neither learns
-  the other's LAN address, and so may two apps on one machine. A node whose every bootstrap is
-  `127.0.0.1`, a test network of this machine's own processes, keeps hyperdht's defaults: that is
-  how the tests and proofs on one host connect. nutflix-pear's desktop app still shares local
-  addresses; that is not changed here.
+  the other's LAN address, and so may two apps on one machine.
+  - The worker's one exception is a node whose socket is bound to 127.0.0.1. It binds its node
+    there when every bootstrap is `127.0.0.1` (a test network of this machine's own processes,
+    whose peers bind there too). Such a node reaches nothing off this machine, whatever its
+    bootstrap is connected to, and keeps hyperdht's defaults: on one host, hyperdht carries data
+    only between peers that share local addresses and bind alike (measured), so that is how the
+    tests and proofs connect. A `127.0.0.1` bootstrap bridged to the public DHT therefore gets a
+    node that cannot reach public peers, not one that shares local addresses with them.
+  - The updater hides on every release root. A test build's root names a private `127.0.0.1`
+    DHT, which a release root refuses, and there the updater keeps Hyperswarm's own node and its
+    defaults, because its peer is Pear's sidecar bound to every interface. No run-time input
+    reaches that choice: the root is compiled into the build.
+  - Pear's own processes are not this app's code, and this is not verified for them: shape (b)'s
+    Pear v2.6.5 sidecar, which replicates the app, platform and UI drives with its own swarm, and
+    Pear v3's `pear install`. They plausibly share local addresses with the peers of those drives.
+    nutflix-pear's desktop app still shares local addresses; that is not changed here.
+- **The key the worker dials seeders with is new every run.** NFX-12 lets a seeder see the dialer's
+  key. A key derived from the worker's storage, as nutflix-pear's is, is the same every run, so any
+  seeder could link one viewer's plays across days. Here the watcher key pair is random, one per
+  network, made when a run first dials and held only in memory (`packages/worker/src/keys.ts`),
+  as nutflix-pear ADR 0023 §3 asks of session keys. It is per run, not per play: every play of a
+  run shares one connection per seeder, a seeder caps connections per dialer key, and within a run
+  every dial leaves from the same address anyway. What it does not hide: a seeder still sees the
+  viewer's IP address and the node's UDP port (hyperdht's default, 49737, when it is free), which
+  link plays from one address on their own. The seeder key stays derived and stable, because
+  beacons name it.
 - **Known limit: free space is read once, per job.** Studio reads the real free space
   (`statfs`) and holds a job to a third of it, because the encode, the packaged files and the store's
   copy are on disk at once. Anything else filling the disk during the job can still end it with an
@@ -155,7 +180,8 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
      runs. Today `pear-electron` 1.7.28 fetches it from Holepunch's key at a versioned link
      (`pear://0.940.cktxz…`), and nothing of ours checks its bytes: a versioned link fixes a fork
      and length, not content, and this binary renders strangers' content with no sandbox. This
-     condition is open, and it is the owner's to close before any release.
+     condition is open, and it is the owner's to close before any release; `scripts/stage.ts`
+     refuses to stage a release while it is.
    - A `<meta>` CSP, first in the document, allows no inline script and no `eval`.
    - Every remote field renders as text. `innerHTML` and `dangerouslySetInnerHTML` are refused by
      lint, and anything that cannot be text goes in an `<iframe sandbox="allow-scripts">`.
@@ -178,7 +204,9 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
      the network from the same unconfined process.
    - The Electron UI drive condition is new (the review's finding M2).
    - "Users run the versioned link" is now enforced in code, not only written down (finding M3).
-   - HyperDHT's sharing of local addresses (finding M1) is a consequence for both shapes, below.
+   - HyperDHT's sharing of local addresses (finding M1) is a consequence, below. It covers this
+     app's own connections (the worker in both shapes, and shape (a)'s updater), not Pear's
+     sidecar.
 2. **Without Chromium's sandbox, the app runs only if the user chooses to (shape a).** The AppImage's
    `AppRun` adds `--no-sandbox` only when the kernel limits user namespaces and Chromium itself then
    reports that its sandbox cannot start, because Chromium would otherwise abort before app code.

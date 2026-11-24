@@ -737,6 +737,21 @@ describe('a real `pear run` of a staged versioned link', () => {
       if (statSync(f).size < 8 * 1024 * 1024)
         expect(readFileSync(f).includes('nsec'), f).toBe(false);
     }
+    // The key the worker dialed the seeder with, from the play above, is in no file: it is made
+    // each run and held in memory only.
+    const dialers = [...(world?.dialers ?? [])];
+    expect(dialers.length).toBeGreaterThan(0);
+    say(`the seeder was dialed with ${String(dialers.length)} key(s); none is on disk`);
+    for (const f of files) {
+      const bytes = readFileSync(f);
+      for (const k of dialers)
+        for (const needle of [
+          Buffer.from(k, 'hex'),
+          Buffer.from(k),
+          Buffer.from(k, 'hex').toString('base64'),
+        ])
+          expect(bytes.includes(needle), f).toBe(false);
+    }
   });
 
   it('closing the window ends the app, and a restart keeps the viewer’s settings', async () => {

@@ -8,9 +8,11 @@
  *   - its iroh (NFX-06) and Rust-helper WebRTC fetchers are gone (ADR 0001: WebRTC lives in the
  *     renderer); a session's sources are this node's own store, when it holds the video with
  *     that `root` (`./store-fetcher.ts`), then the beaconed HyperDHT seeders;
- *   - the DHT node, the pool and the watcher key pairs are the worker's (`../host.ts`): a
- *     Corestore-derived `nfx:<namespace>:watcher` pair (nutflix-pear derived it the same way
- *     whenever it had a seeder; this worker always has one);
+ *   - the DHT node, the pool and the watcher key pairs are the worker's (`../host.ts`). The
+ *     watcher pair is random, one per network and run, and never stored (`../keys.ts`
+ *     `WatcherKeys`). nutflix-pear derived an `nfx:<namespace>:watcher` pair from its Corestore
+ *     whenever it had a seeder, which gave every run the same key: a seeder could link one
+ *     viewer's plays across days;
  *   - a session serves an NFX-05 §6 origin (`./origin.ts`) beside the progressive stream, either
  *     one on request: the hash list is fetched and verified here once, for both;
  *   - `renditions` is an order of preference (the web player's option of that name).
@@ -41,9 +43,6 @@ export const MAX_NFX_SESSIONS = 4;
 export const NFX_PLAY_DIR = 'nfx-play';
 /** A progressive stream's read-ahead when the host names none, seconds. */
 export const DEFAULT_PREFETCH_SECONDS = 30;
-
-/** The key pair name for `namespace`'s watcher (beside `seederKeyName`, `./seeding.ts`). */
-export const watcherKeyName = (namespace: string): string => `nfx:${namespace}:watcher`;
 
 /** The part of `NfxStore` a session reads: a video it holds, and that video's files. */
 export interface NfxLocalStore {

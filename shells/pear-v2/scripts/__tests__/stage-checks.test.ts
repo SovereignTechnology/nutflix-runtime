@@ -1,10 +1,12 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { PEAR_V2 } from '../../src/shared/pins.ts';
+import { PEAR_V2, RELEASE_LINE, UI_DRIVE } from '../../src/shared/pins.ts';
 import {
   SYSTEM_ONLY_PACKAGES,
   checkStagedHtml,
@@ -13,7 +15,10 @@ import {
   lockMismatches,
   moduleClosure,
   parseTestLine,
+  releaseRefusals,
   sri,
+  uiDriveMismatches,
+  versionedLinkKey,
 } from '../stage-checks.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -210,5 +215,86 @@ describe('the staged modules against the lockfile', () => {
     plus.set('node_modules/@sovit/core', { name: '@sovit/core', version: '0.0.0' });
     expect(lockMismatches(lock, plus, (p) => p.startsWith('node_modules/@sovit/'))).toEqual([]);
     expect(lockMismatches(lock, plus)).toEqual(['node_modules/@sovit/core: not in the lockfile']);
+  });
+});
+
+describe('a release', () => {
+  const line = { key: 'y'.repeat(52), fork: 0, length: 3243 };
+  const ours = `pear://0.12.${'o'.repeat(52)}`;
+
+  it('reads the key of a versioned link, and nothing else', () => {
+    expect(versionedLinkKey(PEAR_V2.uiAsset)).toBe(
+      'cktxzetiwt6un3ado5kgqedge6ya4nfazjckzq76zcapefwxakdy',
+    );
+    for (const bad of [
+      `pear://${'o'.repeat(52)}`,
+      `pear://0.12.${'o'.repeat(52)}/x`,
+      `pear://0.12.${'O'.repeat(52)}`,
+      `pear://0.12.${'o'.repeat(51)}`,
+      `https://0.12.${'o'.repeat(52)}`,
+      42,
+      null,
+    ])
+      expect(versionedLinkKey(bad), String(bad)).toBeNull();
+  });
+
+  it('is refused today, naming both owner steps', () => {
+    const open = releaseRefusals({ line: RELEASE_LINE, uiDrive: UI_DRIVE });
+    expect(open).toHaveLength(2);
+    expect(open[0]).toMatch(/RELEASE_LINE.*the owner creates and seeds one/);
+    expect(open[1]).toMatch(/Holepunch’s .*the owner re-homes it on a SovTech key/);
+  });
+
+  it('is refused while the UI drive is Holepunch’s, even once the release line exists', () => {
+    expect(UI_DRIVE).toBe(PEAR_V2.uiAsset);
+    expect(releaseRefusals({ line, uiDrive: UI_DRIVE })).toEqual([
+      expect.stringMatching(/^the Electron UI drive is still Holepunch’s/),
+    ]);
+    // Another fork or length of Holepunch's key is still Holepunch's.
+    expect(
+      releaseRefusals({ line, uiDrive: `pear://0.941.${versionedLinkKey(PEAR_V2.uiAsset)}` }),
+    ).toHaveLength(1);
+    expect(releaseRefusals({ line, uiDrive: 'pear://cktxz' })).toEqual([
+      expect.stringMatching(/not a versioned pear:\/\/ link/),
+    ]);
+  });
+
+  it('is allowed once both are the owner’s', () => {
+    expect(releaseRefusals({ line, uiDrive: ours })).toEqual([]);
+  });
+
+  it('carries the UI drive it names, and only that one', () => {
+    const pe = (link: unknown): unknown => ({ pear: { assets: { ui: { link } } } });
+    const app = JSON.parse(
+      readFileSync(join(here, '..', '..', 'app', 'package.json'), 'utf8'),
+    ) as unknown;
+    expect(uiDriveMismatches({ uiDrive: UI_DRIVE, pearElectron: pe(UI_DRIVE), app })).toEqual([]);
+    expect(uiDriveMismatches({ uiDrive: ours, pearElectron: pe(UI_DRIVE), app })).toHaveLength(1);
+    expect(uiDriveMismatches({ uiDrive: UI_DRIVE, pearElectron: {}, app })).toHaveLength(1);
+    expect(
+      uiDriveMismatches({
+        uiDrive: UI_DRIVE,
+        pearElectron: pe(UI_DRIVE),
+        app: { pear: { assets: { ui: { link: ours } } } },
+      }),
+    ).toEqual(['app/package.json names assets of its own: the UI drive is UI_DRIVE']);
+  });
+
+  it('stage.ts refuses one before it builds or copies anything', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nf-release-'));
+    try {
+      const out = join(dir, 'app');
+      const r = spawnSync(process.execPath, [join(here, '..', 'stage.ts'), '--out', out], {
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('a release cannot be staged yet');
+      expect(r.stderr).toContain('RELEASE_LINE');
+      expect(r.stderr).toContain('Holepunch’s');
+      expect(existsSync(out)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

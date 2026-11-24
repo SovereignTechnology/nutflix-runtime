@@ -50,6 +50,8 @@ export interface World {
   readonly relayUrl: string;
   /** The video's NFX address. */
   readonly addr: string;
+  /** Every key the seeder was dialed with, hex: the app's watcher keys. */
+  readonly dialers: ReadonlySet<string>;
   close(): Promise<void>;
 }
 
@@ -59,7 +61,9 @@ export async function startWorld(bootstrap: readonly DhtNode[]): Promise<World> 
   const videoId = `proof-${createHash('sha256').update(String(Date.now())).digest('hex').slice(0, 24)}`;
   const pkg = makeVp9Package(`${NS}:${videoId}`);
 
-  const dht = new DHT({ bootstrap: [...bootstrap] });
+  // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+  // connects two peers only when they bind alike (packages/worker/src/net/no-local-addresses.ts).
+  const dht = new DHT({ bootstrap: [...bootstrap], host: '127.0.0.1' });
   await dht.fullyBootstrapped();
   const keyPair = DHT.keyPair();
   const source: NfxFileSource = {
@@ -73,7 +77,15 @@ export async function startWorld(bootstrap: readonly DhtNode[]): Promise<World> 
       };
     },
   };
-  const listener = await listenNfx(dht, { keyPair, source });
+  const dialers = new Set<string>();
+  const listener = await listenNfx(dht, {
+    keyPair,
+    source,
+    firewall: (remotePublicKey) => {
+      dialers.add(Buffer.from(remotePublicKey).toString('hex'));
+      return false;
+    },
+  });
   const endpoint = hyperdhtEndpoint(keyPair, seederKey.pubkey, NS);
   const addr = `38504:${creator.pubkey}:${NS}:${videoId}`;
 
@@ -120,6 +132,7 @@ export async function startWorld(bootstrap: readonly DhtNode[]): Promise<World> 
   return {
     relayUrl: relay.url,
     addr,
+    dialers,
     close: async () => {
       await relay.close().catch(() => undefined);
       await listener.close().catch(() => undefined);

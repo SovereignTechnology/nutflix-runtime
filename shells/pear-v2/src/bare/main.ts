@@ -24,7 +24,7 @@ import { bareDataPlane } from '../../../../packages/worker/src/adapters/bare-dat
 import { openCorestoreKeyring } from '../../../../packages/worker/src/keys.js';
 import { linkKind } from '../shared/link.ts';
 import { runtimeMismatch, type ReleaseLine } from '../shared/pins.ts';
-import { dataPlaneOnly, watchOnly } from './data-plane.ts';
+import { dataPlaneOnly, watchOnlyRefusal } from './data-plane.ts';
 import { PageGate } from './page-gate.ts';
 import { PAGE_PORT_TRIES, pagePort } from './page-port.ts';
 import { BASE_HEADERS, answerPageRequest } from './page-server.ts';
@@ -159,9 +159,10 @@ async function startWorker(
     },
     openKeyring: openCorestoreKeyring,
   });
+  const storage = `${Pear.config.storage}/worker`;
   await gate.request('init', {
     v: 1,
-    storage: `${Pear.config.storage}/worker`,
+    storage,
     bootstrap: Pear.config.dht?.bootstrap ?? null,
     // No passphrase-sealed key: this window has no safe place to type one (ADR 0001 amendment).
     localKey: false,
@@ -171,8 +172,9 @@ async function startWorker(
   // The "seed what you watch" switch, off whatever a file on disk says. A worker that does not
   // confirm it does not get a window.
   await gate.request('seeding.set', { watched: false });
-  if (!watchOnly(await gate.request('seeding.status', {}))) {
-    console.error('nutflix: refusing to start: the worker would not turn seeding off.');
+  const refusal = watchOnlyRefusal(await gate.request('seeding.status', {}), storage);
+  if (refusal !== null) {
+    console.error(`nutflix: refusing to start: ${refusal}.`);
     Bare.exit(1);
   }
   return { gate, close: () => host.close() };

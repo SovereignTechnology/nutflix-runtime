@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 
 import { policyOf } from '../../../packages/renderer/scripts/policy.ts';
-import { isReleaseLine, type ReleaseLine } from '../src/shared/pins.ts';
+import { PEAR_V2, isReleaseLine, type ReleaseLine } from '../src/shared/pins.ts';
 
 export function sri(bytes: Uint8Array): string {
   return `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
@@ -157,4 +157,58 @@ export function lockMismatches(
   for (const path of staged.keys())
     if (!(path in lock) && !extra(path)) out.push(`${path}: not in the lockfile`);
   return out.sort();
+}
+
+/** The key of a versioned `pear://<fork>.<length>.<key>` link; `null` for any other form. */
+export function versionedLinkKey(link: unknown): string | null {
+  if (typeof link !== 'string') return null;
+  return (
+    /^pear:\/\/[0-9]+\.[0-9]+\.([ybndrfg8ejkmcpqxot1uwisza345h769]{52})$/.exec(link)?.[1] ?? null
+  );
+}
+
+/**
+ * Why a release cannot be staged yet: each open owner's step (ADR 0001 amendment, item 1), empty
+ * when there is none. A test build does not ask, and nothing it makes is a release.
+ */
+export function releaseRefusals(o: {
+  readonly line: ReleaseLine | null;
+  readonly uiDrive: string;
+}): string[] {
+  const out: string[] = [];
+  if (o.line === null)
+    out.push(
+      'no SovTech release line of Pear v2.6.5 exists yet (`RELEASE_LINE` in src/shared/pins.ts): the owner creates and seeds one',
+    );
+  else if (!isReleaseLine(o.line)) out.push('the platform line is malformed');
+  const ui = versionedLinkKey(o.uiDrive);
+  if (ui === null) out.push('the Electron UI drive (`UI_DRIVE`) is not a versioned pear:// link');
+  else if (ui === versionedLinkKey(PEAR_V2.uiAsset))
+    out.push(
+      'the Electron UI drive is still Holepunch’s (`UI_DRIVE` in src/shared/pins.ts, pear://0.940.cktxz…), and nothing checks its bytes: the owner re-homes it on a SovTech key, or adds a check of its bytes when it runs, then names it there',
+    );
+  return out;
+}
+
+/**
+ * What is wrong with the UI drive a stage carries: the staged `pear-electron`'s
+ * `pear.assets.ui.link` must be `uiDrive`, and the app's own manifest may not name another.
+ */
+export function uiDriveMismatches(o: {
+  readonly uiDrive: string;
+  readonly pearElectron: unknown;
+  readonly app: unknown;
+}): string[] {
+  const uiLink = (manifest: unknown): unknown => {
+    const pear = (manifest as { pear?: { assets?: { ui?: { link?: unknown } } } } | null)?.pear;
+    return pear?.assets?.ui?.link;
+  };
+  const out: string[] = [];
+  const staged = uiLink(o.pearElectron);
+  if (staged !== o.uiDrive)
+    out.push(`the staged pear-electron names the UI drive ${String(staged)}, not UI_DRIVE`);
+  const app = (o.app as { pear?: { assets?: unknown } } | null)?.pear?.assets;
+  if (app !== undefined)
+    out.push('app/package.json names assets of its own: the UI drive is UI_DRIVE');
+  return out;
 }

@@ -9,10 +9,20 @@
  *                  checked package by package against it, linux-x64 prebuilds only and no `.bin`,
  *                  plus `@sovit/core` and `@sovit/seeder` from the submodule
  *
- *   node shells/pear-v2/scripts/stage.ts --test-line <key>:<fork>:<length> [--out DIR] [--with-smoke]
+ *   node shells/pear-v2/scripts/stage.ts --test-line <key>:<fork>:<length> [--out DIR] [--with-smoke] [--clean]
+ *   node shells/pear-v2/scripts/stage.ts [--out DIR]                       (a release)
  *
- * With no `--test-line` it builds for `RELEASE_LINE`, and refuses while that is `null`. A test
- * line can never be Holepunch's key. Nothing here publishes anything.
+ * With no `--test-line` it builds a release for `RELEASE_LINE`, and refuses while an owner's step
+ * is open (`releaseRefusals`: no release line yet, or the Electron UI drive still Holepunch's). A
+ * test line can never be Holepunch's key. Nothing here publishes anything.
+ *
+ * `index.js`, `page/` (`app.js`, `legacy.js`) and `worker/` come from this checkout's root
+ * `node_modules` and its `tsc` output. A test build takes them as they are on disk (the fast path:
+ * CI runs `npm ci` and `npm run build` just before). **A release never does** (`--clean` makes a
+ * test build the same way): it exports the commit checked out (HEAD and the submodule's pinned
+ * commit, from the local object stores) into a new directory, runs `npm ci --ignore-scripts` of
+ * the root lockfile and `npm run build` there, and stages with that copy's own `stage.ts`. A
+ * checkout with local changes is refused: what is staged is a commit.
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -24,6 +34,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -38,7 +49,13 @@ import { buildRenderer } from '../../../packages/renderer/scripts/build.ts';
 import { policyOf } from '../../../packages/renderer/scripts/policy.ts';
 import { RUNTIME_OFFER } from '../../../packages/renderer/src/shell/offer.ts';
 import { contentType } from '../src/bare/page-server.ts';
-import { PEAR_V2, RELEASE_LINE, isReleaseLine, type ReleaseLine } from '../src/shared/pins.ts';
+import {
+  PEAR_V2,
+  RELEASE_LINE,
+  UI_DRIVE,
+  isReleaseLine,
+  type ReleaseLine,
+} from '../src/shared/pins.ts';
 import {
   SYSTEM_ONLY_PACKAGES,
   checkStagedHtml,
@@ -48,7 +65,9 @@ import {
   moduleClosure,
   type LockPackages,
   parseTestLine,
+  releaseRefusals,
   sri,
+  uiDriveMismatches,
 } from './stage-checks.ts';
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,6 +77,97 @@ const HOST = 'linux-x64';
 
 function fail(msg: string): never {
   throw new Error(`stage: ${msg}`);
+}
+
+/** A release's open owner's steps, all at once. */
+function assertReleasable(): void {
+  const open = releaseRefusals({ line: RELEASE_LINE, uiDrive: UI_DRIVE });
+  if (open.length > 0) fail(`a release cannot be staged yet:\n  ${open.join('\n  ')}`);
+}
+
+/** Set by `stageFromCleanCopy` for the copy's own `stage.ts`: the copy's root. */
+const CLEAN_COPY_ENV = 'NUTFLIX_STAGE_CLEAN_COPY';
+
+/** This `stage.ts` runs in a copy `stageFromCleanCopy` made: named by it, and no git checkout. */
+function inCleanCopy(): boolean {
+  const named = process.env[CLEAN_COPY_ENV];
+  if (named === undefined || named === '' || existsSync(join(REPO, '.git'))) return false;
+  try {
+    return realpathSync(named) === realpathSync(REPO);
+  } catch {
+    return false;
+  }
+}
+
+/** Runs `file args` in `cwd`; its stdout, or a failure naming `what` with its stderr's tail. */
+function run(file: string, args: readonly string[], cwd: string, what: string): string {
+  const r = spawnSync(file, [...args], {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, npm_config_ignore_scripts: 'true' },
+  });
+  if (r.status !== 0) fail(`${what} failed:\n${(r.stderr || r.stdout || '').slice(-2000)}`);
+  return r.stdout;
+}
+
+/**
+ * The release path (and `--clean`): the checked-out commit, exported into a new directory with a
+ * clean install of the root lockfile and a fresh build, staged by that copy's own `stage.ts`. So
+ * the bundles that run in the page and in Bare are built here, from the lockfile, and not taken
+ * from whatever `node_modules` and `dist/` this checkout has. `args` are the copy's arguments.
+ */
+function stageFromCleanCopy(args: readonly string[]): void {
+  const git = (a: readonly string[], what: string): string =>
+    run('git', ['-C', REPO, ...a], REPO, what).trim();
+  const changed = git(
+    ['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=untracked'],
+    'git status',
+  );
+  if (changed !== '')
+    fail(`this checkout has local changes, and what is staged is a commit:\n${changed}`);
+  const head = git(['rev-parse', '--verify', 'HEAD^{commit}'], 'git rev-parse HEAD');
+  const pinned = git(['rev-parse', '--verify', 'HEAD:vendor/nutflix-pear'], 'the submodule pin');
+  const sub = join(REPO, 'vendor', 'nutflix-pear');
+  run('git', ['-C', sub, 'cat-file', '-e', `${pinned}^{commit}`], REPO, 'the submodule (init it)');
+  const dir = mkdtempSync(join(tmpdir(), 'nutflix-v2-clean-'));
+  try {
+    // From the local object stores: `git archive` of each commit, unpacked by tar. No network.
+    const unpack = (repo: string, commit: string, to: string): void => {
+      mkdirSync(to, { recursive: true });
+      run(
+        'bash',
+        [
+          '-c',
+          'set -euo pipefail; git -C "$1" archive --format=tar "$2" | tar -x -C "$3"',
+          'unpack',
+          repo,
+          commit,
+          to,
+        ],
+        REPO,
+        `exporting ${commit}`,
+      );
+    };
+    unpack(REPO, head, dir);
+    unpack(sub, pinned, join(dir, 'vendor', 'nutflix-pear'));
+    run(
+      'npm',
+      ['ci', '--ignore-scripts', '--no-audit', '--no-fund'],
+      dir,
+      'npm ci (root lockfile)',
+    );
+    run('npm', ['run', 'build'], dir, 'npm run build');
+    const r = spawnSync(
+      process.execPath,
+      [join(dir, 'shells', 'pear-v2', 'scripts', 'stage.ts'), ...args],
+      { cwd: dir, stdio: 'inherit', env: { ...process.env, [CLEAN_COPY_ENV]: dir } },
+    );
+    if (r.status !== 0) fail('the clean copy did not stage');
+    process.stdout.write(`from a clean copy of ${head} (nutflix-pear ${pinned})\n`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Every file under `dir`, relative, with `/`. */
@@ -253,9 +363,13 @@ export async function stage(o: {
   /** Also writes `smoke.js`, CI's check on a real Bare. Test builds only. */
   readonly smoke?: boolean;
 }): Promise<StageResult> {
+  if (o.testLine === null) {
+    assertReleasable();
+    if (!inCleanCopy())
+      fail('a release is staged only from a clean copy: run scripts/stage.ts without --test-line');
+  }
   const line = o.testLine ?? RELEASE_LINE;
-  if (line === null)
-    fail('no SovTech release line of Pear v2.6.5 exists yet (RELEASE_LINE): owner step');
+  if (line === null) fail('no release line');
   if (!isReleaseLine(line)) fail('the platform line is malformed');
   if (o.smoke === true && o.testLine === null) fail('--with-smoke is for test builds only');
   if (o.testLine !== null && o.testLine.key === PEAR_V2.upstream.key)
@@ -342,6 +456,14 @@ export async function stage(o: {
   const entries = ['index.js', ...(o.smoke === true ? ['smoke.js'] : [])];
   const workerPackages = copyWorker(o.out, entries);
   copyModules(o.out);
+  const ui = uiDriveMismatches({
+    uiDrive: UI_DRIVE,
+    pearElectron: JSON.parse(
+      readFileSync(join(o.out, 'node_modules', 'pear-electron', 'package.json'), 'utf8'),
+    ),
+    app: JSON.parse(readFileSync(join(PKG, 'app', 'package.json'), 'utf8')),
+  });
+  if (ui.length > 0) fail(`the Electron UI drive is not the pinned one:\n  ${ui.join('\n  ')}`);
   assertInstalled(o.out, [
     ...workerPackages,
     ...entries.flatMap((e) => importsOf(readFileSync(join(o.out, e), 'utf8')).packages),
@@ -368,19 +490,29 @@ function arg(name: string): string | undefined {
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const rawLine = arg('--test-line');
   const out = resolve(arg('--out') ?? join(PKG, 'out', 'app'));
-  stage({
-    out,
-    testLine: rawLine === undefined ? null : parseTestLine(rawLine),
-    smoke: process.argv.includes('--with-smoke'),
-  }).then(
-    (r) => {
-      process.stdout.write(
-        `staged ${relative(process.cwd(), r.out)}: ${String(r.pageFiles.length)} page files, tree sha256 ${r.tree}\n`,
-      );
-    },
-    (e: unknown) => {
-      process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
-      process.exitCode = 1;
-    },
-  );
+  const smoke = process.argv.includes('--with-smoke');
+  const done = (e: unknown): void => {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+    process.exitCode = 1;
+  };
+  try {
+    const testLine = rawLine === undefined ? null : parseTestLine(rawLine);
+    if (testLine === null) assertReleasable();
+    if ((testLine === null || process.argv.includes('--clean')) && !inCleanCopy()) {
+      stageFromCleanCopy([
+        '--out',
+        out,
+        ...(rawLine === undefined ? [] : ['--test-line', rawLine]),
+        ...(smoke ? ['--with-smoke'] : []),
+      ]);
+    } else {
+      stage({ out, testLine, smoke }).then((r) => {
+        process.stdout.write(
+          `staged ${relative(process.cwd(), r.out)}: ${String(r.pageFiles.length)} page files, tree sha256 ${r.tree}\n`,
+        );
+      }, done);
+    }
+  } catch (e) {
+    done(e);
+  }
 }

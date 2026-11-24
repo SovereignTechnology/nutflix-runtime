@@ -215,7 +215,9 @@ async function fetchEverything(
   segs: bigint,
   storage: string | null,
 ): Promise<Fetched> {
-  const dht = new DHT({ bootstrap });
+  // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+  // connects two peers only when they bind alike (packages/worker/src/net/no-local-addresses.ts).
+  const dht = new DHT({ bootstrap, host: '127.0.0.1' });
   try {
     await dht.fullyBootstrapped();
     const dialed = await dialNfx(dht, Buffer.from(peer, 'hex'), {

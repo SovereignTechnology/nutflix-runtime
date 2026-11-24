@@ -81,7 +81,9 @@ describe('seeding, on a loopback testnet', () => {
   });
 
   async function dhtNode(): Promise<DHT> {
-    const n = new DHT({ bootstrap: testnet.bootstrap });
+    // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+    // connects two peers only when they bind alike (`src/net/no-local-addresses.ts`).
+    const n = new DHT({ bootstrap: testnet.bootstrap, host: '127.0.0.1' });
     cleanups.push(() => n.destroy());
     await n.fullyBootstrapped();
     return n;

@@ -87,7 +87,9 @@ describe('private until confirmed', () => {
     v: TestNfxVideo,
     source: NfxFileSource = memorySource(v.files, v.video),
   ): Promise<NfxHyperdhtEndpointWire> {
-    const dht = new DHT({ bootstrap: testnet.bootstrap });
+    // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+    // connects two peers only when they bind alike (`src/net/no-local-addresses.ts`).
+    const dht = new DHT({ bootstrap: testnet.bootstrap, host: '127.0.0.1' });
     cleanups.push(() => dht.destroy());
     await dht.fullyBootstrapped();
     const keyPair = DHT.keyPair();

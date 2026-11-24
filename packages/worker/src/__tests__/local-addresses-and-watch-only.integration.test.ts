@@ -2,10 +2,12 @@
  * Two things a viewer's machine must not do, on a local hyperdht testnet against nutflix-pear's own
  * NFX-12 code:
  *
- *   - tell a peer its local addresses: off the loopback test network, the worker dials with
- *     `localConnection: false` and listens with `shareLocalAddress: false`
- *     (`../net/no-local-addresses.ts`); on it, it keeps hyperdht's defaults, so peers on one host
- *     still meet;
+ *   - tell a peer its local addresses: unless its node is bound to 127.0.0.1, the worker dials
+ *     with `localConnection: false` and listens with `shareLocalAddress: false`
+ *     (`../net/no-local-addresses.ts`). On a loopback test network the node is bound there and
+ *     keeps hyperdht's defaults, so peers on one host still meet. The test switch only forces
+ *     hiding on. The same two options can be set on a whole node (`hideLocalAddressesOn`, for
+ *     shape (a)'s updater, whose Hyperswarm takes one);
  *   - serve anything when it is watch only (`InitArgs.watchOnly`): no listener opens at `init`
  *     even with a served video on disk, and the methods that would start one are refused.
  */
@@ -16,10 +18,16 @@ import { hyperdhtEndpoint, listenNfx } from '@sovit/seeder';
 import DHT from 'hyperdht';
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
+import Hyperswarm from 'hyperswarm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
-import { isLoopbackTestnet, withoutLocalAddresses } from '../net/no-local-addresses.js';
+import {
+  hideLocalAddressesOn,
+  hidesLocalAddresses,
+  isLoopbackTestnet,
+  withoutLocalAddresses,
+} from '../net/no-local-addresses.js';
 import type { NfxHyperdhtEndpointWire, WorkerMethod } from '../protocol.js';
 import { startWorker, tempDir } from './helpers/harness.js';
 import { memorySource, testNfxVideo, vectorVideo } from './helpers/nfx-video.js';
@@ -93,6 +101,87 @@ describe('withoutLocalAddresses', () => {
   ])('treats %j as a loopback test network: %s', (b, want) => {
     expect(isLoopbackTestnet(b)).toBe(want);
   });
+
+  it.each([
+    [false, false, true],
+    [false, true, true],
+    [true, false, false],
+    [true, true, true],
+  ])('a node bound to loopback only: %s, forced: %s, hides: %s', (loopbackOnly, force, want) => {
+    expect(hidesLocalAddresses({ loopbackOnly, force })).toBe(want);
+  });
+});
+
+describe('hideLocalAddressesOn', () => {
+  it('sets the two options on the node itself, last, in both createServer forms', () => {
+    const seen: unknown[] = [];
+    const node = {
+      connect: (_k: Uint8Array, opts?: unknown) => {
+        seen.push(opts);
+        return {} as never;
+      },
+      createServer: (opts: unknown, cb?: unknown) => {
+        seen.push([opts, cb]);
+        return {} as never;
+      },
+    };
+    const onconnection = (): void => undefined;
+    const firewall = (): boolean => false;
+    expect(hideLocalAddressesOn(node)).toBe(node);
+    node.connect(new Uint8Array(32), { localConnection: true });
+    node.connect(new Uint8Array(32));
+    node.createServer({ firewall, shareLocalAddress: true }, onconnection);
+    (node.createServer as (cb: unknown) => unknown)(onconnection);
+    expect(seen).toEqual([
+      { localConnection: false },
+      { localConnection: false },
+      [{ firewall, shareLocalAddress: false }, onconnection],
+      [{ shareLocalAddress: false }, onconnection],
+    ]);
+  });
+
+  it('a Hyperswarm given such a node dials and listens with both off', async () => {
+    const testnet = await createTestnet(3);
+    const calls: { kind: 'connect' | 'server'; opts: unknown }[] = [];
+    const proto = DHT.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+    const realConnect = proto['connect'];
+    const realServer = proto['createServer'];
+    if (realConnect === undefined || realServer === undefined)
+      throw new Error('no hyperdht methods');
+    let mine: DHT | null = null;
+    vi.spyOn(DHT.prototype, 'connect').mockImplementation(function (this: DHT, key, opts) {
+      if (this === mine) calls.push({ kind: 'connect', opts });
+      return Reflect.apply(realConnect, this, [key, opts]) as ReturnType<DHT['connect']>;
+    });
+    vi.spyOn(DHT.prototype, 'createServer').mockImplementation(function (this: DHT, opts, cb) {
+      if (this === mine) calls.push({ kind: 'server', opts });
+      return Reflect.apply(realServer, this, [opts, cb]) as ReturnType<DHT['createServer']>;
+    });
+    const topic = randomBytes(32);
+    const server = new Hyperswarm({ bootstrap: testnet.bootstrap });
+    const client = new Hyperswarm({
+      dht: hideLocalAddressesOn((mine = new DHT({ bootstrap: testnet.bootstrap }))),
+    });
+    try {
+      await server.join(topic, { server: true, client: false }).flushed();
+      client.join(topic, { server: false, client: true });
+      const end = Date.now() + 30_000;
+      while (!calls.some((c) => c.kind === 'connect') && Date.now() < end)
+        await new Promise((r) => setTimeout(r, 50));
+      // The swarm's own server, made in its constructor, and its dial to the announced peer.
+      expect(calls.some((c) => c.kind === 'server')).toBe(true);
+      expect(calls.some((c) => c.kind === 'connect')).toBe(true);
+      for (const c of calls)
+        expect(c.opts).toMatchObject(
+          c.kind === 'connect' ? { localConnection: false } : { shareLocalAddress: false },
+        );
+    } finally {
+      vi.restoreAllMocks();
+      await client.destroy();
+      await server.destroy();
+      await testnet.destroy();
+    }
+  });
 });
 
 describe('the worker on a testnet', () => {
@@ -109,7 +198,9 @@ describe('the worker on a testnet', () => {
   });
 
   async function node(): Promise<DHT> {
-    const n = new DHT({ bootstrap: testnet.bootstrap });
+    // Bound to 127.0.0.1, as the worker's node is on a loopback testnet: on one host, hyperdht
+    // connects two peers only when they bind alike (`src/net/no-local-addresses.ts`).
+    const n = new DHT({ bootstrap: testnet.bootstrap, host: '127.0.0.1' });
     cleanups.push(() => n.destroy());
     await n.fullyBootstrapped();
     return n;
@@ -160,6 +251,10 @@ describe('the worker on a testnet', () => {
       peers: [await pearSeeder(memorySource(v.files, v.video), ns)],
     });
     const firstDht = first.host.internals?.dht.dht;
+    // Bound to 127.0.0.1, and only then hyperdht's defaults.
+    expect(first.host.internals?.dht.loopbackOnly).toBe(true);
+    expect(firstDht?.address()?.host).toBe('127.0.0.1');
+    expect(first.host.internals?.hidesLocalAddresses).toBe(false);
     const firstCalls = calls.filter((c) => c.self === firstDht);
     expect(firstCalls.map((c) => c.kind).sort()).toEqual(['connect', 'server']);
     for (const c of firstCalls) {
@@ -183,6 +278,7 @@ describe('the worker on a testnet', () => {
       .catch(() => undefined);
     const secondDht = second.host.internals?.dht.dht;
     expect(secondDht).toBeTruthy();
+    expect(second.host.internals?.hidesLocalAddresses).toBe(true);
     const mine = calls.filter((c) => c.self === secondDht);
     expect(mine.some((c) => c.kind === 'server')).toBe(true);
     expect(mine.some((c) => c.kind === 'connect')).toBe(true);
@@ -193,6 +289,28 @@ describe('the worker on a testnet', () => {
     // The test's own nodes were seen too, with hyperdht's defaults: the spies see every call.
     expect(calls.some((c) => c.self !== firstDht && c.self !== secondDht)).toBe(true);
     expect([...first.fatal, ...second.fatal]).toEqual([]);
+  });
+
+  it('a node not bound to 127.0.0.1 hides, whatever the bootstrap or the test switch says', async () => {
+    const d = await tempDir('nf-bind-');
+    cleanups.push(() => d.rm());
+    const cases: { bootstrap: { host: string; port: number }[] | null; force?: true }[] = [
+      { bootstrap: null },
+      { bootstrap: [{ host: '127.0.0.2', port: 49737 }] },
+      { bootstrap: [...testnet.bootstrap, { host: '10.0.0.1', port: 49737 }] },
+      // A JavaScript caller's `false` is not "share them": the switch only forces hiding on.
+      { bootstrap: null, force: false as unknown as true },
+    ];
+    for (const c of cases) {
+      const w = startWorker(c.force === undefined ? {} : { hideLocalAddresses: c.force });
+      cleanups.push(() => w.close());
+      // `init` starts no node (on demand): nothing here sends a packet.
+      await w.client.request('init', { v: 1, storage: d.dir, bootstrap: c.bootstrap });
+      expect(w.host.internals?.dht.state).toBe('idle');
+      expect(w.host.internals?.dht.loopbackOnly).toBe(false);
+      expect(w.host.internals?.hidesLocalAddresses).toBe(true);
+      await w.close();
+    }
   });
 
   it('watch only: serves nothing at init with a served video on disk, and refuses to seed', async () => {
