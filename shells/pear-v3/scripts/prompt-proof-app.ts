@@ -47,6 +47,7 @@ import {
 } from '../src/main/account-menu.ts';
 import {
   PROMPT_PARTITION,
+  PROMPT_URL,
   PromptHost,
   installPromptSession,
   openPrompt,
@@ -101,8 +102,12 @@ const fill = (wc: WebContents, id: string, value: string): Promise<void> =>
     })()`,
   );
 
+/**
+ * The click runs after this call has answered: a click that closes the window would otherwise
+ * dispose of the frame while the call is still waiting for its result.
+ */
 const click = (wc: WebContents, id: string): Promise<void> =>
-  inPage(wc, `document.getElementById(${JSON.stringify(id)}).click()`);
+  inPage(wc, `void setTimeout(() => document.getElementById(${JSON.stringify(id)}).click(), 0)`);
 
 const POLICY_PROBE = `(async () => {
   const out = {};
@@ -173,6 +178,10 @@ async function run(): Promise<void> {
 
   const form = async (): Promise<WebContents> => {
     const wc = await until('the prompt window', () => current);
+    // Not into a page still loading: its first frame is replaced, and a call into it is lost.
+    await until('the page to load', () =>
+      wc.getURL() === PROMPT_URL && !wc.isLoading() ? true : null,
+    );
     await until('the form', async () =>
       (await inPage<boolean>(wc, `document.getElementById('prompt-submit') !== null`))
         ? true
@@ -267,7 +276,7 @@ async function run(): Promise<void> {
   const win = BrowserWindow.fromWebContents(wc);
   check(win?.isModal() === true, 'the window is modal');
   check(win?.getParentWindow()?.id === parent.id, 'it belongs to its parent');
-  check(wc.getURL() === 'app://prompt/prompt.html', 'it shows its one file');
+  check(wc.getURL() === PROMPT_URL, 'it shows its one file');
 
   const world = JSON.parse(await inPage<string>(wc, WORLD_PROBE)) as Record<string, unknown>;
   for (const k of ['require', 'process', 'module', 'Buffer', 'ipcRenderer', 'electron'])
