@@ -1,0 +1,151 @@
+# Seed and publish, for real (ADR 0001 decisions 3, 7 and 8): the built worker under the real Bare
+# runtime with the system's ffmpeg, behind the shell's real gate, the built renderer in a real
+# Chrome, a stock strfry and a hyperdht testnet. packages/renderer/e2e/publish/ says what it proves.
+#
+# HARD CONSTRAINT, as in ci.yml: a runner is never a peer of the public network. The proofs run in
+# a network namespace that has ONE interface, loopback, and no route, as an unprivileged user with
+# no_new_privs. That confines an honest mistake in a test or the app; it is not a boundary against
+# hostile code, which on a runner could still use whatever the kernel exposes to that user. The job
+# checks the namespace before and after.
+#
+# Supply chain as ci.yml: actions pinned by commit SHA, `npm ci --ignore-scripts`, no secrets, a
+# read-only token. Downloads (build tools, before the isolated step): apt packages, npm, and on a
+# cache miss nfx's source at the pinned commit, for strfry at the commit nfx pins.
+name: seed-publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seed-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: ''
+
+jobs:
+  seed-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: the lock's pins
+        id: lock
+        run: bash packages/renderer/scripts/nfx-lib.sh show | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: ffmpeg, the namespace tools, strfry's build libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg iproute2 util-linux \
+            g++ make pkg-config libtool libssl-dev zlib1g-dev liblmdb-dev libflatbuffers-dev \
+            libsecp256k1-dev libzstd-dev \
+            xvfb xauth libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      # `--ignore-scripts` skipped this. It fetches the release that the package's checksums pin.
+      - name: the Electron binary, for the prompt window's proof
+        run: node node_modules/electron/install.js
+      - name: Chrome's system libraries, and a Chrome that plays H.264
+        run: |
+          set -euo pipefail
+          npx --no-install playwright-core install-deps chromium
+          command -v google-chrome
+          google-chrome --version
+          echo "CHROMIUM=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: allow Chrome's user-namespace sandbox on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: strfry, from the webrtc job's cache
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/nutflix-netns
+          key: netns-tools-${{ runner.os }}-${{ steps.lock.outputs.NFX_COMMIT }}-${{ steps.lock.outputs.RUST_VERSION }}-v1
+      - name: strfry, built at the commit nfx pins (a cache miss)
+        if: steps.tools.outputs.cache-hit != 'true'
+        env:
+          NFX_COMMIT: ${{ steps.lock.outputs.NFX_COMMIT }}
+          NFX_SRC_SHA256: ${{ steps.lock.outputs.NFX_SRC_SHA256 }}
+        run: |
+          set -euo pipefail
+          curl -sSfL --proto '=https' --tlsv1.2 --retry 8 --retry-all-errors -o "$RUNNER_TEMP/nfx.tar.gz" \
+            "https://github.com/SovereignTechnology/nfx/archive/${NFX_COMMIT}.tar.gz"
+          echo "${NFX_SRC_SHA256}  $RUNNER_TEMP/nfx.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/nfx-src"
+          tar -xzf "$RUNNER_TEMP/nfx.tar.gz" -C "$RUNNER_TEMP/nfx-src" --strip-components=1 --no-same-owner
+          d="$HOME/.cache/nutflix-netns"
+          mkdir -p "$d"
+          bash "$RUNNER_TEMP/nfx-src/web/player/e2e-strfry.sh" "$RUNNER_TEMP/strfry" > "$RUNNER_TEMP/strfry.env"
+          . "$RUNNER_TEMP/strfry.env"
+          install -m 0755 "$STRFRY" "$d/strfry"
+          install -m 0644 "$STRFRY_CONF" "$d/strfry.conf"
+      - name: a network namespace with loopback and nothing else
+        run: |
+          set -euo pipefail
+          sudo ip netns add nfx-publish
+          sudo ip netns exec nfx-publish ip link set lo up
+          links=$(sudo ip netns exec nfx-publish ip -o link show | awk -F': ' '{print $2}' | tr '\n' ' ')
+          echo "interfaces: $links"
+          test "$links" = "lo "
+          routes=$(sudo ip netns exec nfx-publish ip route show | wc -l)
+          test "$routes" = "0"
+          if sudo ip netns exec nfx-publish bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+            echo "this namespace reached the outside"; exit 1
+          fi
+          echo "no interface but loopback, no route, and the outside is unreachable"
+      - name: the proofs, inside it
+        run: |
+          set -euo pipefail
+          d="$HOME/.cache/nutflix-netns"
+          sudo ip netns exec nfx-publish setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
+            --no-new-privs \
+            env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
+              STRFRY="$d/strfry" STRFRY_CONF="$d/strfry.conf" CHROMIUM="$CHROMIUM" \
+              npm run test:publish -w packages/renderer 2>&1 | tee "$RUNNER_TEMP/publish.log"
+          # Every proof reported its numbers, or the job fails. The reporter's colours come off first.
+          sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/publish.log" | grep '^PROOF ' > "$RUNNER_TEMP/proofs"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/proofs"
+          # Each proof by name, once: a count alone would accept a repeated line.
+          want='bare-disk dialNfx idle-launch nip46 passphrase played published re-seeded relay relay-origin unconfirmed-draft'
+          got=$(awk '{print $2}' "$RUNNER_TEMP/proofs" | LC_ALL=C sort | tr '\n' ' ')
+          test "$got" = "$(printf '%s\n' $want | LC_ALL=C sort | tr '\n' ' ')"
+      # The real window, in real Electron under Xvfb, driven by a script: it proves the window's
+      # confinement and its sender check. It is not a person using it, and it opens no native dialog.
+      - name: main's prompt window, in real Electron, inside it
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          sudo ip netns exec nfx-publish setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
+            --no-new-privs \
+            env -i HOME="$HOME" PATH="$PATH" NODE_OPTIONS= CI=true \
+              xvfb-run -a node shells/pear-v3/scripts/prompt-proof.ts 2>&1 | tee "$RUNNER_TEMP/prompt.log"
+          # The verdict is what the log says, not the exit status alone: no failure line, and
+          # exactly the one expected proof line, with every field true.
+          node shells/pear-v3/scripts/prompt-proof-check.ts "$RUNNER_TEMP/prompt.log" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: it still has nothing but loopback
+        if: always()
+        run: |
+          set -euo pipefail
+          links=$(sudo ip netns exec nfx-publish ip -o link show | awk -F': ' '{print $2}' | tr '\n' ' ')
+          echo "interfaces: $links"
+          test "$links" = "lo "
+          sudo ip netns exec nfx-publish ip -s link show lo
+      - name: take the namespace down
+        if: always()
+        run: sudo ip netns delete nfx-publish

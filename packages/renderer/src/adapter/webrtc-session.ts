@@ -72,6 +72,11 @@ export interface WebRtcNfxSessionOptions {
   readonly openProgressive: () => Promise<ProgressivePlay>;
   /** Told once, when the session closes. */
   readonly onClose?: ((s: WebRtcNfxSession) => void) | undefined;
+  /**
+   * The player checked a file against the hash list (`verified`): the sha256 and this play's
+   * worker session. Seeding uses it to know which appended bytes may be handed to the worker.
+   */
+  readonly onVerified?: ((sha256: string, sid: string) => void) | undefined;
 }
 
 interface Attachment {
@@ -294,6 +299,7 @@ export class WebRtcNfxSession implements NfxPlaySession {
       this.#changed();
       return;
     }
+    if (e.type === 'verified') this.#o.onVerified?.(e.sha256, this.#sid);
     if (e.type === 'error') {
       // The browser refusing to autoplay is not a failure of the player.
       if (!e.message.startsWith('play: ')) void this.#fallback(slot);

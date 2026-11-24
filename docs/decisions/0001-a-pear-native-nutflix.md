@@ -84,6 +84,47 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   §7). The app runs there only if the user chooses to, after a warning (amendment, item 2).
 - The rules nutflix-pear's own Electron main enforces (fuses, a header CSP) hold in shape (a) only.
   Shape (b) runs on Holepunch's Electron.
+- **Known limit: with "seed what you watch" on, a compromised page can choose what gets seeded.**
+  The worker checks that the video is free, that its manifest verifies, and that the same window
+  has it open in a play. It cannot tell whether the person actually watched it, because the only
+  witness is the page. So a compromised page could open a play of a video the user never saw and
+  have this computer store and serve it, sharing the user's IP address with whoever fetches it. A
+  "served enough bytes" check would not help: the page could fake it. The limits stay (the switch is
+  off by default and takes a native confirmation, 16 GiB, 20 new videos and a byte budget an hour),
+  and they bound the damage without removing it. The hourly counters live in memory, so they start
+  again when the app restarts. Whether to accept this or to change how the feature works is the
+  maintainer's decision.
+- **Known limit: fullscreen hides the real Account menu.** Real fullscreen stays, because a video app
+  needs it, so a compromised page can draw a fake menu while it lasts. Observed once, in the Electron
+  proof on Linux under Xvfb with no window manager: a real click took the page to fullscreen and
+  Electron reported the menu bar hidden and the window fullscreen; a real Esc left fullscreen and
+  Electron reported the menu bar visible again. That is Electron's own report, not a picture of the
+  screen. Windows and macOS were not measured.
+- **Without Chromium's sandbox, no sealed key.** A key on disk needs the renderer to be confined, the
+  same reason shape (b) may not hold one. If the user chose to run without the sandbox (amendment,
+  item 2), the local key path is refused for that run and only a NIP-46 bunker can sign. A key
+  already on this computer stays on disk, unread and untouched, and works again on the next launch
+  with the sandbox on. The app says why, in Settings and in the Account menu's answer.
+- **Secret entry opens only from the native Account menu.** A compromised page can draw a box that
+  looks like the real prompt, so no window has a method that opens it. The rule a user can hold on
+  to: Nutflix asks for a passphrase or bunker link only after you chose it from the Account menu.
+  The page can still draw a fake box, and it cannot open the real one. **There is no Account menu in
+  fullscreen**, and a page can enter fullscreen on the user's click, as a video player does, then
+  draw a fake menu over the whole screen. So the rule is: press Esc to leave fullscreen first, and
+  never enter a key or bunker link while in fullscreen.
+- **Known limit: an encode can outlive a crashed worker off Linux.** On Linux the kernel kills
+  ffmpeg with its parent (`setpriv --pdeathsig`). On macOS and Windows, or on Linux without
+  `setpriv`, ffmpeg is killed on a normal exit and on cancel, but not after a crash of the worker.
+- **Known limit: on Windows, a power cut just after publishing can lose the video.** The signed
+  record is written and synced before the signed event is returned. On Linux and macOS its directory
+  is synced too. On Windows that step is skipped and the rename is not written through, so a power
+  cut in the seconds after publishing can bring back the file from before the signature. The video
+  then reads as an unsigned draft, the next start deletes its bytes, and its manifest stays on the
+  relays pointing at nothing.
+- **Known limit: free space is read once, per job.** Studio reads the real free space
+  (`statfs`) and holds a job to a third of it, because the encode, the packaged files and the store's
+  copy are on disk at once. Anything else filling the disk during the job can still end it with an
+  error; it then cleans up after itself.
 
 ## Amendment, 2026-11-22
 

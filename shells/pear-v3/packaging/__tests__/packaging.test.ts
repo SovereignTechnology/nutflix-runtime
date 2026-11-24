@@ -336,8 +336,7 @@ describe('the layout check', () => {
 });
 
 describe("the smoke test's reading of the app", () => {
-  const line =
-    'NUTFLIX_SHELL_READY {"shell":"pear-v3","version":"0.1.0","window":"loaded","renderer":"mounted","worker":"status-ok","sandbox":"on","pipe":"round-trip","rendererSandbox":"enforced","webrtcPolicy":"default_public_interface_only","player":"available","updates":"off"}';
+  const line = `NUTFLIX_SHELL_READY {"shell":"pear-v3","version":"0.1.0","window":"loaded","renderer":"mounted","worker":"status-ok","sandbox":"on","pipe":"round-trip","rendererSandbox":"enforced","webrtcPolicy":"default_public_interface_only","player":"available","updates":"off","accountMenu":"present","menuBar":"${process.platform === 'darwin' ? 'system' : 'visible'}"}`;
 
   it('accepts the ready line and nothing weaker', () => {
     const f = parseReadyLine(line);
@@ -351,8 +350,12 @@ describe("the smoke test's reading of the app", () => {
       'rendererSandbox',
       'webrtcPolicy',
       'updates',
+      'accountMenu',
+      'menuBar',
     ])
       expect(readyProblems({ ...f, [k]: 'no' }).join()).toContain(k);
+    expect(readyProblems({ ...f, accountMenu: 'missing' }).join()).toContain('accountMenu');
+    expect(readyProblems({ ...f, menuBar: 'hidden' }).join()).toContain('menuBar');
     expect(readyProblems({ ...f, webrtcPolicy: 'default' }).join()).toContain('webrtcPolicy');
     expect(readyProblems({ ...f, player: 'unavailable' }).join()).toContain('player');
     expect(readyProblems({ ...f, sandbox: 'off' }).join()).toContain('sandbox');

@@ -10,7 +10,9 @@
  * - **Settings:** Appearance (without "Load images from any website": only signed images are
  *   shown), Playback, Relays and NFX (no switch, since NFX is always on; no iroh relays; the
  *   WebRTC switch with its IP-address disclosure, and the signaling relays).
- * - **No sign-in** in the header: this version signs nothing (ADR 0001 decision 8 comes later).
+ * - **No sign-in** in the header, and no `@sovit/ui` Studio or Seeding section (priced uploads and
+ *   wallet wording): the signer, the seeding switch and publishing are this app's own section of
+ *   Settings (`../seeding/panel.ts`).
  * - **No source link** yet: the AGPL §13 offer belongs to the shell that serves the renderer.
  */
 import type { ShellOffer } from '@sovit/ui';

@@ -28,7 +28,8 @@ export function createMainWindow(
     show: false,
     title: 'Nutflix',
     backgroundColor: '#0f0f0f',
-    autoHideMenuBar: true,
+    // The Account menu is the only way to secret entry (`account-menu.ts`): it stays on screen.
+    autoHideMenuBar: false,
     webPreferences: {
       preload,
       contextIsolation: true,

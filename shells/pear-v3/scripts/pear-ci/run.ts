@@ -524,7 +524,7 @@ export async function run(o: Options): Promise<number> {
         l.records.filter((x: PearRecord) => x.tag === 'file').map((x) => field(x, 'key') ?? ''),
       );
       const missing = files.filter((f) => !keys.has(`/${f}`));
-      if (l.code !== 0 || missing.length > 0)
+      if (l.code !== 0 || l.timedOut || missing.length > 0)
         throw new Error(
           `the drive does not list the deployment: ${String(missing.length)} of ${String(files.length)} files missing, e.g. ${missing.slice(0, 3).join(', ')}; ${tail(l.out, 4)}`,
         );
