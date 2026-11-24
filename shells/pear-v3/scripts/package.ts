@@ -32,7 +32,7 @@ import { pinnedRuntime } from '../packaging/maker-appimage.ts';
 import { writeAppxManifest } from '../packaging/msix-manifest.ts';
 import { PKG_DIR, REPO_ROOT } from '../packaging/paths.ts';
 import { stageApp } from '../packaging/stage.ts';
-import { assertStagedRoot, releaseRoot, testRootFromText } from '../packaging/update-root.ts';
+import { assertStagedRoot, releaseRoot, throwawayRootFromText } from '../packaging/update-root.ts';
 import { parseCli, type CliOptions } from './cli-options.ts';
 
 export interface Artifact {
@@ -45,17 +45,20 @@ export async function run(o: CliOptions): Promise<Artifact[]> {
   const make = o.command === 'make' || (buildLike && o.platform !== 'darwin');
   const updateRoot =
     o.command === 'test-build'
-      ? testRootFromText(readFileSync(o.updateRootFile ?? '', 'utf8'))
+      ? throwawayRootFromText(readFileSync(o.updateRootFile ?? '', 'utf8'))
       : releaseRoot();
   // Fail before minutes of packaging when the AppImage maker would refuse anyway.
   if (make && o.platform === 'linux') pinnedRuntime(o.appImageRuntimeDir, o.arch);
   const stageDir = join(o.out, `stage-${o.platform}-${o.arch}`);
+  const sha = process.env['GITHUB_SHA'];
+  const ciCommit = sha !== undefined && /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
   const staged = await stageApp({
     out: stageDir,
     platform: o.platform,
     arch: o.arch,
     updateRoot,
     ...(o.appVersion === undefined ? {} : { version: o.appVersion }),
+    ...(ciCommit === undefined ? {} : { commit: ciCommit }),
   });
   // What the bundle holds, read back: a release must carry the production root and nothing else.
   assertStagedRoot(stageDir, updateRoot, o.command === 'test-build' ? 'test' : 'release');

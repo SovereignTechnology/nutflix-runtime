@@ -60,6 +60,11 @@ export interface StageOptions {
   readonly updateRoot: TrustRoot;
   /** Instead of this package's version: the test build's. */
   readonly version?: string;
+  /**
+   * The commit CI built this from, written into the package's `package.json`. A label, not an
+   * authority: `scripts/release` compares it with what GitHub says the run built.
+   */
+  readonly commit?: string;
 }
 
 export interface StageReport {
@@ -276,6 +281,7 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
         name: APP.name,
         productName: APP.productName,
         version: o.version ?? own.version,
+        ...(o.commit === undefined ? {} : { commit: o.commit }),
         description: APP.description,
         license: APP.license,
         author: APP.author,

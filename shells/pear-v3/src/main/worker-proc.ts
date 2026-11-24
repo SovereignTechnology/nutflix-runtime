@@ -57,8 +57,8 @@ export function startWorker(d: StartWorkerDeps): WorkerHandle {
   sidecar.on('exit', (code) => {
     end('worker-exit', { code: code ?? -1 });
   });
-  sidecar.on('error', () => {
-    end('worker-error');
+  sidecar.on('error', (e: Error & { code?: unknown }) => {
+    end('worker-error', { code: typeof e.code === 'string' ? e.code : e.name });
   });
   sidecar.on('close', () => {
     end('worker-closed');

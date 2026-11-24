@@ -5,3 +5,5 @@ vendor
 spikes
 package-lock.json
 *.md
+# Byte-identical to nutflix-pear's copy: both repositories pin its sha256.
+shells/pear-v3/scripts/release/__tests__/fixtures/nutflix-runtime-notice.vector.json
