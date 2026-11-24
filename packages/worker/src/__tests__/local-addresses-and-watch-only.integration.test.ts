@@ -44,7 +44,10 @@ const namespaceOf = (video: string): string => video.slice(0, video.lastIndexOf(
  * A stand-in node bound to `host` (`null`: not yet; `'throws'`: its `address()` throws), recording
  * what each call was given.
  */
-function fakeNode(host: string | null, bindTo?: string): {
+function fakeNode(
+  host: string | null,
+  bindTo?: string,
+): {
   node: BindableNode;
   seen: unknown[];
   listened: KeyPair[];
