@@ -114,14 +114,16 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
     return to;
   };
   const signed = copy('signed');
-  run('codesign', ['--force', '--deep', '--sign', '-', signed]);
+  run('codesign', ['--force', '--deep', '--options', 'runtime', '--sign', '-', signed]);
   run('codesign', ['--verify', '--deep', '--strict', signed]);
   const after = await digestOf(signed);
+  // An ad-hoc signature with the same options is the same bytes: `--options runtime` (the
+  // hardened runtime a Developer ID signature uses) makes this one a different signature.
   if (after === digest) throw new Error('re-signing changed nothing: this proves nothing');
   await compareSigned(t, app, signed);
 
   const script = copy('script');
-  run('codesign', ['--force', '--deep', '--sign', '-', script]);
+  run('codesign', ['--force', '--deep', '--options', 'runtime', '--sign', '-', script]);
   appendFileSync(join(script, 'Contents', 'Resources', 'app', 'main', 'main.cjs'), '\n// changed');
   await expectRefusal(
     'a signed bundle with a script changed',
@@ -130,7 +132,7 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
   );
 
   const code = copy('code');
-  run('codesign', ['--force', '--deep', '--sign', '-', code]);
+  run('codesign', ['--force', '--deep', '--options', 'runtime', '--sign', '-', code]);
   const exe = join(code, 'Contents', 'MacOS', 'Nutflix');
   const bytes = readFileSync(exe);
   // A byte of the program itself, past the headers and far from the signature.
@@ -145,7 +147,7 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
   );
 
   const extra = copy('extra');
-  run('codesign', ['--force', '--deep', '--sign', '-', extra]);
+  run('codesign', ['--force', '--deep', '--options', 'runtime', '--sign', '-', extra]);
   writeFileSync(join(extra, 'Contents', 'Resources', 'added.js'), 'added');
   await expectRefusal(
     'a signed bundle with a file added',

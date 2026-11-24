@@ -21,6 +21,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -104,15 +105,14 @@ export async function unpackPackage(
   rmSync(inner, { recursive: true, force: true });
   extractZip(zip, inner);
   try {
-    const input = join(inner, inputName(t));
-    if (!existsSync(input)) refuse(`${zip} holds no ${inputName(t)}`);
+    // An artifact keeps the folders of the paths it was uploaded from: find the one file.
+    const input = onlyFile(inner, inputName(t), zip);
     const app = join(dir, t.file);
     if (t.platform === 'darwin') {
       extractZip(input, dir);
       if (!existsSync(join(app, 'Contents', 'MacOS', APP.productName)))
         refuse(`${input} holds no ${t.file}/Contents/MacOS/${APP.productName}`);
-      const recorded = join(inner, bundleDigestName(t));
-      if (!existsSync(recorded)) refuse(`${zip} holds no ${bundleDigestName(t)}`);
+      const recorded = onlyFile(inner, bundleDigestName(t), zip);
       const want = readFileSync(recorded, 'utf8').trim();
       if (!/^[0-9a-f]{64}$/.test(want)) refuse(`${bundleDigestName(t)} is not a digest`);
       const got = await digestOf(app);
@@ -138,6 +138,22 @@ export async function unpackPackage(
   } finally {
     rmSync(inner, { recursive: true, force: true });
   }
+}
+
+/** The one file called `name` anywhere under `dir`; none, or two, is refused. */
+function onlyFile(dir: string, name: string, what: string): string {
+  const found: string[] = [];
+  const walk = (d: string): void => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name === name) found.push(p);
+    }
+  };
+  walk(dir);
+  if (found.length !== 1)
+    return refuse(`${what} holds ${String(found.length)} files named ${name}, not one`);
+  return found[0] ?? '';
 }
 
 function oneVersion(packages: readonly UnpackedPackage[]): string {

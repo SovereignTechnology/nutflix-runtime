@@ -144,6 +144,24 @@ describe('the zip reader', () => {
     refused(() => readZipIndex(zipFile(items)), re);
   });
 
+  it('reads a zip64 whose end record puts 0xffff in the disk numbers, as MakeAppx writes it', () => {
+    const z = zipOf([{ name: 'a', data: 'x' }], { zip64: true });
+    const end = z.length - 22;
+    z.writeUInt16LE(0xffff, end + 4);
+    z.writeUInt16LE(0xffff, end + 6);
+    const f = join(tmp(), 'a.zip');
+    writeFileSync(f, z);
+    expect(readZipFile(f, 'a').toString()).toBe('x');
+  });
+
+  it('refuses a zip on more than one disk', () => {
+    const z = zipOf([{ name: 'a', data: 'x' }]);
+    z.writeUInt16LE(1, z.length - 22 + 4);
+    const f = join(tmp(), 'a.zip');
+    writeFileSync(f, z);
+    refused(() => readZipIndex(f), /multi-disk/);
+  });
+
   it('refuses a wrong checksum when it reads', () => {
     refused(() => readZipFile(zipFile([{ name: 'a', data: 'x', badCrc: true }]), 'a'), /checksum/);
   });
@@ -450,12 +468,14 @@ describe('where a release comes from', () => {
 // ---- five packages from one run ----------------------------------------------------------------
 
 /** One artifact's zip: a macOS bundle in a zip with its digest, or the package itself. */
+/** An artifact zip keeps the folders it was uploaded from; the package is found wherever it is. */
 async function artifactBytes(
   t: ReleaseTarget,
   content: string,
   over: { digest?: string } = {},
 ): Promise<Buffer> {
-  if (t.platform !== 'darwin') return zipOf([{ name: inputName(t), data: `${t.name} ${content}` }]);
+  if (t.platform !== 'darwin')
+    return zipOf([{ name: `make/${t.arch}/${inputName(t)}`, data: `${t.name} ${content}` }]);
   const items: readonly ZipItem[] = [
     { name: `${t.file}/`, mode: 0o040755 },
     { name: `${t.file}/Contents/`, mode: 0o040755 },
@@ -583,6 +603,19 @@ describe('five packages from one run', () => {
       /wrong root/,
     );
     expect(seen[0]).toMatch(/Nutflix\.(AppImage|app|msix)$/);
+  });
+
+  it('refuses an artifact that holds two packages', async () => {
+    const t = target('linux-x64');
+    const two = zipOf([
+      { name: `a/${inputName(t)}`, data: 'one' },
+      { name: `b/${inputName(t)}`, data: 'two' },
+    ]);
+    const d = await writeFive({ [t.name]: two });
+    await refusedAsync(
+      unpackAll(d, 'release', join(tmp(), 'u'), rulesFor()),
+      /holds 2 files named Nutflix\.AppImage, not one/,
+    );
   });
 
   it('refuses a bundle that is not the tree the Mac runner zipped', async () => {

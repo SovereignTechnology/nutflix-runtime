@@ -81,19 +81,32 @@ function findDirectory(fd: number, fileSize: number, what: string): Directory {
     }
   if (at === -1) return refuse(`${what}: not a zip`);
   const eocdOffset = tailStart + at;
-  if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0)
-    return refuse(`${what}: a multi-disk zip`);
+  const disk = tail.readUInt16LE(at + 4);
+  const directoryDisk = tail.readUInt16LE(at + 6);
   let count = tail.readUInt16LE(at + 10);
   let size = tail.readUInt32LE(at + 12);
   let offset = tail.readUInt32LE(at + 16);
   let end = eocdOffset;
-  if (count === 0xffff || size === 0xffffffff || offset === 0xffffffff) {
+  // A zip64 writer may put 0xffff in any field the zip64 record holds, the disk numbers included
+  // (MakeAppx does): those then come from the record.
+  const zip64 =
+    disk === 0xffff ||
+    directoryDisk === 0xffff ||
+    count === 0xffff ||
+    size === 0xffffffff ||
+    offset === 0xffffffff;
+  if (!zip64 && (disk !== 0 || directoryDisk !== 0)) return refuse(`${what}: a multi-disk zip`);
+  if (zip64) {
     if (eocdOffset < 20) return refuse(`${what}: no zip64 locator`);
     const locator = readAt(fd, eocdOffset - 20, 20, what);
     if (locator.readUInt32LE(0) !== LOCATOR64) return refuse(`${what}: no zip64 locator`);
+    if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1)
+      return refuse(`${what}: a multi-disk zip`);
     const at64 = safeNumber(locator.readBigUInt64LE(8), what);
     const record = readAt(fd, at64, 56, what);
     if (record.readUInt32LE(0) !== EOCD64) return refuse(`${what}: no zip64 record`);
+    if (record.readUInt32LE(16) !== 0 || record.readUInt32LE(20) !== 0)
+      return refuse(`${what}: a multi-disk zip`);
     count = safeNumber(record.readBigUInt64LE(32), what);
     size = safeNumber(record.readBigUInt64LE(40), what);
     offset = safeNumber(record.readBigUInt64LE(48), what);
