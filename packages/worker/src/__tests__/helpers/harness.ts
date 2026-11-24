@@ -23,12 +23,15 @@ import { dirname, join } from 'node:path';
 
 import type { ProcessRunner } from '@sovit/core';
 import { nodeFs } from '@sovit/seeder';
+import { onTestFailed } from 'vitest';
 import WebSocket from 'ws';
 
 import { WorkerClient } from '../../client.js';
 import type { WorkerHostOptions } from '../../host.js';
 import { WorkerHost } from '../../host.js';
+import { createWorkerLogger } from '../../log.js';
 import type { WorkerEvent } from '../../protocol.js';
+import { renameRetrying, withRenameRetry } from '../../rename-retry.js';
 import { WorkerRpc } from '../../rpc.js';
 import type {
   HttpRequestHandler,
@@ -108,6 +111,8 @@ export const nodeConnectRelay: RelayConnect = (url) => {
   };
 };
 
+const ON_THIS_PLATFORM = { platform: process.platform } as const;
+
 /** What Studio and the signer need of the machine, on Node. */
 export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
   return {
@@ -128,13 +133,13 @@ export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
       if (process.platform !== 'win32') await chmod(dirname(p), 0o700);
       const tmp = `${p}.tmp`;
       await writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
-      await rename(tmp, p);
+      await renameRetrying(rename, tmp, p, ON_THIS_PLATFORM);
       return true;
     },
     writeDurable: async (p, data) => {
       const tmp = `${p}.tmp`;
       await writeFile(tmp, data, { mode: 0o600 });
-      await rename(tmp, p);
+      await renameRetrying(rename, tmp, p, ON_THIS_PLATFORM);
       return true;
     },
     freeBytes: async (p) => {
@@ -148,7 +153,8 @@ export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
 
 export function nodeRuntime(system?: WorkerSystem): WorkerRuntime {
   return {
-    fs: nodeFs,
+    // As the Bare adapter's: every rename rides out a Windows sharing violation.
+    fs: withRenameRetry(nodeFs, ON_THIS_PLATFORM),
     rmTree: (p) => rm(p, { recursive: true, force: true }),
     createHttpServer: nodeHttpServer,
     ...(system === undefined ? {} : { system }),
@@ -191,15 +197,25 @@ export interface RunningWorker {
   readonly events: WorkerEvent[];
   /** Fatal stream errors either side saw. */
   readonly fatal: Error[];
+  /**
+   * What the rpc logged for each answer that went out as `internal` (`../../rpc.ts`): the method,
+   * and the error's code, syscall and class. Each is printed as it comes; if the test fails, the
+   * worker's last log lines are printed too.
+   */
+  readonly internal: string[];
   /** Write raw bytes to the worker, as a host would. */
   raw(bytes: Uint8Array): void;
   close(): Promise<void>;
 }
 
+/** How many of a worker's log lines a failed test prints. */
+const LOG_LINES_ON_FAILURE = 50;
+
 /** The worker over the real wire (framing, guards, the client), in this process. */
 export function startWorker(over: Partial<Omit<WorkerHostOptions, 'emit'>> = {}): RunningWorker {
   const events: WorkerEvent[] = [];
   const fatal: Error[] = [];
+  const internal: string[] = [];
   const later = (f: () => void): void => {
     setImmediate(f);
   };
@@ -228,7 +244,24 @@ export function startWorker(over: Partial<Omit<WorkerHostOptions, 'emit'>> = {})
     onFatal: (err) => {
       fatal.push(err);
     },
+    log: createWorkerLogger({
+      emit: (ev) => {
+        internal.push(ev.msg);
+        console.error(`the worker answered internal: ${ev.msg}`);
+        rpc.emit(ev);
+      },
+    }),
   });
+  try {
+    onTestFailed(() => {
+      const lines = events.flatMap((ev) => (ev.e === 'log' ? [ev.msg] : []));
+      if (lines.length === 0) return;
+      const last = lines.slice(-LOG_LINES_ON_FAILURE).join('\n');
+      console.error(`the worker's last log lines:\n${last}`);
+    });
+  } catch {
+    // Not inside a test (a `beforeAll`): the internal answers were printed as they came.
+  }
   const host = new WorkerHost({
     runtime: nodeRuntime(),
     emit: (ev) => {
@@ -244,6 +277,7 @@ export function startWorker(over: Partial<Omit<WorkerHostOptions, 'emit'>> = {})
     rpc,
     events,
     fatal,
+    internal,
     raw: (bytes) => {
       later(() => {
         rpc.push(bytes);
