@@ -481,9 +481,9 @@ export interface WorkerMethodTable {
   'seeding.stop': [args: { readonly video: string }, result: { readonly stopped: boolean }];
   /** MAIN ONLY, after a native confirmation: serve a stopped video again. */
   'seeding.resume': [args: { readonly video: string }, result: { readonly resumed: boolean }];
-  /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
   /** MAIN ONLY: the one title a native dialog needs. Titles are not in the bulk status. */
   'seeding.title': [args: { readonly video: string }, result: { readonly title: string | null }];
+  /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
   'seeding.delete': [args: { readonly video: string }, result: { readonly removed: boolean }];
   /** A fresh signed kind-20464 beacon for every video served now, for the renderer to publish. */
   'seeding.beacons': [
@@ -552,6 +552,11 @@ export interface WindowMethodTable {
   'app.seeding.delete': [args: { readonly video: string }, result: SeedingStatusWire];
   /** `null`: the user declined, and the draft is gone. */
   'app.publish.sign': [args: { readonly video: string }, result: SignedEventWire | null];
+  /**
+   * Only while running without Chromium's sandbox: forget the stored "Run anyway", after a native
+   * confirmation, so that the next start without the sandbox warns again. `false`: the user kept it.
+   */
+  'app.sandbox.forget': [args: Record<string, never>, result: { readonly forgotten: boolean }];
 }
 export type WindowMethod = keyof WindowMethodTable;
 export const WINDOW_METHODS = [
@@ -560,6 +565,7 @@ export const WINDOW_METHODS = [
   'app.seeding.resume',
   'app.seeding.delete',
   'app.publish.sign',
+  'app.sandbox.forget',
 ] as const satisfies readonly WindowMethod[];
 
 // ---- events --------------------------------------------------------------------------------

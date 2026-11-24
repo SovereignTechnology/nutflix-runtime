@@ -12,6 +12,10 @@ UI, playing free NFX videos that the [worker](../worker/README.md) fetches over 
   you watch" is off by default and says it shares the IP address with viewers. The worker holds
   every key and does the work; this page asks, and publishes what comes back to the relays: beacons
   to the scoped relays only, manifests to the write and scoped relays, each verified here first.
+- **Chromium's sandbox** is a section of Settings, shown only while the desktop shell says it runs
+  without the sandbox (`src/settings/sandbox-choice.ts`). Its one button asks the shell to forget
+  the stored "Run anyway" (`app.sandbox.forget`, no argument); the shell confirms in a native
+  dialog.
 - **Nostr** runs here, over the browser's WebSocket, with core's own catalogue (`NfxCatalog`),
   NIP-11-aware search (`RelaySearchSupport`) and live beacon watch (`NfxBeaconWatch`: beacons are
   ephemeral, so they need a live subscription). The default relays are the desktop app's:
@@ -107,7 +111,7 @@ Nothing is loaded from a CDN.
 | `src/adapter/webrtc-session.ts` | one play through nfx's player, with the runtime fallback | `adapter/session.ts`, adapted |
 | `src/player/*` | the library's API as used here; its loader (sha256, SRI, `init`) | `nfx-lib.ts`, `site/entry.ts` |
 | `src/adapter/{images,address,wallet}.ts`, `src/net/*`, `src/shell/routes.ts` | signed images, NFX addresses, no wallet, bounded HTTP, hosts, hash routes | the same files, renamed |
-| `src/settings/*` | defaults (the desktop app's), the checks, Web Storage, what WebRTC's settings mean and the line Settings shows | `settings/*`, trimmed |
+| `src/settings/*` | defaults (the desktop app's), the checks, Web Storage, what WebRTC's settings mean and the line Settings shows; the sandbox section (`sandbox-choice.ts`, new) | `settings/*`, trimmed |
 | `src/shell/offer.ts` | what the shell offers | `shell/offer.ts` |
 | `src/worker/pipe.ts` | `WorkerPipe`, `WorkerLink` over the worker's `WorkerClient` | new |
 | `src/links.ts`, `src/probe.ts` | the `https:` gate and click guard; the capability probe | new |

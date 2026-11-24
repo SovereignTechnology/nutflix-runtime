@@ -15,7 +15,7 @@
  * holds the gate; main only passes its checked status to the window. A build without a link, as
  * every shipped build is until a real link exists, starts nothing (README, "Updates").
  */
-import { readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -51,6 +51,7 @@ import {
 import type { UpdateStatus } from '../update/status.ts';
 import { accountMenuPresent, menuBarState, wireAccountMenu } from './account-menu.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
+import { ConsentFile } from './consent-file.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
 import {
@@ -60,6 +61,7 @@ import {
   shouldShowFuseNotice,
 } from './fuse-notice.ts';
 import { event, readyLine } from './log.ts';
+import { WorkerPorts, installLoopbackGuard } from './loopback.ts';
 import {
   NOT_MOUNTED_CODE,
   PROBE_CODE,
@@ -89,9 +91,10 @@ import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
   BANNER_TEXT,
   CONSENT_FILE,
+  FORGET_DIALOG,
   FORGET_SWITCH,
+  FORGET_YES,
   WARNING,
-  parseConsent,
   sandboxGate,
 } from './sandbox-gate.ts';
 import { fromMetrics, fromProcStatus, type RendererSandbox } from './sandbox-proof.ts';
@@ -116,7 +119,7 @@ const PKG = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8')) as { 
 /** Chromium's own `--user-data-dir` wins when given; otherwise one stable directory for this app. */
 if (!app.commandLine.hasSwitch('user-data-dir'))
   app.setPath('userData', join(app.getPath('appData'), 'nutflix-runtime'));
-const consentFile = join(app.getPath('userData'), CONSENT_FILE);
+const consent = new ConsentFile(join(app.getPath('userData'), CONSENT_FILE));
 
 // ---- before ready ------------------------------------------------------------------------
 
@@ -142,6 +145,8 @@ let updater: WorkerHandle | undefined;
 let lastUpdate: UpdateStatus | undefined;
 let mainWindow: BrowserWindow | undefined;
 let unsandboxed = false;
+/** The worker's loopback ports: the only plain-HTTP ports the page may reach (`loopback.ts`). */
+const workerPorts = new WorkerPorts();
 
 const sendTo = (id: number, channel: string, ...args: unknown[]): void => {
   const wc = webContents.fromId(id);
@@ -160,6 +165,7 @@ const gate: RpcGate = new RpcGate({
     sendTo(id, PIPE_CLOSE);
   },
   mainCall: (id, method, args) => mainCalls.answer(id, method, args),
+  loopback: workerPorts,
 });
 
 /** The window a dialog belongs to. */
@@ -218,6 +224,22 @@ const mainCalls = new MainCalls({
   },
   askSecret: (id, spec, submit) => prompts.ask(id, spec, submit),
   worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
+  sandboxChoice: {
+    off: () => unsandboxed,
+    confirmForget: async (id) => {
+      const r = await dialog.showMessageBox(ownerOf(id), FORGET_DIALOG);
+      return r.response === FORGET_YES;
+    },
+    forget: async () => {
+      try {
+        await consent.forget();
+      } catch (e) {
+        event('sandbox-choice-not-forgotten', { via: 'settings' });
+        throw e;
+      }
+      event('sandbox-choice-forgotten', { via: 'settings' });
+    },
+  },
 });
 
 const links = new LinkOpener({
@@ -283,13 +305,13 @@ if (app.commandLine.hasSwitch(SANDBOX_PREFLIGHT_SWITCH)) {
   // Chromium started its sandbox, or this line would not run. That was the whole question.
   app.exit(0);
 } else if (app.commandLine.hasSwitch(FORGET_SWITCH)) {
-  void rm(consentFile, { force: true }).then(
+  void consent.forget().then(
     () => {
-      event('sandbox-choice-forgotten');
+      event('sandbox-choice-forgotten', { via: 'switch' });
       app.exit(0);
     },
     () => {
-      event('sandbox-choice-not-forgotten');
+      event('sandbox-choice-not-forgotten', { via: 'switch' });
       app.exit(1);
     },
   );
@@ -324,6 +346,10 @@ async function main(): Promise<void> {
   const rendererDir = join(appDir, 'renderer');
   const csp = headerPolicy(readFileSync(join(rendererDir, 'index.html'), 'utf8'));
   installSessionPolicy(session.defaultSession);
+  // Inside the page's policy: its plain HTTP reaches the worker's own ports and nothing else.
+  installLoopbackGuard(session.defaultSession, workerPorts, (name, fields) => {
+    event(name, fields);
+  });
   // The prompt window's own session: in memory, every permission denied, one file on its network.
   installPromptSession(session.fromPartition(PROMPT_PARTITION, { cache: false }), () =>
     readFile(join(__dirname, 'prompt.html')),
@@ -341,15 +367,9 @@ async function main(): Promise<void> {
   // ADR 0001 amendment, item 2: before any window, and before the worker.
   const outcome = sandboxGate({
     noSandbox: app.commandLine.hasSwitch('no-sandbox'),
-    readConsent: () => {
-      try {
-        return parseConsent(readFileSync(consentFile, 'utf8'));
-      } catch {
-        return null;
-      }
-    },
+    readConsent: () => consent.read(),
     writeConsent: (c) => {
-      void writeFile(consentFile, `${JSON.stringify(c)}\n`, { mode: 0o600 }).catch(() => {
+      consent.write(c, () => {
         event('sandbox-choice-not-stored');
       });
     },
@@ -468,7 +488,11 @@ async function main(): Promise<void> {
   win.webContents.on('did-finish-load', () => {
     if (!isAppUrl(win.webContents.getURL())) return;
     state.window = true;
-    if (unsandboxed) void injectBanner(win.webContents);
+    if (unsandboxed) {
+      void injectBanner(win.webContents);
+      // Settings offers to forget the stored choice while this lasts (`app.sandbox.forget`).
+      gate.fromMain('sandbox', { off: true, forgotten: mainCalls.sandboxChoiceForgotten });
+    }
     if (lastUpdate !== undefined) showUpdate(lastUpdate);
     void tellPageIfServing();
     void showFuseNotice(win.webContents);
