@@ -481,9 +481,9 @@ export interface WorkerMethodTable {
   'seeding.stop': [args: { readonly video: string }, result: { readonly stopped: boolean }];
   /** MAIN ONLY, after a native confirmation: serve a stopped video again. */
   'seeding.resume': [args: { readonly video: string }, result: { readonly resumed: boolean }];
-  /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
   /** MAIN ONLY: the one title a native dialog needs. Titles are not in the bulk status. */
   'seeding.title': [args: { readonly video: string }, result: { readonly title: string | null }];
+  /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
   'seeding.delete': [args: { readonly video: string }, result: { readonly removed: boolean }];
   /** A fresh signed kind-20464 beacon for every video served now, for the renderer to publish. */
   'seeding.beacons': [
