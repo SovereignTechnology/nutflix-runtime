@@ -130,12 +130,17 @@ export function installPromptSession(ses: Session, readHtml: () => Promise<Uint8
   ses.protocol.handle(APP_SCHEME, createPromptProtocolHandler(readHtml));
 }
 
+/** What ended a prompt that never became usable, or stopped being. */
+export type PromptEndPath = 'load-failed' | 'render-process-gone' | 'watchdog';
+
 export interface OpenPromptOptions {
   /** Default `PROMPT_SHOW_DEADLINE_MS`. */
   readonly showWithinMs?: number;
   /** Chromium's reason and exit code, for the log. */
   readonly onRendererGone?: (reason: string, exitCode: number) => void;
   readonly onNeverShown?: () => void;
+  /** The first of those to end this prompt, once. A user closing it is none of them. */
+  readonly onEnded?: (path: PromptEndPath) => void;
 }
 
 /**
@@ -156,10 +161,17 @@ export function openPrompt(
   const wc = win.webContents;
   const id = wc.id;
   win.setMenu(null);
-  const state = { loaded: false, painted: false };
+  const state = { loaded: false, painted: false, ended: false };
+  const endedBy = (path: PromptEndPath): void => {
+    if (state.ended) return;
+    state.ended = true;
+    o.onEnded?.(path);
+  };
   const watchdog = setTimeout(() => {
     o.onNeverShown?.();
-    if (!win.isDestroyed()) win.destroy();
+    if (win.isDestroyed()) return;
+    endedBy('watchdog');
+    win.destroy();
   }, o.showWithinMs ?? PROMPT_SHOW_DEADLINE_MS);
   const settled = (): void => {
     if (state.loaded && state.painted) clearTimeout(watchdog);
@@ -170,6 +182,7 @@ export function openPrompt(
   });
   wc.once('render-process-gone', (_e, details) => {
     o.onRendererGone?.(details.reason, details.exitCode);
+    if (!win.isDestroyed()) endedBy('render-process-gone');
     // Not from inside the event: the contents is still being told that its renderer is gone.
     setImmediate(() => {
       if (!win.isDestroyed()) win.destroy();
@@ -186,7 +199,9 @@ export function openPrompt(
     settled();
   });
   win.loadURL(PROMPT_URL).catch(() => {
-    if (!win.isDestroyed()) win.destroy();
+    if (win.isDestroyed()) return;
+    endedBy('load-failed');
+    win.destroy();
   });
   return {
     id,

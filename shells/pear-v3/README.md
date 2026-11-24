@@ -189,10 +189,14 @@ worker, so a passphrase or bunker URI never enters the page. It is modal, sandbo
 an in-memory session of its own that reaches one file; its policy is `default-src 'none'`, so its
 page runs no script and its form is built by its preload; and main takes a value only from that
 exact webContents' top frame, at that exact URL. Closing it while a value is being handled waits for
-that call and reports what really happened. The proof kills the renderer process of a prompt on screen, and the prompt ends as a cancel; a prompt that never loads is
-destroyed by a 30 s watchdog. **Known limit:** a renderer that has crashed but not exited does not end
-the prompt until the process is gone. In CI, `forcefullyCrashRenderer` left it alive for at least
-12 s.
+that call and reports what really happened. The proof kills the renderer process of a prompt on screen, and the prompt ends as a cancel; a prompt
+that never loads is destroyed by a 30 s watchdog. For a renderer killed before its first paint, the
+proof requires a cancel by a named path, no value delivered, a destroyed window, and a next prompt
+that opens and answers normally through the real dialog lock. Each run's `death-before-paint` log
+line names the path that ended it (`load-failed`, `render-process-gone` or `watchdog`). **Known
+limit:** a renderer that has crashed but not exited does not end the prompt until the process is
+gone. In CI, `forcefullyCrashRenderer` left it alive for at least 12 s, and only the proof's kill
+ended it.
 
 Without Chromium's sandbox, `init` says `localKey: false`: only a bunker can sign, and a key on disk
 stays untouched. Choosing Unlock or Create Key says why.

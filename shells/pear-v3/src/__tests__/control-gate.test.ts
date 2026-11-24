@@ -1108,11 +1108,12 @@ describe('the prompt window', () => {
       readonly webContents = new FakeContents();
       destroyed = false;
       shown = false;
+      loadFails = false;
       setMenu(): void {
         // No menu.
       }
       loadURL(): Promise<void> {
-        return Promise.resolve();
+        return this.loadFails ? Promise.reject(new Error('ERR_FAILED')) : Promise.resolve();
       }
       isDestroyed(): boolean {
         return this.destroyed;
@@ -1130,10 +1131,14 @@ describe('the prompt window', () => {
       }
     }
 
-    function opened(o: OpenPromptOptions = {}): { win: FakeWindow; gone: () => number } {
+    function opened(
+      o: OpenPromptOptions = {},
+      loadFails = false,
+    ): { win: FakeWindow; gone: () => number } {
       const box: { win: FakeWindow | null } = { win: null };
       const Ctor = function () {
         box.win = new FakeWindow();
+        box.win.loadFails = loadFails;
         return box.win;
       } as unknown as PromptWindowCtor;
       let n = 0;
@@ -1202,6 +1207,47 @@ describe('the prompt window', () => {
       vi.advanceTimersByTime(1);
       expect(win.destroyed).toBe(true);
       expect(gone()).toBe(1);
+    });
+
+    it('names the path that ended it: a failed load', async () => {
+      const ended: string[] = [];
+      const { win, gone } = opened({ onEnded: (p) => ended.push(p) }, true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ended).toEqual(['load-failed']);
+      expect(win.destroyed).toBe(true);
+      expect(gone()).toBe(1);
+    });
+
+    it('names the path that ended it: the renderer', async () => {
+      const ended: string[] = [];
+      const { win } = opened({ onEnded: (p) => ended.push(p) });
+      win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ended).toEqual(['render-process-gone']);
+    });
+
+    it('names the path that ended it: the watchdog', () => {
+      const ended: string[] = [];
+      opened({ onEnded: (p) => ended.push(p) });
+      vi.advanceTimersByTime(PROMPT_SHOW_DEADLINE_MS);
+      expect(ended).toEqual(['watchdog']);
+    });
+
+    it('names only the first, when a renderer dies and its load then fails', async () => {
+      const ended: string[] = [];
+      const { win } = opened({ onEnded: (p) => ended.push(p) }, true);
+      win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ended).toEqual(['render-process-gone']);
+      expect(win.destroyed).toBe(true);
+    });
+
+    it('a user closing it is none of them, even if the load then fails', async () => {
+      const ended: string[] = [];
+      const { win } = opened({ onEnded: (p) => ended.push(p) }, true);
+      win.close();
+      await vi.advanceTimersByTimeAsync(PROMPT_SHOW_DEADLINE_MS);
+      expect(ended).toEqual([]);
     });
 
     it('closing it stops the watchdog', () => {

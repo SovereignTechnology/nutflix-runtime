@@ -13,7 +13,9 @@
  *   - Enter on a focused Cancel never submits;
  *   - closing it during a submit waits for the call and reports what really happened;
  *   - a prompt that never loads is destroyed by its watchdog, which counts as a cancel;
- *   - a prompt whose renderer process dies before its first paint counts as a cancel;
+ *   - a prompt whose renderer process dies before its first paint ends as a cancel, by a named
+ *     path, with no value delivered and its window destroyed, and the real dialog lock is free:
+ *     the next prompt opens and answers normally;
  *   - so does one whose renderer dies once it is on screen, and the log says how it died;
  *   - the real window keeps the real Account menu on screen, its item opens the prompt, a real key
  *     event reaches main's shortcut before the page, and a page's synthetic one does not.
@@ -49,6 +51,7 @@ import {
   menuBarState,
   type AccountAction,
 } from '../src/main/account-menu.ts';
+import { MainCalls, PROMPT_DECLINED_WAIT_MS } from '../src/main/main-calls.ts';
 import {
   PROMPT_PARTITION,
   PROMPT_URL,
@@ -56,6 +59,7 @@ import {
   installPromptSession,
   openPrompt,
   promptSender,
+  type PromptEndPath,
   type PromptSpec,
 } from '../src/main/prompt-window.ts';
 import { fromProcStatus } from '../src/main/sandbox-proof.ts';
@@ -64,6 +68,15 @@ import { hardenWebContents } from '../src/main/security.ts';
 import { createMainWindow } from '../src/main/window.ts';
 import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../src/shared/ids.ts';
 import { ProofVerdict, runProof, withDeadline, type VerdictIo } from './prompt-proof-verdict.ts';
+
+/** What the proof's stand-in for the worker answers: nobody has a signer yet. */
+const NO_SIGNER = {
+  kind: 'none',
+  pubkey: null,
+  locked: true,
+  keyFile: false,
+  localAllowed: true,
+} as const;
 
 const SPEC: PromptSpec = {
   title: 'A proof',
@@ -172,10 +185,16 @@ async function run(v: ProofVerdict): Promise<void> {
   await parent.loadURL('data:text/html,<p>the other window</p>');
 
   let current: WebContents | null = null;
-  const gone: { reason: string | null; exitCode: number | null; at: number } = {
+  const gone: {
+    reason: string | null;
+    exitCode: number | null;
+    at: number;
+    path: PromptEndPath | null;
+  } = {
     reason: null,
     exitCode: null,
     at: 0,
+    path: null,
   };
   const host = new PromptHost({
     open: (_windowId, spec, onGone) => {
@@ -185,6 +204,9 @@ async function run(v: ProofVerdict): Promise<void> {
           gone.exitCode = exitCode;
           gone.at = Date.now();
           v.note('render-process-gone', { reason, exitCode });
+        },
+        onEnded: (path) => {
+          gone.path = path;
         },
       });
       current = webContents.fromId(surface.id) ?? null;
@@ -447,21 +469,30 @@ async function run(v: ProofVerdict): Promise<void> {
       ),
     ),
   );
-  const early: { wc: WebContents | null; committed: boolean; reason: string | null } = {
+  const early: {
+    wc: WebContents | null;
+    committed: boolean;
+    reason: string | null;
+    path: PromptEndPath | null;
+  } = {
     wc: null,
     committed: false,
     reason: null,
+    path: null,
   };
   // A function: the events set these while this step waits.
   const heardEarly = (): typeof early => early;
   const earlyHost = new PromptHost({
     open: (_windowId, spec, onGone) => {
       const surface = openPrompt(BrowserWindow, parent, preload, noPaintSession, spec, onGone, {
-        // Far past this step: only the renderer's death can end this prompt.
+        // Far past this step: a watchdog cannot be what ends this prompt here.
         showWithinMs: OVERALL_MS * 2,
         onRendererGone: (reason, exitCode) => {
           early.reason = reason;
           v.note('render-process-gone', { before: 'first paint', reason, exitCode });
+        },
+        onEnded: (path) => {
+          early.path = path;
         },
       });
       early.wc = webContents.fromId(surface.id) ?? null;
@@ -471,31 +502,103 @@ async function run(v: ProofVerdict): Promise<void> {
       return surface;
     },
   });
-  const diesEarly = earlyHost.ask(parent.webContents.id, SPEC, () => Promise.resolve(null));
+
+  // The app's real dialog lock, around the prompt. Only the worker is a stand-in.
+  const workerCalls: { method: string; args: Record<string, unknown> }[] = [];
+  const clock = { skew: 0 };
+  const route: { host: PromptHost } = { host: earlyHost };
+  const calls = new MainCalls({
+    pickFile: () => Promise.resolve(null),
+    confirmSeeding: () => Promise.resolve(false),
+    confirmPublish: () => Promise.resolve(false),
+    confirmVideo: () => Promise.resolve(false),
+    askSecret: (id, spec, submit) => route.host.ask(id, spec, submit),
+    worker: (method, args) => {
+      workerCalls.push({ method, args });
+      return Promise.resolve(NO_SIGNER);
+    },
+    now: () => Date.now() + clock.skew,
+  });
+
+  const diesEarly = calls.account(parent.webContents.id, 'connect');
   const earlyWc = await until('the no-paint prompt', () => heardEarly().wc);
   await until('its page to commit', () => (heardEarly().committed ? true : null));
+  const earlyWin = BrowserWindow.fromWebContents(earlyWc);
+  if (earlyWin === null) throw new Error('the no-paint prompt has no window');
   const earlyPid = earlyWc.getOSProcessId();
   if (earlyPid <= 1) throw new Error('the no-paint prompt has no renderer process');
-  const visibleAtDeath = BrowserWindow.fromWebContents(earlyWc)?.isVisible() === true;
+  const visibleAtDeath = earlyWin.isVisible();
+  v.check(
+    'deathBeforePaintWasOpen',
+    earlyHost.open && !earlyWin.isDestroyed() && !visibleAtDeath && heardEarly().path === null,
+    `open ${String(earlyHost.open)}, visible ${String(visibleAtDeath)}, ended ${String(heardEarly().path)}`,
+  );
   const earlyAt = Date.now();
   process.kill(earlyPid, 'SIGKILL');
-  const earlyAnswer = await withDeadline(diesEarly, ANSWER_MS, 'the prompt that died unpainted');
+  const earlyOut = await withDeadline(diesEarly, ANSWER_MS, 'the prompt that died unpainted');
+  const earlyMs = Date.now() - earlyAt;
+  await until('the unpainted window to close', () => (earlyWin.isDestroyed() ? true : null));
+  const endedBy = heardEarly().path;
+  const earlyMethods = workerCalls.map((c) => c.method);
+  // A "no" is remembered for a moment. Being told so proves the lock is free and this was a cancel.
+  const declined = await calls.account(parent.webContents.id, 'connect');
   v.note('death-before-paint', {
+    endedBy,
     visibleAtDeath,
-    answer: earlyAnswer,
-    reason: heardEarly().reason,
-    ms: Date.now() - earlyAt,
+    problem: earlyOut.problem,
+    workerCalls: earlyMethods,
+    windowDestroyed: earlyWin.isDestroyed(),
+    renderProcessGone: heardEarly().reason,
+    asAgainSays: declined.problem,
+    ms: earlyMs,
   });
   v.check(
+    'deathBeforePaintNamedPath',
+    endedBy === 'load-failed' || endedBy === 'render-process-gone' || endedBy === 'watchdog',
+    `ended by ${String(endedBy)}`,
+  );
+  v.check(
     'deathBeforePaintIsCancel',
-    !visibleAtDeath && !earlyAnswer && heardEarly().reason !== null,
-    `visible ${String(visibleAtDeath)}, answer ${String(earlyAnswer)}, event ${String(heardEarly().reason)}`,
+    earlyOut.problem === null &&
+      earlyMethods.length === 1 &&
+      earlyMethods[0] === 'signer.status' &&
+      declined.problem?.includes('try again') === true,
+    `problem ${String(earlyOut.problem)}, calls ${earlyMethods.join()}, then ${String(declined.problem)}`,
+  );
+  v.check(
+    'deathBeforePaintNoValue',
+    !workerCalls.some((c) => c.method === 'signer.nip46.connect' || 'uri' in c.args),
+  );
+  v.check('deathBeforePaintWindowDestroyed', earlyWin.isDestroyed());
+
+  // The lock was released: the same action, past its back-off, opens a real prompt and works.
+  clock.skew = PROMPT_DECLINED_WAIT_MS;
+  route.host = host;
+  current = null;
+  workerCalls.length = 0;
+  const afterDeath = 'bunker://a-value-typed-after-the-renderer-died';
+  const second = calls.account(parent.webContents.id, 'connect');
+  const secondWc = await form();
+  await fill(secondWc, 'prompt-value', afterDeath);
+  await click(secondWc, 'prompt-submit');
+  const secondOut = await withDeadline(second, ANSWER_MS, 'the prompt after the death');
+  await until('the second prompt to close', () => (secondWc.isDestroyed() ? true : null));
+  const secondMethods = workerCalls.map((c) => c.method);
+  v.note('lock-after-death', { problem: secondOut.problem, workerCalls: secondMethods });
+  v.check(
+    'lockReleasedAfterDeath',
+    secondOut.problem === null &&
+      workerCalls.length === 1 &&
+      workerCalls[0]?.method === 'signer.nip46.connect' &&
+      workerCalls[0].args['uri'] === afterDeath,
+    `problem ${String(secondOut.problem)}, calls ${secondMethods.join()}`,
   );
 
   // ---- a renderer that dies ----------------------------------------------------------------------
   current = null;
   gone.reason = null;
   gone.exitCode = null;
+  gone.path = null;
   // A function: the event sets these while this step waits.
   const heardGone = (): typeof gone => gone;
   const crashed = host.ask(parent.webContents.id, SPEC, () => Promise.resolve(null));
@@ -532,6 +635,7 @@ async function run(v: ProofVerdict): Promise<void> {
   const died = heardGone();
   v.note('renderer-death', {
     how,
+    endedBy: died.path,
     answer,
     eventFired: died.reason !== null,
     reason: died.reason,

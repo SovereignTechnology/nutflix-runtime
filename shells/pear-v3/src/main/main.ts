@@ -192,6 +192,9 @@ const prompts = new PromptHost({
         onNeverShown: () => {
           event('prompt-never-shown');
         },
+        onEnded: (path) => {
+          event('prompt-ended', { path });
+        },
       },
     ),
 });
