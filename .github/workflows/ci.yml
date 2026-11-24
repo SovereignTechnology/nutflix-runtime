@@ -350,6 +350,36 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  # The packaged-playback proof's test video (job `install`): ffmpeg's `testsrc`, a counter, as a
+  # real VP9 NFX package, made once with the renderer e2e's own maker, because the macOS and Windows
+  # runners have no ffmpeg (shells/pear-v3/scripts/pear-ci/playback-clip.ts). It runs beside `shell`.
+  # `install` checks every file against the package's own hash list before it seeds one.
+  playback-clip:
+    name: playback clip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: ffmpeg, for the clip
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: the clip, as an NFX package
+        run: node shells/pear-v3/scripts/pear-ci/playback-clip.ts --out "$RUNNER_TEMP/playback-clip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playback-clip
+          path: ${{ runner.temp }}/playback-clip
+          if-no-files-found: error
+          retention-days: 3
+
   # ADR 0001 amendment, item 5: each target must pass a real `pear install` and launch. Each leg
   # downloads the five packages of the `shell` job, merges them with `pear build`, stages the
   # deployment onto a THROWAWAY link, seeds it and installs it again, all on this one runner, then
@@ -368,10 +398,18 @@ jobs:
   # relay on 127.0.0.1 and a link on the private DHT baked in (`package.ts test-build`, which refuses
   # the production key). The installed app must hold the second build with no notice, a wrong-hash
   # notice and a wrong-signer notice, and apply it with a matching one.
+  #
+  # And it proves the installed app PLAYS: the first of those builds also carries, in its baked test
+  # root, a relay on 127.0.0.1 and one video (a release root refuses both, and the job proves that
+  # on this target's release-shaped build). Right after its `pear install`, it finds the video on
+  # that relay, fetches it over the private DHT from nutflix-pear's own seeder, and plays it, on the
+  # worker's progressive stream and then in nfx's web player on the worker's origin. What passes is
+  # measured: the media time, Chromium's decoded-frame counts, the seeders' own records, and a lying
+  # seeder whose every bad file the app must refuse and fetch again (`pear-ci/playback.ts`).
   # shells/pear-v3/scripts/pear-ci/run.ts says what each step does; the README says what it proves.
   install:
     name: install (${{ matrix.target }})
-    needs: shell
+    needs: [shell, playback-clip]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -424,6 +462,10 @@ jobs:
         with:
           pattern: shell-*
           path: ${{ runner.temp }}/artifacts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: playback-clip
+          path: ${{ runner.temp }}/playback-clip
       # Chromium's sandbox stays on: lift Ubuntu 24.04's restriction on this throwaway runner, as the
       # `shell` job does (the AppImage's chrome-sandbox is not setuid).
       - name: allow Chromium's user-namespace sandbox on this runner
@@ -435,14 +477,16 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           xvfb-run -a node shells/pear-v3/scripts/pear-install.ts --target "$TARGET" \
-            --artifacts "$RUNNER_TEMP/artifacts" --work "$RUNNER_TEMP/pear-install"
+            --artifacts "$RUNNER_TEMP/artifacts" --clip "$RUNNER_TEMP/playback-clip" \
+            --work "$RUNNER_TEMP/pear-install"
       - name: pear build, stage, seed and install on a private DHT; launch the installed app
         if: matrix.platform != 'linux'
         env:
           TARGET: ${{ matrix.target }}
         run: |
           node shells/pear-v3/scripts/pear-install.ts --target "$TARGET" \
-            --artifacts "$RUNNER_TEMP/artifacts" --work "$RUNNER_TEMP/pear-install"
+            --artifacts "$RUNNER_TEMP/artifacts" --clip "$RUNNER_TEMP/playback-clip" \
+            --work "$RUNNER_TEMP/pear-install"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

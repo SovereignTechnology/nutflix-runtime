@@ -98,6 +98,10 @@ const releaseShape = (over: Record<string, unknown> = {}): Record<string, unknow
   ...over,
 });
 const ROOT: TrustRoot = parseTrustRoot(testRoot());
+const PLAY = {
+  relays: ['ws://127.0.0.1:7778'],
+  video: `38504:${'cd'.repeat(32)}:nfx:testnet:1:packaged-playback-1`,
+};
 
 interface Fields {
   createdAt?: number;
@@ -177,8 +181,40 @@ describe('the trust root', () => {
     ['a relay with user-info', releaseShape({ relays: ['wss://u@relay.example.org'] })],
     ['a DHT in a release root', releaseShape({ dht: ['127.0.0.1:49737'] })],
     ['a delay in a release root', releaseShape({ delayMs: 0 })],
+    ['a playback proof in a release root', releaseShape({ play: PLAY })],
+    ['a null playback proof in a release root', releaseShape({ play: null })],
+    [
+      'a playback proof in a launch root',
+      releaseShape({ channel: 'launch', relays: ['ws://127.0.0.1:7777'], play: PLAY }),
+    ],
+    ['a playback proof that is not an object', testRoot({ play: 'x' })],
+    ['a playback proof with an extra field', testRoot({ play: { ...PLAY, seconds: 5 } })],
+    ['a playback proof with no relay', testRoot({ play: { ...PLAY, relays: [] } })],
+    [
+      'a playback proof with a public relay',
+      testRoot({ play: { ...PLAY, relays: ['wss://relay.example.org'] } }),
+    ],
+    [
+      'a playback proof on another network',
+      testRoot({ play: { ...PLAY, video: PLAY.video.replace('testnet', 'mainnet') } }),
+    ],
+    [
+      'a playback proof with a link in place of a video',
+      testRoot({ play: { ...PLAY, video: 'https://example.org/x' } }),
+    ],
   ])('refuses %s', (_name, x) => {
     expect(() => parseTrustRoot(x)).toThrow(TrustRootError);
+  });
+
+  it('takes a playback proof in a test root only, and keeps it through the baked constant', () => {
+    const r = parseTrustRoot(testRoot({ play: PLAY }));
+    expect(r.play).toEqual(PLAY);
+    expect(decodeBakedRoot(encodeBakedRoot(r))).toEqual(r);
+    // Absent, it is absent: a root without one bakes to the same bytes as before.
+    expect('play' in parseTrustRoot(testRoot())).toBe(false);
+    expect(() => parseTrustRoot(releaseShape({ play: PLAY }))).toThrow(
+      /a release build opens no video by itself/,
+    );
   });
 
   it('round-trips through the baked constant, as hex only', () => {

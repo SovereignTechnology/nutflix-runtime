@@ -14,6 +14,12 @@
  *     what CI launches once the release build carries a real link (a build with a link is never
  *     launched on a runner). `test-build` makes it too.
  *
+ * A `test` root may also carry `play`: a relay on 127.0.0.1 and one NFX address, the install job's
+ * packaged-playback proof (`src/main/play-proof.ts`). Main holds the same baked root as the updater
+ * (`packaging/stage.ts`), and with it the data worker joins the root's private DHT and the window
+ * opens and plays that video. A `release` or `launch` root refuses the field, as it refuses a DHT,
+ * so no build that can ship or that CI launches in a release's place carries it.
+ *
  * Pure and runtime-neutral: it runs in Bare, in Node and in the tests.
  */
 
@@ -32,6 +38,19 @@ export interface TrustRoot {
   readonly dht: readonly string[] | null;
   /** `test` only: the updater's delay for an append after the boot window, ms. */
   readonly delayMs: number | null;
+  /** `test` only, and optional: what the packaged-playback proof opens. Absent everywhere else. */
+  readonly play?: PlayProof;
+}
+
+/**
+ * The install job's playback proof, baked into a TEST build: the catalog relays the window uses and
+ * the one video it opens and plays (`src/main/play-proof.ts`). Every address is on loopback.
+ */
+export interface PlayProof {
+  /** `ws://127.0.0.1:<port>`: where the manifest and the seeders' beacons are. */
+  readonly relays: readonly string[];
+  /** The NFX address to open, `38504:<creator>:nfx:testnet:1:<video id>`. */
+  readonly video: string;
 }
 
 export const MAX_RELAYS = 8;
@@ -41,6 +60,11 @@ const RELEASE_RELAY = /^wss:\/\/[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{
 const LOOPBACK_RELAY = /^ws:\/\/127\.0\.0\.1:[0-9]{2,5}$/;
 const LOOPBACK_NODE = /^127\.0\.0\.1:[0-9]{2,5}$/;
 const KEYS = ['channel', 'delayMs', 'dht', 'pubkey', 'relays', 'upgrade', 'v'];
+/** The one optional field: `play`, on a `test` root only. */
+const OPTIONAL_KEYS = ['play'];
+const PLAY_KEYS = ['relays', 'video'];
+/** An NFX address on the network a test build plays (NFX-02 §2), with a short video id. */
+const PLAY_VIDEO = /^38504:[0-9a-f]{64}:nfx:testnet:1:[a-z0-9][a-z0-9-]{0,63}$/;
 
 export class TrustRootError extends Error {
   override readonly name = 'TrustRootError' as const;
@@ -66,9 +90,12 @@ function stringList(x: unknown, what: string, max: number): readonly string[] {
 export function parseTrustRoot(x: unknown): TrustRoot {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return refuse('not an object');
   const r = x as Record<string, unknown>;
-  const keys = Object.keys(r).sort();
+  const keys = Object.keys(r)
+    .filter((k) => !OPTIONAL_KEYS.includes(k))
+    .sort();
   if (keys.length !== KEYS.length || keys.some((k, i) => k !== KEYS[i]))
     return refuse('wrong fields');
+  const hasPlay = Object.prototype.hasOwnProperty.call(r, 'play');
   if (r['v'] !== 1) return refuse('unknown version');
   const channel = r['channel'];
   if (channel !== 'release' && channel !== 'test' && channel !== 'launch')
@@ -89,13 +116,16 @@ export function parseTrustRoot(x: unknown): TrustRoot {
     );
   let dht: readonly string[] | null = null;
   let delayMs: number | null = null;
+  let play: PlayProof | undefined;
   if (channel === 'release') {
     if (r['dht'] !== null) return refuse('a release build names no DHT bootstrap');
     if (r['delayMs'] !== null) return refuse('a release build keeps the default delay');
+    if (hasPlay) return refuse('a release build opens no video by itself');
   } else if (channel === 'launch') {
     if (upgrade !== null) return refuse('a launch build has no upgrade link');
     if (r['dht'] !== null) return refuse('a launch build names no DHT bootstrap');
     if (r['delayMs'] !== null) return refuse('a launch build has no updater delay');
+    if (hasPlay) return refuse('a launch build opens no video by itself');
   } else {
     dht = stringList(r['dht'], 'dht', 16);
     if (dht.some((n) => !LOOPBACK_NODE.test(n)))
@@ -105,6 +135,7 @@ export function parseTrustRoot(x: unknown): TrustRoot {
       return refuse('a test delay must be 0 to 60000 ms');
     delayMs = d;
     if (upgrade === null) return refuse('a test build needs an upgrade link');
+    if (hasPlay) play = parsePlay(r['play']);
   }
   return Object.freeze({
     v: 1 as const,
@@ -114,7 +145,24 @@ export function parseTrustRoot(x: unknown): TrustRoot {
     upgrade: upgrade,
     dht: dht === null ? null : Object.freeze([...dht]),
     delayMs,
+    ...(play === undefined ? {} : { play }),
   });
+}
+
+/** A test root's `play`: exactly its two fields, every relay on loopback, one NFX address. */
+function parsePlay(x: unknown): PlayProof {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return refuse('play: not an object');
+  const p = x as Record<string, unknown>;
+  const keys = Object.keys(p).sort();
+  if (keys.length !== PLAY_KEYS.length || keys.some((k, i) => k !== PLAY_KEYS[i]))
+    return refuse('play: wrong fields');
+  const relays = stringList(p['relays'], 'play relays', MAX_RELAYS);
+  if (relays.some((u) => !LOOPBACK_RELAY.test(u)))
+    return refuse('a play relay must be ws://127.0.0.1:<port>');
+  const video = p['video'];
+  if (typeof video !== 'string' || !PLAY_VIDEO.test(video))
+    return refuse('play: the video must be an NFX address on nfx:testnet:1');
+  return Object.freeze({ relays: Object.freeze([...relays]), video });
 }
 
 /** The link's key: the z32 text after `pear://`. */
