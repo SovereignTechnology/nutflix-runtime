@@ -295,7 +295,8 @@ async function multisig(io: Io, sub: string | undefined, rest: readonly string[]
           refuse(`${join(record, PROVISIONED)} is missing: provision with --out ${record} first`);
         if (existsSync(join(record, COMMITTED)))
           refuse(`${join(record, COMMITTED)} exists: this release was committed already`);
-        // macOS ships signed by the owner, and only with a Team ID unless ad hoc was chosen.
+        // macOS ships signed by the owner, and only with a Team ID unless ad hoc was chosen;
+        // Windows ships signed by the owner, and only with a certificate pinned.
         assertReleasable(
           readRelease(record),
           join(record, 'release.json'),

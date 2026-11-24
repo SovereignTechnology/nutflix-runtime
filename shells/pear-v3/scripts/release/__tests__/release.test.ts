@@ -52,7 +52,15 @@ import {
   writeReleaseFile,
   type Digest,
 } from '../assemble.ts';
-import { assertReleasable, noTeamIdRefusal, unsignedMacRefusal } from '../release-gate.ts';
+import {
+  assertReleasable,
+  assertSignable,
+  noTeamIdRefusal,
+  noWindowsSignerRefusal,
+  unnamedWindowsRefusal,
+  unsignedMacRefusal,
+  unsignedWindowsRefusal,
+} from '../release-gate.ts';
 import { productionSigningPolicy, type SigningPolicy } from '../signing-policy.ts';
 import {
   appleCheck,
@@ -95,21 +103,29 @@ import {
 } from '../launch-subject.ts';
 import { RELEASE_TARGETS, deploymentEntry } from '../targets.ts';
 
-/** A test policy only: a Team ID pinned, so a release with signed macOS packages may ship. */
-const TEAM_PINNED: SigningPolicy = {
+/**
+ * A test policy only: a Team ID and a Windows certificate pinned, so a release whose macOS and
+ * Windows packages are signed may ship. The certificate is no real one.
+ */
+const SIGNERS_PINNED: SigningPolicy = {
   label: 'test',
   appleTeamId: 'ABCDE12345',
   allowAdHocMacosRelease: false,
-  windowsSigner: null,
+  windowsSigner: { sha256: 'AB'.repeat(32), subject: 'CN=Test Signer', issuer: 'CN=Test CA' },
 };
 /** A test policy only: no Team ID, and ad hoc chosen, as `ALLOW_AD_HOC_MACOS_RELEASE = true` would. */
 const AD_HOC_CHOSEN: SigningPolicy = {
-  ...TEAM_PINNED,
+  ...SIGNERS_PINNED,
   appleTeamId: null,
   allowAdHocMacosRelease: true,
 };
+/** A test policy only: a Team ID pinned, and no Windows certificate (as production has today). */
+const NO_WINDOWS_SIGNER: SigningPolicy = { ...SIGNERS_PINNED, windowsSigner: null };
 
-/** A release.json for `dir`, its macOS rows signed by the owner unless `unsigned` says otherwise. */
+/**
+ * A release.json for `dir`, its macOS and Windows rows signed by the owner unless `unsigned` says
+ * otherwise.
+ */
 function releaseFile(dir: string, o: { unsigned?: readonly string[] } = {}): void {
   writeReleaseFile(dir, {
     schema: RELEASE_SCHEMA,
@@ -120,7 +136,7 @@ function releaseFile(dir: string, o: { unsigned?: readonly string[] } = {}): voi
       target: t.name,
       app: join(dir, 'apps', t.name, t.file),
       ci: { digest: '0'.repeat(64), bytes: 1 },
-      ...(t.platform === 'darwin' && !(o.unsigned ?? []).includes(t.name)
+      ...(t.platform !== 'linux' && !(o.unsigned ?? []).includes(t.name)
         ? { signed: { app: join(dir, 'signed', t.name, t.file), digest: '1'.repeat(64), bytes: 1 } }
         : {}),
     })),
@@ -556,7 +572,7 @@ describe('a step on a real link', () => {
     });
 
     it('commits only when the config derives the link typed, and records the verlink', async () => {
-      const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => TEAM_PINNED });
+      const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => SIGNERS_PINNED });
       const out = provisioned();
       expect(await runCli([...commitArgv(config(), out), '--execute'], io)).toBe(0);
       expect(io.ran.map((a) => a.slice(0, 2))).toEqual([
@@ -569,7 +585,7 @@ describe('a step on a real link', () => {
         verlink: `pear://0.7.${KEY_B}`,
       });
       // One commit per release folder.
-      const again = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => TEAM_PINNED });
+      const again = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => SIGNERS_PINNED });
       await refused(
         runCli([...commitArgv(config(), out), '--execute'], again),
         /committed already/,
@@ -589,7 +605,7 @@ describe('a step on a real link', () => {
       });
 
       it.each([
-        ['a Team ID pinned', TEAM_PINNED],
+        ['a Team ID pinned', SIGNERS_PINNED],
         ['ad hoc chosen in a reviewed change (a test policy here)', AD_HOC_CHOSEN],
       ])('refuses a macOS package as CI built it, even with %s', async (_n, policy) => {
         const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => policy });
@@ -619,12 +635,114 @@ describe('a step on a real link', () => {
           assertReleasable(readRelease(dir), 'r', productionSigningPolicy(), 'x');
         }).toThrow(noTeamIdRefusal('x'));
         expect(() => {
-          assertReleasable(readRelease(dir), 'r', TEAM_PINNED, 'x');
+          assertReleasable(readRelease(dir), 'r', SIGNERS_PINNED, 'x');
         }).not.toThrow();
         releaseFile(dir, { unsigned: ['darwin-arm64'] });
         expect(() => {
-          assertReleasable(readRelease(dir), 'r', TEAM_PINNED, 'x');
+          assertReleasable(readRelease(dir), 'r', SIGNERS_PINNED, 'x');
         }).toThrow(unsignedMacRefusal('darwin-arm64', 'r', 'x'));
+      });
+    });
+
+    describe('Windows: signed by the owner, and only with a certificate pinned', () => {
+      it('refuses while no certificate is pinned, before asking anything', async () => {
+        const io = fakeIo({
+          typed: LINK_B,
+          derived: LINK_B,
+          signingPolicy: () => NO_WINDOWS_SIGNER,
+        });
+        const p = runCli([...commitArgv(config()), '--execute'], io);
+        await refused(p, /^Windows is not released unsigned: .* Nothing was committed\.$/);
+        await expect(p).rejects.toThrow(noWindowsSignerRefusal('Nothing was committed.'));
+        expect(io.asked).toEqual([]);
+        expect(io.ran).toEqual([]);
+      });
+
+      it('has no ad-hoc way out: ad hoc chosen for macOS still needs a Windows certificate', async () => {
+        const io = fakeIo({
+          typed: LINK_B,
+          derived: LINK_B,
+          signingPolicy: () => ({ ...AD_HOC_CHOSEN, windowsSigner: null }),
+        });
+        await refused(
+          runCli([...commitArgv(config()), '--execute'], io),
+          /^Windows is not released unsigned: /,
+        );
+        expect(io.ran).toEqual([]);
+      });
+
+      it.each([
+        ['a Team ID and a certificate pinned', SIGNERS_PINNED],
+        ['ad hoc chosen for macOS and a certificate pinned', AD_HOC_CHOSEN],
+      ])('refuses the .msix as CI built it, even with %s', async (_n, policy) => {
+        const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => policy });
+        const out = provisioned({ unsigned: ['win32-x64'] });
+        const p = runCli([...commitArgv(config(), out), '--execute'], io);
+        await refused(
+          p,
+          /^win32-x64 has no signed package in .*release\.json: CI's own \.msix is unsigned, and it does not install for users\..* Nothing was committed\.$/,
+        );
+        await expect(p).rejects.toThrow(
+          unsignedWindowsRefusal('win32-x64', join(out, 'release.json'), 'Nothing was committed.'),
+        );
+        expect(io.ran).toEqual([]);
+        expect(existsSync(join(out, 'committed.json'))).toBe(false);
+      });
+
+      it('commits with a certificate pinned and every macOS and Windows package signed', async () => {
+        const io = fakeIo({ typed: LINK_B, derived: LINK_B, signingPolicy: () => SIGNERS_PINNED });
+        const out = provisioned();
+        expect(await runCli([...commitArgv(config(), out), '--execute'], io)).toBe(0);
+        expect(io.ran.map((a) => a.slice(0, 2))).toEqual([
+          ['multisig', 'link'],
+          ['multisig', 'commit'],
+        ]);
+        expect(existsSync(join(out, 'committed.json'))).toBe(true);
+      });
+
+      it('production says no today: no certificate pinned', () => {
+        expect(productionSigningPolicy().windowsSigner).toBeNull();
+        const dir = tmp();
+        releaseFile(dir);
+        // macOS is refused first today; with it out of the way, Windows still is.
+        expect(() => {
+          assertReleasable(readRelease(dir), 'r', NO_WINDOWS_SIGNER, 'x');
+        }).toThrow(noWindowsSignerRefusal('x'));
+        expect(() => {
+          assertReleasable(readRelease(dir), 'r', SIGNERS_PINNED, 'x');
+        }).not.toThrow();
+        releaseFile(dir, { unsigned: ['win32-x64'] });
+        expect(() => {
+          assertReleasable(readRelease(dir), 'r', SIGNERS_PINNED, 'x');
+        }).toThrow(unsignedWindowsRefusal('win32-x64', 'r', 'x'));
+      });
+
+      it('a signed entry that names no package is not one: CI’s own would ship', () => {
+        const dir = tmp();
+        releaseFile(dir);
+        const good = readRelease(dir);
+        for (const target of ['darwin-arm64', 'win32-x64'])
+          for (const signed of [null, {}, { app: '', digest: '1'.repeat(64) }, { app: 'x' }]) {
+            const release = {
+              ...good,
+              targets: good.targets.map((r) =>
+                r.target === target ? ({ ...r, signed } as unknown as typeof r) : r,
+              ),
+            };
+            expect(() => {
+              assertReleasable(release, 'r', SIGNERS_PINNED, 'x');
+            }).toThrow(
+              target === 'win32-x64'
+                ? unsignedWindowsRefusal(target, 'r', 'x')
+                : unsignedMacRefusal(target, 'r', 'x'),
+            );
+          }
+      });
+
+      it('has a Windows target to hold to it', () => {
+        expect(RELEASE_TARGETS.filter((t) => t.platform === 'win32').map((t) => t.name)).toEqual([
+          'win32-x64',
+        ]);
       });
     });
 
@@ -638,20 +756,20 @@ describe('a step on a real link', () => {
     });
 
     it('refuses when the signers’ config derives another link, and commits nothing', async () => {
-      const io = fakeIo({ typed: LINK_B, derived: LINK_A, signingPolicy: () => TEAM_PINNED });
+      const io = fakeIo({ typed: LINK_B, derived: LINK_A, signingPolicy: () => SIGNERS_PINNED });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /derives/);
       expect(io.ran.map((a) => a[1])).toEqual(['link']);
     });
 
     it('asks Pear for the link only after the link is typed back', async () => {
-      const io = fakeIo({ typed: LINK_A, derived: LINK_B, signingPolicy: () => TEAM_PINNED });
+      const io = fakeIo({ typed: LINK_A, derived: LINK_B, signingPolicy: () => SIGNERS_PINNED });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /not the link/);
       expect(io.ran).toEqual([]);
       expect(io.fetched).toBe(0);
     });
 
     it('refuses when `pear multisig link` fails, whatever it printed', async () => {
-      const io = fakeIo({ typed: LINK_B, linkCode: 3, signingPolicy: () => TEAM_PINNED });
+      const io = fakeIo({ typed: LINK_B, linkCode: 3, signingPolicy: () => SIGNERS_PINNED });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /exited 3/);
       expect(io.ran.map((a) => a[1])).toEqual(['link']);
     });
@@ -1062,7 +1180,7 @@ describe('the notice draft', () => {
     };
     const argv = (out: string): string[] => ['notice-draft', '--out', out];
     const withLinkA = (): FakeIo =>
-      fakeIo({ production: LINK_A, signingPolicy: () => TEAM_PINNED });
+      fakeIo({ production: LINK_A, signingPolicy: () => SIGNERS_PINNED });
 
     it('drafts nothing while no Team ID is pinned, or for a macOS package as CI built it', async () => {
       const out = withDigests();
@@ -1074,6 +1192,20 @@ describe('the notice draft', () => {
       await refused(
         runCli(argv(out), withLinkA()),
         /^darwin-arm64 has no signed package in .* No notice was drafted\.$/,
+      );
+      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+    });
+
+    it('drafts nothing while no Windows certificate is pinned, or for the .msix as CI built it', async () => {
+      const out = withDigests();
+      await refused(
+        runCli(argv(out), fakeIo({ production: LINK_A, signingPolicy: () => NO_WINDOWS_SIGNER })),
+        /^Windows is not released unsigned: .* No notice was drafted\.$/,
+      );
+      releaseFile(out, { unsigned: ['win32-x64'] });
+      await refused(
+        runCli(argv(out), withLinkA()),
+        /^win32-x64 has no signed package in .* No notice was drafted\.$/,
       );
       expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
     });
@@ -1140,7 +1272,7 @@ describe('the notice draft', () => {
     });
 
     it('a signer refuses, before fetching anything, a release that may not ship', async () => {
-      const argv = (signedTargets: readonly string[]): string[] => [
+      const argv = (signedTargets: readonly string[], execute = true): string[] => [
         'verify-request',
         '--run',
         '1',
@@ -1155,20 +1287,51 @@ describe('the notice draft', () => {
         '--work',
         tmp(),
         ...signedTargets.flatMap((t) => ['--signed-target', t]),
-        '--execute',
+        ...(execute ? ['--execute'] : []),
       ];
       const both = ['darwin-arm64', 'darwin-x64'];
+      const all = [...both, 'win32-x64'];
       await refused(
-        runCli(argv(both), fakeIo()),
+        runCli(argv(all), fakeIo()),
         /^macOS is not released ad hoc: no Apple Team ID is pinned\..* Do not sign\.$/,
       );
-      const io = fakeIo({ signingPolicy: () => TEAM_PINNED });
+      const io = fakeIo({ signingPolicy: () => SIGNERS_PINNED });
       await refused(
-        runCli(argv(['darwin-arm64']), io),
+        runCli(argv(['darwin-arm64', 'win32-x64']), io),
         /^darwin-x64 is not named with --signed-target: .* Do not sign\.$/,
       );
-      expect(io.asked).toEqual([]);
-      expect(io.ran).toEqual([]);
+      // Windows: a certificate pinned, and the .msix named as signed. No ad-hoc way out.
+      const noCert = fakeIo({ signingPolicy: () => NO_WINDOWS_SIGNER });
+      const p = runCli(argv(all), noCert);
+      await refused(p, /^Windows is not released unsigned: .* Do not sign\.$/);
+      await expect(p).rejects.toThrow(noWindowsSignerRefusal('Do not sign.'));
+      await refused(
+        runCli(
+          argv(all),
+          fakeIo({ signingPolicy: () => ({ ...AD_HOC_CHOSEN, windowsSigner: null }) }),
+        ),
+        /^Windows is not released unsigned: /,
+      );
+      const unnamed = runCli(argv(both), io);
+      await refused(unnamed, /^win32-x64 is not named with --signed-target: .* Do not sign\.$/);
+      await expect(unnamed).rejects.toThrow(unnamedWindowsRefusal('win32-x64', 'Do not sign.'));
+      // Even a dry run says no: the rule comes before anything else.
+      await refused(runCli(argv(both, false), io), /^win32-x64 is not named/);
+      for (const f of [io, noCert]) {
+        expect(f.asked).toEqual([]);
+        expect(f.ran).toEqual([]);
+        expect(f.fetched).toBe(0);
+      }
+      // Every macOS and Windows target named, with both pinned: the gate lets it through.
+      const dry = fakeIo({ signingPolicy: () => SIGNERS_PINNED });
+      expect(await runCli(argv(all, false), dry)).toBe(0);
+      expect(dry.printed[0]).toMatch(/^DRY RUN \(verify-request\)/);
+      expect(() => {
+        assertSignable(new Set(all), SIGNERS_PINNED, 'x');
+      }).not.toThrow();
+      expect(() => {
+        assertSignable(new Set(all), productionSigningPolicy(), 'x');
+      }).toThrow(noTeamIdRefusal('x'));
     });
 
     it('with a Team ID pinned, a signer off a Mac stops, unless they say another signer checked on a Mac', () => {

@@ -5,7 +5,7 @@
  * worker answers is what the link reads. The handler is scripted; the worker's behaviour is the
  * worker package's own tests'.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   WorkerError,
@@ -193,10 +193,54 @@ describe('WorkerLink', () => {
     expect(n).toBe(2);
   });
 
-  it('ready gives up when nothing ever answers, within its wait', async () => {
-    const r = rig(() => new Promise(() => undefined), { readyAskMs: 10, readyWaitMs: 40 });
-    await expect(r.link.ready()).rejects.toMatchObject({ code: 'backend-down' });
-    expect(r.seen.length).toBeGreaterThan(1);
+  it('ready keeps asking when nothing ever answers, then gives up at the end of its wait', async () => {
+    // A clock of the test's own: each ask goes unanswered for exactly `readyAskMs`, so the count
+    // does not depend on how fast the machine is. Only timeouts and the date are faked; the pipe's
+    // hops (setImmediate) run for real, so every ask reaches the worker's own guards.
+    vi.useFakeTimers({ now: 0, toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const r = rig(() => new Promise(() => undefined), {
+        readyAskMs: 10,
+        readyPollMs: 5,
+        readyWaitMs: 40,
+      });
+      let outcome: unknown = 'pending';
+      void r.link.ready().then(
+        () => {
+          outcome = 'resolved';
+        },
+        (e: unknown) => {
+          outcome = e;
+        },
+      );
+      const hop = (): Promise<void> =>
+        new Promise((res) => {
+          setImmediate(res);
+        });
+      /** The asks the worker has seen once the clock reads `ms`. */
+      const askedBy = async (ms: number): Promise<number> => {
+        while (Date.now() < ms) {
+          await hop();
+          await hop();
+          await vi.advanceTimersByTimeAsync(1);
+        }
+        await hop();
+        await hop();
+        return r.seen.length;
+      };
+      // Asks at 0, 15 and 30 (each unanswered for 10 ms, then 5 ms between), and no answer.
+      expect(await askedBy(9)).toBe(1);
+      expect(await askedBy(16)).toBe(2);
+      expect(await askedBy(39)).toBe(3);
+      expect(outcome).toBe('pending');
+      // At 40 the third ask has gone unanswered and the wait is over: it gives up, asks no more.
+      await askedBy(41);
+      expect(outcome).toMatchObject({ code: 'backend-down' });
+      await askedBy(200);
+      expect(r.seen.map((s) => s.m)).toEqual(['status', 'status', 'status']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('ready does not wait for a pipe that has ended', async () => {

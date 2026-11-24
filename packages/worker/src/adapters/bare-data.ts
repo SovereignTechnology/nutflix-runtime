@@ -9,7 +9,7 @@ import type { FileStat, SeederFs } from '@sovit/seeder';
 import fs from 'bare-fs';
 import path from 'bare-path';
 
-import { withRenameRetry } from '../rename-retry.js';
+import { rmTreeRetrying, withSharingRetry } from '../rename-retry.js';
 import type { HttpRequestHandler, HttpServerLike, WorkerRuntime } from '../runtime.js';
 
 function errno(err: unknown): string | undefined {
@@ -62,14 +62,19 @@ const bareFiles: SeederFs = {
 };
 
 /**
- * The worker's files on bare-fs. Every rename (the NFX store's, `seeding.json`'s, the play
- * spools') rides out a Windows sharing violation (`../rename-retry.ts`).
+ * The worker's files on bare-fs. Every rename and unlink (the NFX store's, `seeding.json`'s, the
+ * play spools') rides out a Windows sharing violation (`../rename-retry.ts`).
  */
-export const bareSeederFs: SeederFs = withRenameRetry(bareFiles, { platform: Bare.platform });
+export const bareSeederFs: SeederFs = withSharingRetry(bareFiles, { platform: Bare.platform });
 
-/** Remove a directory tree; a missing one is fine. */
-export async function bareRmTree(p: string): Promise<void> {
-  await fs.promises.rm(p, { recursive: true, force: true });
+/**
+ * Remove a directory tree; a missing one is fine. On Windows it rides out a sharing violation and a
+ * folder whose last file is still being deleted (`../rename-retry.ts`).
+ */
+export function bareRmTree(p: string): Promise<void> {
+  return rmTreeRetrying((q) => fs.promises.rm(q, { recursive: true, force: true }), p, {
+    platform: Bare.platform,
+  });
 }
 
 /**

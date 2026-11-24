@@ -17,7 +17,7 @@ import { constants, spawn, type Subprocess } from 'bare-subprocess';
 import { Socket as WebSocket } from 'bare-ws';
 
 import { randomHex } from '../crypto.js';
-import { renameRetrying } from '../rename-retry.js';
+import { renameRetrying, unlinkRetrying } from '../rename-retry.js';
 import { bareDataPlane } from './bare-data.js';
 import type { RelayConnect, WorkerRuntime, WorkerSystem } from '../runtime.js';
 import { MAX_RELAY_MESSAGE_CHARS } from '../signer/relay-pool.js';
@@ -178,7 +178,8 @@ function bareRunner(): ProcessRunner {
  * Atomic and on disk: a temporary file, synced, renamed over `p`, and the directory synced. A power
  * cut leaves the old file or the whole new one, never an empty one. Resolves `false` when only the
  * directory's sync failed: the file is in place, so this is not a failed save. On Windows the
- * rename rides out a sharing violation (`../rename-retry.ts`); the order stays the same.
+ * rename, and the removal of a temporary file left by a failure, ride out a sharing violation
+ * (`../rename-retry.ts`); the order stays the same.
  */
 async function replaceDurably(p: string, data: Uint8Array): Promise<boolean> {
   const tmp = `${p}.${randomHex(6)}.tmp`;
@@ -196,7 +197,9 @@ async function replaceDurably(p: string, data: Uint8Array): Promise<boolean> {
       platform: Bare.platform,
     });
   } catch (e) {
-    await fs.promises.unlink(tmp).catch(() => undefined);
+    await unlinkRetrying((q) => fs.promises.unlink(q), tmp, { platform: Bare.platform }).catch(
+      () => undefined,
+    );
     throw e;
   }
   if (Bare.platform === 'win32') return true;

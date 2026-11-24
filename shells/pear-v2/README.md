@@ -124,6 +124,10 @@ the worker, in the same process
 
 - **No RPC listens on a socket.** The pipe is an inherited file descriptor. This was S1's open
   question, and it works; S1's probe hung in `import('pear-pipe')`, not in the pipe.
+- **A request that fails with no code of its own is noted on the Bare process's stderr**, one
+  `nutflix: worker error: …` line with its method and the error's code, syscall and class, never its
+  message, a path or its arguments (`src/bare/worker-log.ts`). The page gets the answer,
+  `internal`, and no log event: the gate passes it the `status` event alone.
 - **`pear-bridge` is not used.** It rewrites every `.js` file, which breaks classic scripts and every
   SRI hash, and it serves the whole app drive. `src/bare/page-server.ts` serves the exact bytes of a
   fixed list of files, and only to a request with this listener's `Host` and the `X-Pear` header.

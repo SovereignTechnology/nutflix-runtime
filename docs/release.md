@@ -51,7 +51,7 @@ running keeps serving whatever CLI talks to it, so stop any other one first: `pe
 | 3   | owner       | `pear multisig link --config pear.json` prints the **production link**.                                                                                                                                                                                                                                                               |
 | 4   | owner       | Set `RELEASE_UPGRADE_LINK` to it, in a reviewed commit ([The day the link is set](#the-day-the-link-is-set)).                                                                                                                                                                                                                         |
 | 5   | owner       | In nutflix-pear, set `RUNTIME_PRODUCTION_LINK` to the same link, in a reviewed commit, and move this repository's `vendor/nutflix-pear` submodule to a commit that has it. Until then its publish script refuses this app's notices.                                                                                                  |
-| 6   | owner       | Once there is an Apple Developer account and a Windows code-signing certificate: pin them in `scripts/release/signing-policy.ts` (`APPLE_TEAM_ID`, `WINDOWS_SIGNER`), in a reviewed commit. **Until `APPLE_TEAM_ID` is pinned, `multisig commit` and `notice-draft` refuse every release** ([Releasing macOS ad hoc](#releasing-macos-ad-hoc)), and a signer accepts only an ad-hoc macOS signature and no signed `.msix` ([What a signature may say](#what-a-signature-may-say)). |
+| 6   | owner       | Once there is an Apple Developer account and a Windows code-signing certificate: pin them in `scripts/release/signing-policy.ts` (`APPLE_TEAM_ID`, `WINDOWS_SIGNER`), in a reviewed commit. **Until `APPLE_TEAM_ID` is pinned, `multisig commit` and `notice-draft` refuse every release** ([Releasing macOS ad hoc](#releasing-macos-ad-hoc)), **and until `WINDOWS_SIGNER` is pinned, they refuse every release too**, with no way out ([Windows is never released unsigned](#windows-is-never-released-unsigned)). Until then a signer accepts only an ad-hoc macOS signature and no signed `.msix` ([What a signature may say](#what-a-signature-may-say)), and `verify-request` refuses every request. |
 
 ```json
 {
@@ -187,10 +187,40 @@ certificate made for the job on Windows. Apple's Developer ID signing, notarizat
 certificate authority's certificate have never been through it. If a real tool changes something
 else, `record-signed` refuses and names the file: that is the point to stop and look.
 
-Without this step a target would ship as CI built it. **For macOS the tool refuses that:**
-`multisig commit` and `notice-draft` stop if a macOS row of `release.json` has no signed package,
-because CI's own build has no hardened runtime. For Windows, CI's unsigned `.msix` does not install
-for users.
+Without this step a target would ship as CI built it. **The tool refuses that, for macOS and
+Windows:** `multisig commit` and `notice-draft` stop if a macOS or Windows row of `release.json` has
+no signed package, because CI's own macOS build has no hardened runtime and CI's own `.msix` is
+unsigned, which does not install for users. Each signer's `verify-request` stops the same way unless
+every macOS and Windows target is named with `--signed-target`.
+
+#### Windows is never released unsigned
+
+While `WINDOWS_SIGNER` is `null`, `multisig commit`, `notice-draft` and every signer's
+`verify-request` refuse every release, whatever the macOS policy says. Unlike macOS there is no
+setting to release anyway: an unsigned `.msix` does not install for normal users (Windows installs a
+package only when it is signed by a certificate the machine trusts), so a release that names one
+would announce an update nobody can take. The owner's step is to get a code-signing certificate, pin
+its SHA-256, subject and issuer as `WINDOWS_SIGNER` in `scripts/release/signing-policy.ts` in a
+reviewed commit (step 6 above), make the MSIX publisher in `packaging/identity.ts` equal its subject,
+and sign each release's `.msix` with it (steps 5 and 6 of every release).
+
+The refusals name that step. With no certificate pinned:
+
+> Windows is not released unsigned: no Windows code-signing certificate is pinned, and an unsigned
+> .msix does not install for users. The owner pins WINDOWS_SIGNER in
+> shells/pear-v3/scripts/release/signing-policy.ts (docs/release.md, "Once", step 6, and "Windows is
+> never released unsigned"). Nothing was committed.
+
+With one pinned, and the `.msix` not recorded as signed:
+
+> win32-x64 has no signed package in rel/release.json: CI's own .msix is unsigned, and it does not
+> install for users. The owner signs a copy of it with the pinned certificate and records it with
+> `release record-signed --out <release folder> --target win32-x64 --signed <the signed
+> Nutflix.msix>` (docs/release.md, steps 5 and 6). Nothing was committed.
+
+`notice-draft` ends them with "No notice was drafted." and `verify-request` with "Do not sign.", where
+the second one reads "win32-x64 is not named with --signed-target: a request that ships CI's own
+unsigned .msix, which does not install for users, is never signed."
 
 #### Releasing macOS ad hoc
 
@@ -274,7 +304,10 @@ coordinator's word for anything but the verlink and the request**:
    blob, it does not hash it). A core that grew meanwhile is refused; start again in a new folder.
 4. It refuses unless the drive holds exactly CI's five packages and nothing else. Name a target with
    `--signed-target` only if the owner signed it: it may then differ from CI's package by its
-   signatures, as [pinned](#what-a-signature-may-say), and by nothing else.
+   signatures, as [pinned](#what-a-signature-may-say), and by nothing else. Every macOS and Windows
+   target must be named: before anything is fetched it refuses a request that would ship CI's own
+   macOS build or its unsigned `.msix`, and any request while no Team ID (unless ad hoc was chosen)
+   or no Windows certificate is pinned.
 5. It asks Pear about the request and the fork again: a core that was rewritten (forked) to the same
    length is refused here.
 6. On a Mac, it runs `codesign --verify --strict --deep` on each signed macOS bundle. Anywhere else
