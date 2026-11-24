@@ -85,7 +85,12 @@ What happens to a refused frame:
 - Anything else is dropped.
 
 At most 64 requests run at once; any more get `rate-limited`. Only the worker's own error codes
-and messages cross the wire; any other failure crosses as `internal: internal error`.
+and messages cross the wire; any other failure crosses as `internal: internal error`, and the
+shell's log (`WorkerRpcOptions.log`) gets its method and the error's code, syscall and class.
+
+On Windows, every rename, unlink and tree removal the worker makes rides out a sharing violation
+(EPERM, EACCES or EBUSY; ENOTEMPTY too for a tree) for under three seconds (`src/rename-retry.ts`).
+No other code, and nothing on another platform, is tried again.
 
 Error codes:
 - `invalid-argument`

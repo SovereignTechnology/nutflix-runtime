@@ -31,7 +31,7 @@ import type { WorkerHostOptions } from '../../host.js';
 import { WorkerHost } from '../../host.js';
 import { createWorkerLogger } from '../../log.js';
 import type { WorkerEvent } from '../../protocol.js';
-import { renameRetrying, withRenameRetry } from '../../rename-retry.js';
+import { renameRetrying, rmTreeRetrying, withSharingRetry } from '../../rename-retry.js';
 import { WorkerRpc } from '../../rpc.js';
 import type {
   HttpRequestHandler,
@@ -153,9 +153,11 @@ export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
 
 export function nodeRuntime(system?: WorkerSystem): WorkerRuntime {
   return {
-    // As the Bare adapter's: every rename rides out a Windows sharing violation.
-    fs: withRenameRetry(nodeFs, ON_THIS_PLATFORM),
-    rmTree: (p) => rm(p, { recursive: true, force: true }),
+    // As the Bare adapter's: every rename, unlink and tree removal rides out a Windows sharing
+    // violation.
+    fs: withSharingRetry(nodeFs, ON_THIS_PLATFORM),
+    rmTree: (p) =>
+      rmTreeRetrying((q) => rm(q, { recursive: true, force: true }), p, ON_THIS_PLATFORM),
     createHttpServer: nodeHttpServer,
     ...(system === undefined ? {} : { system }),
   };
