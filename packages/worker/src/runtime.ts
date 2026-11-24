@@ -67,8 +67,15 @@ export interface WorkerSystem {
   /** Runs a program from an argv array, never through a shell. */
   readonly runner: ProcessRunner;
   readonly isExecutable: (path: string) => Promise<boolean>;
-  /** Replaces `path` atomically with a file only this user can read (0600, in a 0700 directory). */
-  readonly writePrivate: (path: string, data: Uint8Array) => Promise<void>;
+  /**
+   * Replaces `path` atomically with a file only this user can read (0600, in a 0700 directory), and
+   * syncs it. Resolves `false` if the file is in place but its directory could not be synced.
+   */
+  readonly writePrivate: (path: string, data: Uint8Array) => Promise<boolean>;
+  /** The same, for a file in a directory whose mode is not this function's to change. */
+  readonly writeDurable: (path: string, data: Uint8Array) => Promise<boolean>;
+  /** The bytes this user may still write on the disk holding `path`; `null` if it cannot be read. */
+  readonly freeBytes: (path: string) => Promise<number | null>;
   /** For a NIP-46 bunker's relays: the worker holds that session, not the renderer. */
   readonly connectRelay: RelayConnect;
 }

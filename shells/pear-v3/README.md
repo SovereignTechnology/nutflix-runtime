@@ -149,12 +149,12 @@ Every `ipcMain` message is dropped unless it came from the top frame of a window
 `app://nutflix`.
 
 **The RPC allow-list** (`MAIN_WINDOW_POLICY`, `src/main/rpc-gate.ts`): the renderer's window may call
-`status`, `nfx.play.open`, `nfx.play.close`, `signer.status`, `signer.lock`, `seeding.status`,
+`status`, `nfx.play.open`, `nfx.play.close`, `signer.status`, `seeding.status`,
 `seeding.watch`, `seeding.stop` (stops serving, keeps the bytes), `seeding.beacons`,
 `seeding.segment`, `studio.ffmpeg`, `studio.probe`, `studio.publish` and `studio.cancel`, and hear
 `status` and `studio.progress`. Any other method, `init`, `nfx.seed.*`, `nfx.endpoint`,
 `seeding.set`, `seeding.resume`, `seeding.delete`, `studio.source`, `studio.discard`,
-`signer.local.*`, `signer.nip46.connect`, `signer.check`, `signer.sign`, is answered `invalid-argument` in main and never reaches the worker. At most 32 requests in flight per window; a play session
+`signer.local.*`, `signer.nip46.connect`, `signer.lock`, `signer.check`, `signer.sign`, is answered `invalid-argument` in main and never reaches the worker. At most 32 requests in flight per window; a play session
 belongs to the window that opened it (another window's `nfx.play.close` does nothing, a window that
 goes away closes its sessions, and `seeding.segment` and `seeding.watch` must name one of its own). What the worker sees
 is main's own re-encoding of a checked request, with main's id.
@@ -173,15 +173,30 @@ not asked again for a minute, and turning seeding off is never held up:
   (`signer.check`): the file's name, size and length, the whole npub, the whole title, the tags and
   the start of the description, with every control, format and line-separator character removed.
   "No" deletes the draft. The key the user approved goes back with the request.
-- `app.signer.create`, `.unlock` and `.connect` take no arguments. Main opens its own **prompt
-  window** (`src/main/prompt-window.ts`, `src/prompt/`) and sends what is typed to the worker, so a
-  passphrase or bunker URI never enters the page. That window is modal, sandboxed and isolated, in
-  an in-memory session of its own that reaches one file; its policy is `default-src 'none'`, so its
-  page runs no script and its form is built by its preload; and main takes a value only from that
-  exact webContents' top frame, at that exact URL.
 
-`scripts/prompt-proof.ts` (run in the `seed-publish` workflow) drives that real window in Electron
-with a script. No test drives the native message boxes.
+**Secret entry is reachable only from the native Account menu** (`src/main/account-menu.ts`): Unlock
+Key, Create Key, Connect Bunker and Lock, with shortcuts main catches in `before-input-event`
+(Ctrl or Cmd + Shift + O, K, B, L), before the page and out of its reach. No window has a method
+that opens it, because a compromised page could otherwise draw its own box and own the button that
+opens the real one. The page says only: use the Account menu, and Nutflix never asks for a key or
+bunker link inside this page. The menu bar is kept on screen (`autoHideMenuBar: false`) on Linux and
+Windows, and is in the system's menu bar on macOS. Every packaged launch on all five targets reads
+back from Electron that the menu is in place and, on Linux and Windows, that the bar is visible
+(`accountMenu` and `menuBar` in the ready line); a launch that fails this fails CI.
+
+Main's **prompt window** (`src/main/prompt-window.ts`, `src/prompt/`) sends what is typed to the
+worker, so a passphrase or bunker URI never enters the page. It is modal, sandboxed and isolated, in
+an in-memory session of its own that reaches one file; its policy is `default-src 'none'`, so its
+page runs no script and its form is built by its preload; and main takes a value only from that
+exact webContents' top frame, at that exact URL. Closing it while a value is being handled waits for
+that call and reports what really happened. If its renderer dies, that counts as a cancel.
+
+Without Chromium's sandbox, `init` says `localKey: false`: only a bunker can sign, and a key on disk
+stays untouched. Choosing Unlock or Create Key says why.
+
+`scripts/prompt-proof.ts` (run in the `seed-publish` workflow) drives that real window and the real
+menu in Electron with a script: the item is clicked and the keys are sent by the script. No person
+has used them in CI, and no test drives the native message boxes.
 
 ### Without Chromium's sandbox (amendment, item 2)
 

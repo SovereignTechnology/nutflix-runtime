@@ -34,6 +34,8 @@ import type { ControlWorker } from '../worker/pipe.js';
 export const BEACON_EVERY_MS = 60_000;
 /** Main's event (`rpc-gate.ts` `mainEvents`): this worker has a listener up. */
 export const SERVING_EVENT = 'serving';
+/** Main's event: the native Account menu may have changed the signer. */
+export const SIGNER_EVENT = 'signer';
 
 /** The native dialogs wait on a person. */
 const DIALOG_TIMEOUT_MS = 3_600_000;
@@ -243,22 +245,14 @@ export class SeedPublish {
     return this.#o.worker.call('signer.status', {});
   }
 
-  /** Main's own prompt window asks for the passphrase: it never enters this page. */
-  createKey(): Promise<SignerStatusWire> {
-    return this.#o.worker.call('app.signer.create', {}, { timeoutMs: DIALOG_TIMEOUT_MS });
-  }
-
-  unlock(): Promise<SignerStatusWire> {
-    return this.#o.worker.call('app.signer.unlock', {}, { timeoutMs: DIALOG_TIMEOUT_MS });
-  }
-
-  /** The bunker URI holds a pairing secret: main's prompt window takes it too. */
-  connectBunker(): Promise<SignerStatusWire> {
-    return this.#o.worker.call('app.signer.connect', {}, { timeoutMs: DIALOG_TIMEOUT_MS });
-  }
-
-  lock(): Promise<SignerStatusWire> {
-    return this.#o.worker.call('signer.lock', {});
+  /**
+   * Keys and bunkers are the native Account menu's: this page cannot open secret entry. It hears
+   * that something changed, and reads the status again.
+   */
+  onSignerChanged(cb: () => void): () => void {
+    return this.#o.worker.onEvent((ev) => {
+      if ((ev as { readonly e: string }).e === SIGNER_EVENT) cb();
+    });
   }
 
   // ---- Studio --------------------------------------------------------------------------------

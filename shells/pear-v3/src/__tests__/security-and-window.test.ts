@@ -83,6 +83,10 @@ describe('the window', () => {
     });
   });
 
+  it('keeps the menu bar on screen: the Account menu is the only way to secret entry', () => {
+    expect(capture().opts.autoHideMenuBar).toBe(false);
+  });
+
   it('leaves webSecurity, webviewTag and the other defaults alone, and shows nothing before it is ready', () => {
     const { opts } = capture();
     const keys = Object.keys(opts.webPreferences ?? {});

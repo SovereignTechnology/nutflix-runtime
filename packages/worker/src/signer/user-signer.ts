@@ -38,10 +38,12 @@ export interface UserSignerDeps {
   readonly dir: string;
   readonly now?: () => number;
   /**
-   * Whether this shell may hold a sealed key. `false` (shape b): no key file is read, made or
-   * opened, and the only signer is a bunker.
+   * Whether this run may use a sealed key. `false` (shape b, or shape a without Chromium's
+   * sandbox): no key file is read, made or opened, and the only signer is a bunker. A key already
+   * on disk stays there, untouched.
    */
   readonly allowLocal: boolean;
+  readonly warn?: (text: string) => void;
   /** TESTS ONLY: the KDF's cost (default: libsodium MODERATE, core's `defaultCost`). */
   readonly cost?: coreSigner.KdfCost;
   /** TESTS ONLY: how long a bunker may take to answer. */
@@ -56,6 +58,8 @@ export class UserSigner {
   #bunkerKey: string | null = null;
   /** The public key the key file names (public data, readable without the passphrase). */
   #filePubkey: string | null = null;
+  /** A key file is on disk that this run may not read. */
+  #sealedUnused = false;
   #busy = false;
   /** Bumped by `lock` and `close`: a signer still being opened then is not installed. */
   #generation = 0;
@@ -71,7 +75,11 @@ export class UserSigner {
 
   /** Read the key file's public header, if there is one. Never throws. */
   async load(): Promise<void> {
-    if (!this.#d.allowLocal) return;
+    if (!this.#d.allowLocal) {
+      // Whether one is there, so the app can say why it is not used. Its contents are not read.
+      this.#sealedUnused = await this.#exists().catch(() => false);
+      return;
+    }
     try {
       const file = await this.#readFile();
       this.#filePubkey = file === null ? null : coreSigner.LocalSigner.pubkeyOf(file);
@@ -82,17 +90,25 @@ export class UserSigner {
   }
 
   status(): SignerStatusWire {
-    const keyFile = this.#filePubkey !== null;
+    const keyFile = this.#filePubkey !== null || this.#sealedUnused;
+    const localAllowed = this.#d.allowLocal;
     if (this.#bunker !== null)
-      return { kind: 'nip46', pubkey: this.#bunkerKey, locked: this.#bunker.isLocked(), keyFile };
-    if (keyFile)
+      return {
+        kind: 'nip46',
+        pubkey: this.#bunkerKey,
+        locked: this.#bunker.isLocked(),
+        keyFile,
+        localAllowed,
+      };
+    if (this.#filePubkey !== null)
       return {
         kind: 'local',
         pubkey: this.#filePubkey,
         locked: this.#local?.isLocked() !== false,
         keyFile,
+        localAllowed,
       };
-    return { kind: 'none', pubkey: null, locked: true, keyFile };
+    return { kind: 'none', pubkey: null, locked: true, keyFile, localAllowed };
   }
 
   /** The public key signatures will carry, when something can sign now. */
@@ -113,12 +129,15 @@ export class UserSigner {
           passphrase: pw,
           ...(this.#d.cost === undefined ? {} : { cost: this.#d.cost }),
         });
+        let synced: boolean;
         try {
-          await this.#d.system.writePrivate(this.#file, file);
+          synced = await this.#d.system.writePrivate(this.#file, file);
         } catch {
           await signer.lock();
           fail('io', 'the key could not be saved');
         }
+        // The key is saved. Only the directory's sync failed, so a power cut could still lose it.
+        if (!synced) this.#d.warn?.('the key is saved, but its directory could not be synced');
         this.#filePubkey = await signer.getPublicKey();
         if (generation === this.#generation) {
           await this.#dropSession();

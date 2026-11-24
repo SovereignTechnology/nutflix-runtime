@@ -83,6 +83,7 @@ describe('the passphrase-sealed key', () => {
       pubkey: null,
       locked: true,
       keyFile: false,
+      localAllowed: true,
     });
     const made = await w.client.request('signer.local.create', { passphrase: PASS });
     expect(made.kind).toBe('local');
@@ -169,6 +170,57 @@ describe('the passphrase-sealed key', () => {
     await s.close();
   });
 
+  it('in a run without the sandbox, a key on disk stays there, unread and unused', async () => {
+    const { w, dir } = await worker();
+    await w.client.request('signer.local.create', { passphrase: PASS });
+    const file = join(dir, SIGNER_DIR, KEY_FILE);
+    const before = readFileSync(file);
+    await w.close();
+    const again = startWorker({ runtime: nodeRuntime(nodeSystem()), signerCost: cost });
+    cleanups.push(() => again.close());
+    await again.client.request('init', {
+      v: 1,
+      storage: dir,
+      bootstrap: [{ host: '127.0.0.1', port: 9 }],
+    });
+    // It says a key is there and that it may not be used, and names no key.
+    expect(await again.client.request('signer.status', {})).toEqual({
+      kind: 'none',
+      pubkey: null,
+      locked: true,
+      keyFile: true,
+      localAllowed: false,
+    });
+    for (const m of ['signer.local.create', 'signer.local.unlock'] as const)
+      expect(await codeOf(again.client.request(m, { passphrase: PASS }))).toBe('unsupported-input');
+    expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it('a key whose directory would not sync is saved, with a warning', async () => {
+    const d = await tempDir('nf-signer-');
+    cleanups.push(() => d.rm());
+    const base = nodeSystem();
+    const warned: string[] = [];
+    const s = new UserSigner({
+      allowLocal: true,
+      fs: nodeFs,
+      system: nodeSystem({
+        writePrivate: async (p, data) => {
+          await base.writePrivate(p, data);
+          return false;
+        },
+      }),
+      dir: join(d.dir, SIGNER_DIR),
+      cost,
+      warn: (t) => warned.push(t),
+    });
+    await s.load();
+    expect((await s.create(PASS)).locked).toBe(false);
+    expect(warned).toHaveLength(1);
+    expect(await codeOf(s.create(PASS))).toBe('exists');
+    await s.close();
+  });
+
   it('refuses to lock or change the signer under a signature in flight', async () => {
     const d = await tempDir('nf-signer-');
     cleanups.push(() => d.rm());
@@ -198,7 +250,7 @@ describe('the passphrase-sealed key', () => {
   it('holds only public key material in what it reports', async () => {
     const { w } = await worker();
     const s = await w.client.request('signer.local.create', { passphrase: PASS });
-    expect(Object.keys(s).sort()).toEqual(['keyFile', 'kind', 'locked', 'pubkey']);
+    expect(Object.keys(s).sort()).toEqual(['keyFile', 'kind', 'localAllowed', 'locked', 'pubkey']);
   });
 });
 

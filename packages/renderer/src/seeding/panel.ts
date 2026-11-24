@@ -5,8 +5,9 @@
  * of its own, added to the Settings screen while it is shown, as `../settings/webrtc-note.ts` adds
  * its line. Every value is set with `textContent` or `.value`; nothing here parses HTML.
  *
- * No secret passes through here: a passphrase or a bunker link is typed in main's own prompt window
- * (`shells/pear-v3/src/main/prompt-window.ts`), which this page cannot read.
+ * No secret passes through here, and nothing here can ask for one: a passphrase or a bunker link is
+ * typed in main's own prompt window, which only the native Account menu opens
+ * (`shells/pear-v3/src/main/account-menu.ts`). This page can only point at that menu.
  */
 import type {
   SeedingStatusWire,
@@ -28,6 +29,11 @@ export const SEEDING_DISCLOSURE =
 
 export const PUBLISH_DISCLOSURE =
   'Publishing a video seeds it from this computer, which shares your IP address with its viewers.';
+
+/** The only thing this page says about entering a secret. */
+export const ACCOUNT_MENU_NOTE =
+  'To create, unlock or lock a key, or connect a bunker, use the Account menu. Nutflix never asks ' +
+  'for a key, passphrase or bunker link inside this page. If a box here asks for one, do not type it.';
 
 export interface SeedPublishPanel {
   stop(): void;
@@ -79,7 +85,11 @@ function signerLine(s: SignerStatusWire): string {
   if (s.kind === 'nip46') return `Signing with a bunker${who}.`;
   if (s.kind === 'local')
     return s.locked ? `Your key is locked${who}.` : `Your key is unlocked${who}.`;
-  return 'No signer yet. Create a key sealed with a passphrase, or connect a bunker.';
+  if (!s.localAllowed)
+    return s.keyFile
+      ? "Nutflix is running without Chromium's sandbox, so it will not use the key sealed on this computer. The key is untouched. Connect a bunker, or restart with the sandbox on."
+      : "Nutflix is running without Chromium's sandbox, so only a bunker can sign.";
+  return 'No signer yet.';
 }
 
 export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish): SeedPublishPanel {
@@ -133,20 +143,13 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
     className: 'nf-settings__desc',
   });
   signerStatus.setAttribute('role', 'status');
-  const createKey = button(doc, 'nutflix-signer-create', 'Create a key…');
-  const unlock = button(doc, 'nutflix-signer-unlock', 'Unlock…');
-  const lock = button(doc, 'nutflix-signer-lock', 'Lock');
-  const connect = button(doc, 'nutflix-signer-connect', 'Connect a bunker…');
   signerGroup.append(
     signerStatus,
     make(doc, 'p', {
+      id: 'nutflix-signer-note',
       className: 'nf-settings__desc',
-      text: 'Your passphrase or bunker link is typed in a separate window that this page cannot read.',
+      text: ACCOUNT_MENU_NOTE,
     }),
-    createKey,
-    unlock,
-    lock,
-    connect,
   );
 
   // ---- Studio --------------------------------------------------------------------------------
@@ -257,9 +260,7 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
     signerStatus.dataset['locked'] = String(s.locked);
     if (s.pubkey !== null) signerStatus.dataset['pubkey'] = s.pubkey;
     else delete signerStatus.dataset['pubkey'];
-    createKey.hidden = s.keyFile;
-    unlock.hidden = !s.keyFile || !s.locked;
-    lock.hidden = s.locked;
+    signerStatus.dataset['localAllowed'] = String(s.localAllowed);
   };
   const canPublish = (): void => {
     const chosen = sizes.querySelectorAll('input:checked').length > 0;
@@ -294,25 +295,8 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
       showSeeding(await control.setSeeding(want));
     });
   });
-  createKey.addEventListener('click', () => {
-    act(signerStatus, async () => {
-      showSigner(await control.createKey());
-    });
-  });
-  unlock.addEventListener('click', () => {
-    act(signerStatus, async () => {
-      showSigner(await control.unlock());
-    });
-  });
-  lock.addEventListener('click', () => {
-    act(signerStatus, async () => {
-      showSigner(await control.lock());
-    });
-  });
-  connect.addEventListener('click', () => {
-    act(signerStatus, async () => {
-      showSigner(await control.connectBunker());
-    });
+  const offSigner = control.onSignerChanged(() => {
+    void control.signerStatus().then(showSigner, () => undefined);
   });
   pick.addEventListener('click', () => {
     act(picked, async () => {
@@ -375,7 +359,7 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
         publishStatus.dataset['state'] = 'failed';
         if (control.awaitingSignature)
           throw new Error(
-            `no-signer: packaged, but not signed: ${message(e)}. Unlock your key or approve it in your bunker, then press Publish again.`,
+            `no-signer: packaged, but not signed: ${message(e)}. Use the Account menu to unlock your key, or approve it in your bunker, then press Publish again.`,
             { cause: e },
           );
         throw e;
@@ -429,6 +413,7 @@ export function installSeedPublishPanel(root: HTMLElement, control: SeedPublish)
   render();
   return {
     stop: () => {
+      offSigner();
       observer.disconnect();
       section.remove();
     },

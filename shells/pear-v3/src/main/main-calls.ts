@@ -13,14 +13,17 @@
  *     starts seeding it, after a native confirmation of what the WORKER says it will sign: the
  *     file, the whole key, the title, the tags and the start of the description. "No" deletes the
  *     draft. The key the user approved goes back with the request, and any other is refused.
- *   - `app.signer.create`, `.unlock`, `.connect`: main's own prompt window (`prompt-window.ts`)
- *     takes the passphrase or bunker URI and hands it to the worker. Neither enters the page.
+ *
+ * And one surface no window can call: `account`, from the native Account menu (`account-menu.ts`).
+ * It opens main's own prompt window (`prompt-window.ts`), which takes the passphrase or bunker URI
+ * and hands it to the worker. Neither enters the page, and no page can open it.
  *
  * One dialog at a time, so a page cannot pile them up or change the signer under one. A "no" is not
  * asked again for a minute, so it cannot wear the user down with the same box.
  */
-import { WorkerError } from '@nutflix-runtime/worker';
+import { MAX_COMBINING_RUN, WorkerError, type SignerStatusWire } from '@nutflix-runtime/worker';
 
+import type { AccountAction } from './account-menu.ts';
 import type { PromptSpec } from './prompt-window.ts';
 
 export const VIDEO_EXTENSIONS = ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'ts'];
@@ -50,6 +53,11 @@ export const CONFIRM_SEEDING_DIALOG = {
 export const CONFIRM_YES = 1;
 /** How long a question the user answered "no" to stays unasked. */
 export const DECLINED_WAIT_MS = 60_000;
+/**
+ * How long a prompt the user closed stays unopened. Short, because only the user can open one, from
+ * the menu, and a slip should not cost them a minute.
+ */
+export const PROMPT_DECLINED_WAIT_MS = 5_000;
 /** A bunker may be waiting for its user to approve. */
 const SIGN_TIMEOUT_MS = 180_000;
 /** Argon2id at its full cost, on a slow machine. */
@@ -89,13 +97,17 @@ export const CONNECT_BUNKER_PROMPT: PromptSpec = {
   maxChars: 2048,
 };
 
+/** A run of combining marks past the cap: it could draw over the dialog's other lines. */
+const LONG_MARK_RUN = new RegExp(`(\\p{M}{${String(MAX_COMBINING_RUN)}})\\p{M}+`, 'gu');
+
 /**
  * Text as a system dialog may show it: every control, format and line-separator character removed
- * (Unicode Cc, Cf, Zl, Zp), so it cannot draw a line of its own or reorder the text around it.
+ * (Unicode Cc, Cf, Zl, Zp), so it cannot draw a line of its own or reorder the text around it, and
+ * runs of combining marks cut to `MAX_COMBINING_RUN`.
  * Display only: joiners that emoji and some scripts need are stored and signed as they are.
  */
 export function shownText(text: string): string {
-  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '');
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').replace(LONG_MARK_RUN, '$1');
 }
 
 function shownBytes(n: number): string {
@@ -189,12 +201,15 @@ export function publishDialog(s: PublishShown): MessageBox {
 
 export interface VideoShown {
   readonly video: string;
+  /** The title the worker recorded; absent for a video stored by the host. */
+  readonly title?: string;
   readonly origin: string;
   readonly bytes: number;
 }
 
 export function videoDialog(action: 'delete' | 'resume', v: VideoShown): MessageBox {
-  const what = `Video: ${shownText(v.video)} (${shownText(v.origin)}, ${shownBytes(v.bytes)})`;
+  const title = v.title === undefined ? 'no title recorded' : shownText(v.title);
+  const what = `Title: ${title}\nVideo: ${shownText(v.video)} (${shownText(v.origin)}, ${shownBytes(v.bytes)})`;
   return action === 'delete'
     ? {
         type: 'warning',
@@ -216,6 +231,37 @@ export function videoDialog(action: 'delete' | 'resume', v: VideoShown): Message
         cancelId: 0,
         noLink: true,
       };
+}
+
+/** What the Account menu did: the signer's status, or a line for a native box. */
+export interface AccountOutcome {
+  readonly status: SignerStatusWire | null;
+  readonly problem: string | null;
+}
+
+export const NO_SANDBOX_KEY_TEXT =
+  "Nutflix is running without Chromium's sandbox, so it will not use a sealed key in this run. " +
+  'Any key on this computer stays on disk, untouched. Connect a bunker, or restart with the ' +
+  'sandbox on.';
+
+export function accountProblemDialog(problem: string): {
+  type: 'info';
+  title: string;
+  message: string;
+  buttons: string[];
+  defaultId: number;
+  cancelId: number;
+  noLink: boolean;
+} {
+  return {
+    type: 'info',
+    title: 'Account',
+    message: problem,
+    buttons: ['OK'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
 }
 
 export interface MainCallDeps {
@@ -298,13 +344,50 @@ export class MainCalls {
     return this.#d.now?.() ?? Date.now();
   }
 
-  #notJustDeclined(key: string): void {
+  #notJustDeclined(key: string, again = 'in a minute'): void {
     if (this.#now() < (this.#declined.get(key) ?? 0))
-      throw new WorkerError('rate-limited', 'you said no a moment ago: try again in a minute');
+      throw new WorkerError('rate-limited', `you said no a moment ago: try again ${again}`);
   }
 
-  #decline(key: string): void {
-    this.#declined.set(key, this.#now() + DECLINED_WAIT_MS);
+  #decline(key: string, waitMs = DECLINED_WAIT_MS): void {
+    this.#declined.set(key, this.#now() + waitMs);
+  }
+
+  /** From the native Account menu only. Never rejects: what went wrong is for a native box. */
+  async account(windowId: number, action: AccountAction): Promise<AccountOutcome> {
+    if (this.#dialogOpen)
+      return { status: null, problem: 'Another Nutflix dialog is open. Finish that one first.' };
+    this.#dialogOpen = true;
+    try {
+      return { status: await this.#accountAction(windowId, action), problem: null };
+    } catch (e) {
+      return { status: null, problem: promptProblem(e) };
+    } finally {
+      this.#dialogOpen = false;
+    }
+  }
+
+  async #accountAction(windowId: number, action: AccountAction): Promise<SignerStatusWire> {
+    const d = this.#d;
+    if (action === 'lock') return (await d.worker('signer.lock', {})) as SignerStatusWire;
+    const key = `account:${action}`;
+    this.#notJustDeclined(key, 'in a few seconds');
+    if (action !== 'connect') {
+      const s = (await d.worker('signer.status', {})) as SignerStatusWire;
+      if (!s.localAllowed) throw new WorkerError('unsupported-input', NO_SANDBOX_KEY_TEXT);
+      if (action === 'create' && s.keyFile)
+        throw new WorkerError('exists', 'A key is already sealed on this computer. Use Unlock.');
+      if (action === 'unlock' && !s.keyFile)
+        throw new WorkerError('no-signer', 'No key is sealed on this computer. Use Create Key.');
+    }
+    const { done, status } =
+      action === 'create'
+        ? await this.#secret(windowId, CREATE_KEY_PROMPT, 'signer.local.create', 'passphrase')
+        : action === 'unlock'
+          ? await this.#secret(windowId, UNLOCK_KEY_PROMPT, 'signer.local.unlock', 'passphrase')
+          : await this.#secret(windowId, CONNECT_BUNKER_PROMPT, 'signer.nip46.connect', 'uri');
+    if (!done) this.#decline(key, PROMPT_DECLINED_WAIT_MS);
+    return status;
   }
 
   async #run(windowId: number, method: string, args: Record<string, unknown>): Promise<unknown> {
@@ -358,15 +441,6 @@ export class MainCalls {
           SIGN_TIMEOUT_MS,
         );
       }
-      case 'app.signer.create':
-        this.#noArgs(args);
-        return this.#secret(windowId, CREATE_KEY_PROMPT, 'signer.local.create', 'passphrase');
-      case 'app.signer.unlock':
-        this.#noArgs(args);
-        return this.#secret(windowId, UNLOCK_KEY_PROMPT, 'signer.local.unlock', 'passphrase');
-      case 'app.signer.connect':
-        this.#noArgs(args);
-        return this.#secret(windowId, CONNECT_BUNKER_PROMPT, 'signer.nip46.connect', 'uri');
       default:
         throw new WorkerError('invalid-argument', 'method not allowed');
     }
@@ -382,7 +456,7 @@ export class MainCalls {
     spec: PromptSpec,
     method: string,
     field: 'passphrase' | 'uri',
-  ): Promise<unknown> {
+  ): Promise<{ readonly done: boolean; readonly status: SignerStatusWire }> {
     let answer: unknown;
     const done = await this.#d.askSecret(windowId, spec, async (value) => {
       try {
@@ -392,6 +466,7 @@ export class MainCalls {
         return promptProblem(e);
       }
     });
-    return done ? answer : this.#d.worker('signer.status', {});
+    const status = (done ? answer : await this.#d.worker('signer.status', {})) as SignerStatusWire;
+    return { done, status };
   }
 }

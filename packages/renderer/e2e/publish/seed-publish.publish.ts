@@ -32,12 +32,13 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  statfsSync,
   writeFileSync,
 } from 'node:fs';
 import { connect, createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
@@ -61,7 +62,7 @@ import type { SeedingStatusWire, SignerStatusWire, WorkerStatus } from '@nutflix
 import { LoopRelay, TestBunker } from '../../../worker/src/__tests__/helpers/test-bunker.ts';
 import { SETTINGS_KEY } from '../../src/settings/store.js';
 import { serveDir } from '../static-server.js';
-import { startBareBridge, type BareBridge } from './bare-bridge.js';
+import { startBareBridge, startBareScript, type BareBridge } from './bare-bridge.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const APP = join(here, '..', '..', 'dist', 'app');
@@ -436,10 +437,14 @@ describe('seed and publish, on loopback', () => {
   it('the passphrase path: sealed 0600, a wrong passphrase refused, the right one opens', async () => {
     const { page, publisher } = w();
     const status = page.locator('#nutflix-signer-status');
-    // The page has no field for it: main's prompt takes it, and this script plays the user there.
+    // The page has no field and no button for it, only a pointer to the Account menu. What the
+    // menu does in main runs for real here; the menu click and the typing are scripted.
     expect(await page.locator('#nutflix-seed-publish input[type="password"]').count()).toBe(0);
+    for (const id of ['create', 'unlock', 'connect', 'lock'])
+      expect(await page.locator(`#nutflix-signer-${id}`).count()).toBe(0);
+    expect(await page.locator('#nutflix-signer-note').textContent()).toContain('Account menu');
     publisher.dialogs.secrets.push(PASS);
-    await page.locator('#nutflix-signer-create').click();
+    expect((await publisher.account('create')).problem).toBeNull();
     await page
       .locator('#nutflix-signer-status[data-kind="local"][data-locked="false"]')
       .waitFor({ state: 'attached', timeout: 60_000 });
@@ -456,26 +461,21 @@ describe('seed and publish, on loopback', () => {
       ['aead', 'ct', 'kdf', 'kind', 'pubkey', 'v', 'walletKey'].sort(),
     );
 
-    await page.locator('#nutflix-signer-lock').click();
+    expect((await publisher.account('lock')).problem).toBeNull();
     await page
       .locator('#nutflix-signer-status[data-locked="true"]')
       .waitFor({ state: 'attached', timeout: 20_000 });
-    publisher.dialogs.secrets.push('this is not the passphrase');
-    await page.locator('#nutflix-signer-unlock').click();
-    const refused = await until(
-      'the refusal in the prompt',
-      () => publisher.dialogs.problems[0],
-      60_000,
-    );
-    expect(refused).toContain('does not open this key');
-    expect(((await publisher.request('signer.status', {})) as SignerStatusWire).locked).toBe(true);
-    await page
-      .locator('#nutflix-signer-status[data-locked="true"]')
-      .waitFor({ state: 'attached', timeout: 20_000 });
+    // One prompt: the wrong passphrase is refused in it, still locked, and the right one opens.
+    let lockedAtRefusal = false;
+    publisher.dialogs.afterRefusal = async () => {
+      lockedAtRefusal = ((await publisher.request('signer.status', {})) as SignerStatusWire).locked;
+    };
+    publisher.dialogs.secrets.push('this is not the passphrase', PASS);
+    expect((await publisher.account('unlock')).problem).toBeNull();
+    publisher.dialogs.afterRefusal = null;
+    expect(publisher.dialogs.problems[0]).toContain('does not open this key');
+    expect(lockedAtRefusal).toBe(true);
     expect(await page.content()).not.toContain('this is not the passphrase');
-
-    publisher.dialogs.secrets.push(PASS);
-    await page.locator('#nutflix-signer-unlock').click();
     await page
       .locator('#nutflix-signer-status[data-locked="false"]')
       .waitFor({ state: 'attached', timeout: 60_000 });
@@ -756,6 +756,14 @@ describe('seed and publish, on loopback', () => {
     expect(parsed.value.addr.toString()).toBe(pub.video);
     expect(parsed.value.root).toBe(draft.tags.find((t) => t[0] === 'root')?.[1]);
     expect(bunker.signedKinds).toEqual([38504]);
+    // The record says "signed" on disk by the time the signed event is handed back.
+    const onDisk = JSON.parse(readFileSync(join(b.storage, 'seeding.json'), 'utf8')) as {
+      videos: Record<string, { author: string | null; title?: string }>;
+    };
+    expect(onDisk.videos[pub.video]).toMatchObject({
+      author: bunker.userPubkey,
+      title: 'Via a bunker',
+    });
     await refusedSign({ ...draft, kind: 1 });
     // And it is signed once.
     await refusedSign(draft);
@@ -819,6 +827,54 @@ describe('seed and publish, on loopback', () => {
     expect(((await b.request('status', {})) as WorkerStatus).storedVideos).toBe(before);
     report('unconfirmed-draft', { playRefused: true, hashListHidden: true, declineDeleted: true });
   }, 600_000);
+
+  it('real Bare reads the free space and writes through to disk', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nutflix-bare-disk-'));
+    cleanups.push(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const dist = (f: string): string =>
+      pathToFileURL(join(here, '..', '..', '..', 'worker', 'dist', f)).href;
+    const entry = join(dir, 'probe.mjs');
+    writeFileSync(
+      entry,
+      `import ${JSON.stringify(dist('bare-globals.js'))};
+import { bareRuntime } from ${JSON.stringify(dist('adapters/bare.js'))};
+const dir = ${JSON.stringify(dir)};
+const { system } = bareRuntime();
+const bytes = (o) => new TextEncoder().encode(JSON.stringify(o));
+void (async () => {
+  const free = await system.freeBytes(dir);
+  const first = await system.writeDurable(dir + '/out.json', bytes({ step: 1 }));
+  const second = await system.writeDurable(dir + '/out.json', bytes({ step: 2 }));
+  await system.writeDurable(dir + '/done.json', bytes({ free, first, second }));
+})();
+`,
+    );
+    const script = startBareScript(entry);
+    cleanups.push(() => {
+      script.stop();
+    });
+    const doneFile = join(dir, 'done.json');
+    try {
+      await until('the Bare script', () => (existsSync(doneFile) ? true : null), 30_000);
+    } catch (e) {
+      throw new Error(`the Bare script did not finish: ${script.stderr()}`, { cause: e });
+    }
+    const done = JSON.parse(readFileSync(doneFile, 'utf8')) as {
+      free: number;
+      first: boolean;
+      second: boolean;
+    };
+    expect([done.first, done.second]).toEqual([true, true]);
+    expect(JSON.parse(readFileSync(join(dir, 'out.json'), 'utf8'))).toEqual({ step: 2 });
+    expect(statSync(join(dir, 'out.json')).mode & 0o777).toBe(0o600);
+    const fromNode = statfsSync(dir);
+    const expected = fromNode.bavail * fromNode.bsize;
+    expect(done.free).toBeGreaterThan(0);
+    expect(Math.abs(done.free - expected) / expected).toBeLessThan(0.05);
+    report('bare-disk', { freeSpaceRead: true, replacedDurably: true, directorySynced: true });
+  }, 60_000);
 
   it('the publisher’s page reached nothing off loopback and broke nothing', () => {
     const { pageErrors, requests } = w();

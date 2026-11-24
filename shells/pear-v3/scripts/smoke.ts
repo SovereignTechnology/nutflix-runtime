@@ -68,6 +68,10 @@ export interface ReadyFields {
   readonly h264?: unknown;
   /** Whether this build was packaged with an upgrade link, and so runs the updater. */
   readonly updates?: unknown;
+  /** The native Account menu, the only way to secret entry, is in place with all its items. */
+  readonly accountMenu?: unknown;
+  /** `visible` on Linux and Windows; `system` on macOS, whose menu bar is not the window's. */
+  readonly menuBar?: unknown;
 }
 
 /** The fields of a READY line, or `null` when `line` is not one. */
@@ -102,6 +106,8 @@ export function readyProblems(
     ['player', 'available'],
     // A build for release has no upgrade link and starts no updater: every launch checks it.
     ['updates', updates],
+    ['accountMenu', 'present'],
+    ['menuBar', process.platform === 'darwin' ? 'system' : 'visible'],
   ];
   return want
     .filter(([k, v]) => f[k] !== v)

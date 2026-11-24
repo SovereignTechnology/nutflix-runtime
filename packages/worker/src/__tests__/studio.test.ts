@@ -198,6 +198,7 @@ async function fakeStudio(
     readonly stat?: typeof nodeFs.stat;
     readonly sourceTtlSec?: number;
     readonly diskCapBytes?: number;
+    readonly freeBytes?: number;
   } = {},
 ): Promise<{
   w: ReturnType<typeof startWorker>;
@@ -214,6 +215,9 @@ async function fakeStudio(
     os: 'linux',
     pathEnv: '/fake/bin',
     isExecutable: (p) => Promise.resolve(p.startsWith('/fake/bin/')),
+    ...(extra.freeBytes === undefined
+      ? {}
+      : { freeBytes: () => Promise.resolve(extra.freeBytes ?? null) }),
     runner: {
       run: (f, args) => {
         calls.push([f, ...args]);
@@ -416,6 +420,43 @@ describe('an untrusted file, refused before anything is encoded', () => {
       ),
     ).toBe('disk-cap');
     expect(calls.filter((c) => c.includes('libx264'))).toEqual([]);
+  });
+
+  it('refuses a job the real disk cannot hold, counting every copy it makes', async () => {
+    // 10 s at 720p fits the quota, and would fit this disk once, but not three times.
+    const { w, file, calls } = await fakeStudio(ffprobeOf({}), { freeBytes: 12 * 1024 * 1024 });
+    await w.client.request('signer.local.create', { passphrase: 'a passphrase for this test' });
+    const s = await w.client.request('studio.source', { path: file });
+    expect(
+      await code(
+        w.client.request('studio.publish', {
+          source: s.source,
+          title: 't',
+          description: '',
+          tags: [],
+          sizes: [720],
+        }),
+      ),
+    ).toBe('disk-cap');
+    expect(calls.filter((c) => c.includes('libx264'))).toEqual([]);
+  });
+
+  it('says exactly why a title was refused', async () => {
+    const { w, file } = await fakeStudio(ffprobeOf({}));
+    await w.client.request('signer.local.create', { passphrase: 'a passphrase for this test' });
+    const s = await w.client.request('studio.source', { path: file });
+    await expect(
+      w.client.request('studio.publish', {
+        source: s.source,
+        title: 'a\u202eb',
+        description: '',
+        tags: [],
+        sizes: [720],
+      }),
+    ).rejects.toMatchObject({
+      code: 'invalid-argument',
+      message: expect.stringContaining('embeddings, overrides and isolates') as string,
+    });
   });
 
   it('holds an output to what is left of the job’s budget', async () => {

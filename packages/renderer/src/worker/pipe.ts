@@ -69,6 +69,7 @@ export type ControlMethod =
       | 'seeding.delete'
       | 'studio.source'
       | 'studio.discard'
+      | 'signer.lock'
       | 'signer.local.create'
       | 'signer.local.unlock'
       | 'signer.nip46.connect'

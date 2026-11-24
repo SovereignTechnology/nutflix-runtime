@@ -37,7 +37,7 @@ import { DhtNode } from './net/dht-node.js';
 import { signBeacons, type BeaconTarget } from './nfx/beacons.js';
 import { NfxPeerPool } from './nfx/hyperdht-fetcher.js';
 import { OFFERED_DIR, SegmentOffers } from './nfx/offers.js';
-import { SeedPolicy } from './nfx/seed-policy.js';
+import { SeedPolicy, type SeedRecord } from './nfx/seed-policy.js';
 import { SeederKeys } from './nfx/seeder-key.js';
 import { NfxSeeds } from './nfx/seeds.js';
 import { NFX_PLAY_DIR, NfxWatching, watcherKeyName } from './nfx/watching.js';
@@ -56,6 +56,7 @@ import type {
 } from './protocol.js';
 import {
   MAX_NFX_STORED_VIDEOS,
+  MAX_TITLE,
   MAX_WATCHED_BYTES,
   MAX_WATCH_BYTES_PER_HOUR,
   MAX_WATCH_STARTS_PER_HOUR,
@@ -65,7 +66,7 @@ import type { WorkerRpcHandler } from './rpc.js';
 import type { WorkerRuntime } from './runtime.js';
 import { checkManifestDraft, checkSignedManifest } from './signer/manifest-check.js';
 import { SIGNER_DIR, UserSigner } from './signer/user-signer.js';
-import { STUDIO_NAMESPACE, Studio } from './studio/studio.js';
+import { STUDIO_DISK_COPIES, STUDIO_NAMESPACE, Studio } from './studio/studio.js';
 
 export const KEYS_DIR = 'keys';
 export const TMP_DIR = 'tmp';
@@ -123,6 +124,19 @@ const needs = <T>(x: T | null): T => {
 
 type Call = { [M in WorkerMethod]: { readonly m: M; readonly a: ArgsOf<M> } }[WorkerMethod];
 
+/** A manifest's title, whole characters only, within what a record keeps. */
+function cappedTitle(t: string): string {
+  let out = '';
+  for (const ch of t) {
+    if (out.length + ch.length > MAX_TITLE) break;
+    out += ch;
+  }
+  return out;
+}
+
+const titleOf = (r: SeedRecord | undefined): { readonly title?: string } =>
+  r?.title === undefined ? {} : { title: r.title };
+
 export class WorkerHost implements WorkerRpcHandler {
   private readonly o: WorkerHostOptions;
   private running: Running | null = null;
@@ -168,7 +182,15 @@ export class WorkerHost implements WorkerRpcHandler {
       case 'nfx.endpoint':
         return { hyperdht: await r.seeds.endpoint(c.a.seeder, c.a.namespace) };
       case 'signer.status':
-        return r.signer?.status() ?? { kind: 'none', pubkey: null, locked: true, keyFile: false };
+        return (
+          r.signer?.status() ?? {
+            kind: 'none',
+            pubkey: null,
+            locked: true,
+            keyFile: false,
+            localAllowed: false,
+          }
+        );
       case 'signer.local.create':
         return needs(r.signer).create(c.a.passphrase);
       case 'signer.local.unlock':
@@ -183,15 +205,29 @@ export class WorkerHost implements WorkerRpcHandler {
         return this.signManifest(r, c.a.event, c.a.signer);
       case 'seeding.status':
         return this.seedingStatus(r);
-      case 'seeding.set':
-        await r.policy.setWatched(c.a.watched);
+      case 'seeding.set': {
+        // The switch flips in memory at once; whether the save worked is reported last, so that a
+        // full disk cannot leave a fetch running after "off".
+        const saved = r.policy.setWatched(c.a.watched).then(
+          () => true,
+          () => false,
+        );
         if (!c.a.watched) {
           // Off means off: fetches for it stop, and nothing handed over is kept.
           await Promise.all([...r.watchBudget.active].map((v) => r.seeds.abandon(v)));
           await r.offers.clear();
         }
         await r.seeds.refresh();
+        if (!(await saved)) {
+          // An "on" that could not be saved does not stay on.
+          if (c.a.watched) {
+            await r.policy.setWatched(false).catch(() => undefined);
+            await r.seeds.refresh();
+          }
+          fail('io', 'the seeding switch could not be saved');
+        }
         return this.seedingStatus(r);
+      }
       case 'seeding.watch':
         return this.seedWatched(r, c.a);
       case 'seeding.stop': {
@@ -258,6 +294,7 @@ export class WorkerHost implements WorkerRpcHandler {
         origin: r.policy.origin(v.video),
         served: r.policy.served(v.video),
         stopped: r.policy.record(v.video)?.stopped === true,
+        ...titleOf(r.policy.record(v.video)),
         // A private video's hash list stays private: a page has no use for it.
         ...(r.policy.isPrivate(v.video) ? {} : { root: v.root, segs: v.segs }),
       })),
@@ -339,18 +376,20 @@ export class WorkerHost implements WorkerRpcHandler {
       fail('invalid-argument', 'this is not the manifest Studio made for that video');
     const signed = await signer.sign(event);
     checkSignedManifest(signed, video, key);
-    r.studio.forgetDraft(video);
     const record = r.policy.record(video);
-    if (record !== undefined) {
-      await r.policy.set(video, { ...record, author: key });
-      await r.seeds.refresh();
-    }
+    // On disk before anyone can publish this event: the start-up purge deletes what still reads as
+    // an unsigned draft. If this fails nothing was published, and the draft stays for a retry.
+    if (record !== undefined) await r.policy.setDurable(video, { ...record, author: key });
+    r.studio.forgetDraft(video);
+    if (record !== undefined) await r.seeds.refresh();
     return signed;
   }
 
   /** `seeding.watch`: only with the switch on, and only for a free manifest that verifies. */
   private async seedWatched(r: Running, a: SeedingWatchArgs): Promise<ResultOf<'seeding.watch'>> {
-    if (!r.policy.watched) fail('invalid-argument', 'seeding what you watch is off');
+    // A function: the answer can change across the awaits below.
+    const switchOn = (): boolean => r.policy.watched;
+    if (!switchOn()) fail('invalid-argument', 'seeding what you watch is off');
     const parsed = nfx.parseManifest(a.manifest);
     if (!parsed.ok || !nfx.isListable(parsed.value))
       fail('invalid-argument', 'not a free NFX manifest');
@@ -372,7 +411,14 @@ export class WorkerHost implements WorkerRpcHandler {
     r.watchBudget.active.add(video);
     try {
       if (known === undefined)
-        await r.policy.set(video, { origin: 'watched', root: m.root, author: m.author });
+        await r.policy.set(video, {
+          origin: 'watched',
+          root: m.root,
+          author: m.author,
+          title: cappedTitle(m.title),
+        });
+      // The switch can go off during that write, when there was no fetch yet to abandon.
+      if (!switchOn()) fail('invalid-argument', 'seeding what you watch is off');
       const stored = await r.seeds.start({
         video,
         root: m.root,
@@ -487,14 +533,25 @@ export class WorkerHost implements WorkerRpcHandler {
     const onChange = (): void => {
       this.emitStatus();
     };
-    const policy = new SeedPolicy(fs, a.storage);
+    const durable = this.o.runtime.system?.writeDurable;
+    const policy = new SeedPolicy(fs, a.storage, {
+      ...(durable === undefined ? {} : { durable }),
+      warn: (text) => {
+        logger.warn(`nfx: ${text}`);
+      },
+    });
     await policy.load();
     // An unsigned draft does not outlive the run that made it: its in-memory draft is gone, so it
     // could never be signed, and nothing else should hold a video the user has not approved.
     for (const video of policy.drafts()) {
-      const addr = nfx.VideoAddr.parse(video);
-      if (addr.ok) await store.removeVideo(addr.value);
-      await policy.remove(video);
+      try {
+        const addr = nfx.VideoAddr.parse(video);
+        if (addr.ok) await store.removeVideo(addr.value);
+        await policy.remove(video);
+      } catch {
+        // A full or read-only disk must not stop the app. Unremoved, it stays private all the same.
+        logger.warn('nfx: an unsigned draft could not be removed');
+      }
     }
     const watching = new NfxWatching({
       pool,
@@ -542,6 +599,9 @@ export class WorkerHost implements WorkerRpcHandler {
         system,
         dir: fs.join(a.storage, SIGNER_DIR),
         allowLocal: a.localKey === true,
+        warn: (text) => {
+          logger.warn(`signer: ${text}`);
+        },
         ...(this.o.signerCost === undefined ? {} : { cost: this.o.signerCost }),
         ...(this.o.bunkerWaitMs === undefined ? {} : { bunkerWaitMs: this.o.bunkerWaitMs }),
       });
@@ -560,9 +620,16 @@ export class WorkerHost implements WorkerRpcHandler {
           this.o.emit(ev);
         },
         canSign: () => userSigner.signingKey !== null,
-        onPackaged: (video, root) => policy.set(video, { origin: 'published', root, author: null }),
+        onPackaged: (video, root, title) =>
+          policy.set(video, { origin: 'published', root, author: null, title }),
         onAbandoned: (video) => policy.remove(video),
-        room: () => cap?.freeBytes ?? null,
+        room: async () => {
+          const quota = cap?.freeBytes ?? null;
+          const free = await system.freeBytes(a.storage).catch(() => null);
+          const disk = free === null ? null : Math.floor(free / STUDIO_DISK_COPIES);
+          if (quota === null) return disk;
+          return disk === null ? quota : Math.min(quota, disk);
+        },
         now: () => Math.floor(Date.now() / 1000),
         ...(this.o.studioPreset === undefined ? {} : { preset: this.o.studioPreset }),
         ...(this.o.sourceTtlSec === undefined ? {} : { sourceTtlSec: this.o.sourceTtlSec }),

@@ -101,6 +101,11 @@ export const MAX_SOURCE_SECONDS = 4 * 3600;
 /** The widest or tallest frame Studio reads (8K). */
 export const MAX_SOURCE_DIMENSION = 7680;
 export const MAX_TITLE = 256;
+/**
+ * The most combining marks in a row on one character, in a title or as a dialog shows any text. Real
+ * scripts stack a few (Hebrew points, Tibetan subjoined letters); a long run draws over nearby lines.
+ */
+export const MAX_COMBINING_RUN = 6;
 export const MAX_DESCRIPTION = 8192;
 export const MAX_VIDEO_TAGS = 16;
 export const MAX_VIDEO_TAG = 32;
@@ -271,6 +276,11 @@ export interface SignerStatusWire {
   readonly locked: boolean;
   /** A sealed local key exists on this machine. */
   readonly keyFile: boolean;
+  /**
+   * Whether this run may use one. `false` in a shell without Chromium's sandbox: a key on disk stays
+   * there, untouched and unused, and only a bunker can sign.
+   */
+  readonly localAllowed: boolean;
 }
 
 /** An event to sign: the user's signer fills in `id`, `pubkey` and `sig`. */
@@ -297,6 +307,8 @@ export type SeedOrigin = 'published' | 'watched' | 'host' | 'unknown';
 
 export interface SeedingVideoWire {
   readonly video: string;
+  /** The title recorded when it was published or first seeded, for the native dialogs. */
+  readonly title?: string;
   readonly files: number;
   readonly bytes: number;
   readonly origin: SeedOrigin;
@@ -542,9 +554,6 @@ export interface WindowMethodTable {
   'app.seeding.delete': [args: { readonly video: string }, result: SeedingStatusWire];
   /** `null`: the user declined, and the draft is gone. */
   'app.publish.sign': [args: { readonly video: string }, result: SignedEventWire | null];
-  'app.signer.create': [args: Record<string, never>, result: SignerStatusWire];
-  'app.signer.unlock': [args: Record<string, never>, result: SignerStatusWire];
-  'app.signer.connect': [args: Record<string, never>, result: SignerStatusWire];
 }
 export type WindowMethod = keyof WindowMethodTable;
 export const WINDOW_METHODS = [
@@ -553,9 +562,6 @@ export const WINDOW_METHODS = [
   'app.seeding.resume',
   'app.seeding.delete',
   'app.publish.sign',
-  'app.signer.create',
-  'app.signer.unlock',
-  'app.signer.connect',
 ] as const satisfies readonly WindowMethod[];
 
 // ---- events --------------------------------------------------------------------------------

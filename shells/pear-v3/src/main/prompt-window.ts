@@ -141,6 +141,11 @@ export function openPrompt(
   const id = wc.id;
   win.setMenu(null);
   win.once('closed', onGone);
+  // A renderer that dies before its first paint would leave an invisible window holding the
+  // dialog lock: gone is a cancel.
+  wc.once('render-process-gone', () => {
+    if (!win.isDestroyed()) win.destroy();
+  });
   wc.once('did-finish-load', () => {
     wc.send(PROMPT_SHOW, spec);
   });
@@ -216,7 +221,8 @@ export class PromptHost {
   /**
    * Shows the prompt. Each value the user submits goes to `submit`, which answers `null` when it
    * is done, or a line to show so that they can try again. Resolves `true` when done, `false` when
-   * they cancelled or closed the window.
+   * they cancelled or closed the window. If it closes while a value is being handled, that call
+   * cannot be taken back, so this waits for it and answers what really happened.
    */
   ask(
     windowId: number,
@@ -257,17 +263,15 @@ export class PromptHost {
       return;
     }
     a.busy = true;
-    a.submit(value).then(
-      (problem) => {
-        a.busy = false;
-        if (problem === null) this.#finish(a, true);
-        else if (!a.finished) a.surface.error(problem);
-      },
-      () => {
-        a.busy = false;
-        if (!a.finished) a.surface.error('That did not work.');
-      },
-    );
+    const settled = (problem: string | null): void => {
+      a.busy = false;
+      if (a.finished) a.resolve(problem === null);
+      else if (problem === null) this.#finish(a, true);
+      else a.surface.error(problem);
+    };
+    a.submit(value).then(settled, () => {
+      settled('That did not work.');
+    });
   }
 
   #finish(a: Active, done: boolean): void {
@@ -279,6 +283,7 @@ export class PromptHost {
     } catch {
       // Already gone.
     }
-    a.resolve(done);
+    // A value still being handled decides the answer (`message`).
+    if (!a.busy) a.resolve(done);
   }
 }

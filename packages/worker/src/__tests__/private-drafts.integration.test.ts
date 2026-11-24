@@ -7,7 +7,11 @@
  * come through nutflix-pear's own seeder, so that no encode is needed. The real encode is in
  * `packages/renderer/e2e/publish/`.
  */
-import { hyperdhtEndpoint, listenNfx, type NfxFileSource } from '@sovit/seeder';
+import { readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { hyperdhtEndpoint, listenNfx, nodeFs, type NfxFileSource } from '@sovit/seeder';
 import DHT from 'hyperdht';
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
@@ -15,7 +19,9 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
+import { SEEDING_FILE, SeedPolicy, type SeedRecord } from '../nfx/seed-policy.js';
 import type { NfxHyperdhtEndpointWire, SignedEventWire } from '../protocol.js';
+import type { WorkerRuntime } from '../runtime.js';
 import { nodeRuntime, startWorker, tempDir, until, type RunningWorker } from './helpers/harness.js';
 import { memorySource, segments, testNfxVideo, type TestNfxVideo } from './helpers/nfx-video.js';
 
@@ -355,6 +361,156 @@ describe('private until confirmed', () => {
     expect(w.host.internals?.policy.record(v.video)).toBeUndefined();
   });
 
+  /** A worker whose writes of `seeding.json` the test can hold or break. */
+  async function workerOnFs(): Promise<{
+    w: RunningWorker;
+    dir: string;
+    ctl: { hold: boolean; held: number; breakSave: boolean; release: () => void };
+  }> {
+    const d = await tempDir('nf-private-');
+    cleanups.push(() => d.rm());
+    const ctl = { hold: false, held: 0, breakSave: false, release: (): void => undefined };
+    const base = nodeRuntime();
+    const runtime: WorkerRuntime = {
+      ...base,
+      fs: {
+        ...base.fs,
+        writeFile: async (p, data) => {
+          if (ctl.hold && p.includes(SEEDING_FILE)) {
+            ctl.hold = false;
+            ctl.held += 1;
+            await new Promise<void>((r) => {
+              ctl.release = r;
+            });
+          }
+          await base.fs.writeFile(p, data);
+        },
+        rename: (from, to) =>
+          ctl.breakSave && to.endsWith(SEEDING_FILE)
+            ? Promise.reject(new Error('the disk is full'))
+            : base.fs.rename(from, to),
+      },
+    };
+    const w = startWorker({ runtime });
+    cleanups.push(() => w.close());
+    await w.client.request('init', { v: 1, storage: d.dir, bootstrap: testnet.bootstrap });
+    return { w, dir: d.dir, ctl };
+  }
+
+  it('a switch turned off during the record’s write stops the fetch before it starts', async () => {
+    const v = testNfxVideo();
+    const endpoint = await seeder(v);
+    const { w, ctl } = await workerOnFs();
+    await w.client.request('seeding.set', { watched: true });
+    await w.client.request('nfx.play.open', {
+      sid: SID,
+      video: v.video,
+      root: v.root,
+      segs: v.segs,
+      peers: [endpoint],
+      progressive: false,
+    });
+    ctl.hold = true;
+    const watch = code(
+      w.client.request('seeding.watch', {
+        sid: SID,
+        manifest: signedManifest(v),
+        peers: [endpoint],
+      }),
+    );
+    await until(() => ctl.held === 1, 'the record’s write to start', 10_000);
+    const off = w.client.request('seeding.set', { watched: false });
+    await until(() => w.host.internals?.policy.watched === false, 'the switch to flip', 10_000);
+    ctl.release();
+    await off;
+    expect(await watch).toBe('invalid-argument');
+    expect((await w.client.request('status', {})).storedVideos).toBe(0);
+    expect(w.host.internals?.policy.record(v.video)).toBeUndefined();
+  });
+
+  it('a save that fails still shuts down what the switch was running', async () => {
+    const v = testNfxVideo();
+    const endpoint = await seeder(v);
+    const { w, ctl } = await workerOnFs();
+    await w.client.request('seeding.set', { watched: true });
+    await w.client.request('nfx.play.open', {
+      sid: SID,
+      video: v.video,
+      root: v.root,
+      segs: v.segs,
+      peers: [endpoint],
+      progressive: false,
+    });
+    const first = v.segmentShas[0];
+    const bytes = first === undefined ? undefined : v.files.get(first);
+    if (first === undefined || bytes === undefined) throw new Error('no bytes');
+    await w.client.request('seeding.segment', {
+      sid: SID,
+      sha256: first,
+      size: bytes.length,
+      offset: 0,
+      data: Buffer.from(bytes).toString('base64'),
+    });
+    expect(w.host.internals?.offers.keptBytes).toBe(bytes.length);
+    ctl.breakSave = true;
+    expect(await code(w.client.request('seeding.set', { watched: false }))).toBe('io');
+    expect(w.host.internals?.policy.watched).toBe(false);
+    expect(w.host.internals?.offers.keptBytes).toBe(0);
+  });
+
+  it('an "on" that could not be saved does not stay on', async () => {
+    const { w, ctl } = await workerOnFs();
+    ctl.breakSave = true;
+    expect(await code(w.client.request('seeding.set', { watched: true }))).toBe('io');
+    expect(w.host.internals?.policy.watched).toBe(false);
+  });
+
+  it('a draft that cannot be purged does not stop the worker from starting', async () => {
+    const v = testNfxVideo();
+    const { w, dir } = await worker();
+    await storedDraft(w, v);
+    await w.close();
+    const base = nodeRuntime();
+    const broken: WorkerRuntime = {
+      ...base,
+      fs: {
+        ...base.fs,
+        rename: (from, to) =>
+          to.endsWith(SEEDING_FILE)
+            ? Promise.reject(new Error('read-only'))
+            : base.fs.rename(from, to),
+      },
+    };
+    const again = startWorker({ runtime: broken });
+    cleanups.push(() => again.close());
+    await again.client.request('init', { v: 1, storage: dir, bootstrap: testnet.bootstrap });
+    const s = await again.client.request('status', {});
+    expect(s.dht).toBe('idle');
+    expect(s.listening).toEqual([]);
+  });
+
+  it('records the title of what it seeds, for the native dialogs', async () => {
+    const v = testNfxVideo();
+    const endpoint = await seeder(v);
+    const { w } = await worker();
+    await w.client.request('seeding.set', { watched: true });
+    await w.client.request('nfx.play.open', {
+      sid: SID,
+      video: v.video,
+      root: v.root,
+      segs: v.segs,
+      peers: [endpoint],
+      progressive: false,
+    });
+    await w.client.request('seeding.watch', {
+      sid: SID,
+      manifest: signedManifest(v),
+      peers: [endpoint],
+    });
+    const [shown] = (await w.client.request('seeding.status', {})).videos;
+    expect(shown?.title).toBe('Test video');
+  });
+
   it('deleting and fetching again does not reset the hourly byte budget', async () => {
     const v = testNfxVideo();
     let total = 0;
@@ -377,5 +533,91 @@ describe('private until confirmed', () => {
       await code(w.client.request('seeding.watch', { sid: SID, manifest, peers: [endpoint] })),
     ).toBe('rate-limited');
     expect((await w.client.request('status', {})).storedVideos).toBe(0);
+  });
+});
+
+describe('the seed policy on disk', () => {
+  const VIDEO = `nfx:testnet:1:nutflix-${'a'.repeat(32)}`;
+  const DRAFT: SeedRecord = { origin: 'published', root: 'ab'.repeat(32), author: null };
+  const cleanups: (() => Promise<void>)[] = [];
+  afterEach(async () => {
+    for (const c of cleanups.splice(0)) await c();
+  });
+  const dir = async (): Promise<string> => {
+    const d = await tempDir('nf-policy-');
+    cleanups.push(() => d.rm());
+    return d.dir;
+  };
+  const onDisk = (d: string): { videos: Record<string, SeedRecord> } =>
+    JSON.parse(readFileSync(join(d, SEEDING_FILE), 'utf8')) as {
+      videos: Record<string, SeedRecord>;
+    };
+
+  it('a signed record is on disk, through the durable write, when setDurable resolves', async () => {
+    const d = await dir();
+    let durableWrites = 0;
+    const policy = new SeedPolicy(nodeFs, d, {
+      durable: async (p, data) => {
+        durableWrites += 1;
+        await writeFile(p, data);
+        return true;
+      },
+    });
+    await policy.set(VIDEO, DRAFT);
+    await policy.setDurable(VIDEO, { ...DRAFT, author: AUTHOR });
+    expect(durableWrites).toBe(2);
+    expect(onDisk(d).videos[VIDEO]?.author).toBe(AUTHOR);
+  });
+
+  it('a durable write that fails leaves the record as it was', async () => {
+    const d = await dir();
+    let fail = false;
+    const policy = new SeedPolicy(nodeFs, d, {
+      durable: async (p, data) => {
+        if (fail) throw new Error('the disk is full');
+        await writeFile(p, data);
+        return true;
+      },
+    });
+    await policy.set(VIDEO, DRAFT);
+    fail = true;
+    await expect(policy.setDurable(VIDEO, { ...DRAFT, author: AUTHOR })).rejects.toThrow();
+    expect(policy.record(VIDEO)?.author).toBeNull();
+    expect(policy.isPrivate(VIDEO)).toBe(true);
+  });
+
+  it('a directory that would not sync is a warning, not a failed save', async () => {
+    const d = await dir();
+    const warned: string[] = [];
+    const policy = new SeedPolicy(nodeFs, d, {
+      durable: async (p, data) => {
+        await writeFile(p, data);
+        return false;
+      },
+      warn: (t) => warned.push(t),
+    });
+    await policy.setDurable(VIDEO, { ...DRAFT, author: AUTHOR });
+    expect(warned).toHaveLength(1);
+    expect(onDisk(d).videos[VIDEO]?.author).toBe(AUTHOR);
+  });
+
+  it('keeps a title, and treats an oversized one as a damaged record', async () => {
+    const d = await dir();
+    const first = new SeedPolicy(nodeFs, d);
+    await first.set(VIDEO, { ...DRAFT, author: AUTHOR, title: 'A title' });
+    const again = new SeedPolicy(nodeFs, d);
+    await again.load();
+    expect(again.record(VIDEO)?.title).toBe('A title');
+    await writeFile(
+      join(d, SEEDING_FILE),
+      JSON.stringify({
+        v: 1,
+        watched: false,
+        videos: { [VIDEO]: { ...DRAFT, title: 'x'.repeat(257) } },
+      }),
+    );
+    const damaged = new SeedPolicy(nodeFs, d);
+    await damaged.load();
+    expect(damaged.record(VIDEO)).toBeUndefined();
   });
 });

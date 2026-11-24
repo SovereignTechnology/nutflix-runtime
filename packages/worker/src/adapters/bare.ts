@@ -244,15 +244,14 @@ function bareRunner(): ProcessRunner {
   };
 }
 
-/** Atomic and private: a temporary file with mode 0600, renamed over `p`, in a 0700 directory. */
-async function writePrivate(p: string, data: Uint8Array): Promise<void> {
-  const dir = path.dirname(p);
-  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
-  if (Bare.platform !== 'win32') await fs.promises.chmod(dir, 0o700);
+/**
+ * Atomic and on disk: a temporary file, synced, renamed over `p`, and the directory synced. A power
+ * cut leaves the old file or the whole new one, never an empty one. Resolves `false` when only the
+ * directory's sync failed: the file is in place, so this is not a failed save.
+ */
+async function replaceDurably(p: string, data: Uint8Array): Promise<boolean> {
   const tmp = `${p}.${randomHex(6)}.tmp`;
   try {
-    // On disk before the rename, and the rename on disk after it: a power cut leaves the old file
-    // or the whole new one, never an empty key file.
     const h = await fs.promises.open(tmp, 'wx', 0o600);
     try {
       // bare-fs's typings say a number; its FileHandle answers `{ bytesWritten, buffer }`.
@@ -263,17 +262,40 @@ async function writePrivate(p: string, data: Uint8Array): Promise<void> {
       await h.close();
     }
     await fs.promises.rename(tmp, p);
-    if (Bare.platform !== 'win32') {
-      const d = await fs.promises.open(dir, 'r');
-      try {
-        await d.sync();
-      } finally {
-        await d.close();
-      }
-    }
   } catch (e) {
     await fs.promises.unlink(tmp).catch(() => undefined);
     throw e;
+  }
+  if (Bare.platform === 'win32') return true;
+  try {
+    const d = await fs.promises.open(path.dirname(p), 'r');
+    try {
+      await d.sync();
+    } finally {
+      await d.close();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `replaceDurably`, private: mode 0600 in a 0700 directory. */
+async function writePrivate(p: string, data: Uint8Array): Promise<boolean> {
+  const dir = path.dirname(p);
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+  if (Bare.platform !== 'win32') await fs.promises.chmod(dir, 0o700);
+  return replaceDurably(p, data);
+}
+
+/** The bytes this user may still write on the disk holding `p`. */
+async function freeBytes(p: string): Promise<number | null> {
+  try {
+    const s = await fs.promises.statfs(p);
+    const free = s.bavail * s.bsize;
+    return Number.isSafeInteger(free) && free >= 0 ? free : null;
+  } catch {
+    return null;
   }
 }
 
@@ -341,6 +363,8 @@ export function bareRuntime(): WorkerRuntime {
       runner: bareRunner(),
       isExecutable,
       writePrivate,
+      writeDurable: replaceDurably,
+      freeBytes,
       connectRelay,
     },
   };

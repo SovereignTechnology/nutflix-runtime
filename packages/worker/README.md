@@ -114,13 +114,13 @@ Error codes:
 | `nfx.seed.stop` | `{ video }` | `{ removed }` |
 | `nfx.seed.list` | `{}` | `{ videos: [{ video, root, segs, files, bytes }], listening: [{ namespace, connections }] }` |
 | `nfx.endpoint` | `{ seeder, namespace }` | `{ hyperdht: { t: 'hyperdht', peer, bind } \| null }` |
-| `signer.status` | `{}` | `{ kind, pubkey, locked, keyFile }` |
+| `signer.status` | `{}` | `{ kind, pubkey, locked, keyFile, localAllowed }` |
 | `signer.local.create`, `signer.local.unlock` (main only) | `{ passphrase }` (8 to 1024 characters) | the status |
 | `signer.nip46.connect` (main only) | `{ uri }` (`bunker://…`) | the status |
-| `signer.lock` | `{}` | the status |
+| `signer.lock` (main only) | `{}` | the status |
 | `signer.check` (main only) | `{ video }` | `{ video, event, signer, npub, title, tags, description, file }` |
 | `signer.sign` (main only) | `{ event: { kind, created_at, tags, content }, signer }` | the signed event |
-| `seeding.status` | `{}` | `{ watched, videos: [{ video, files, bytes, origin, served, stopped, root?, segs? }], listening }` (no `root` or `segs` for a private video) |
+| `seeding.status` | `{}` | `{ watched, videos: [{ video, title?, files, bytes, origin, served, stopped, root?, segs? }], listening }` (no `root` or `segs` for a private video) |
 | `seeding.set` (main only) | `{ watched }` | the seeding status |
 | `seeding.watch` | `{ sid, manifest, peers }` | `{ video, root, segs, files, bytes }` |
 | `seeding.stop` | `{ video }` | `{ stopped }`: stops serving and keeps the bytes |
@@ -157,8 +157,10 @@ starts no DHT node.
 A key made here and sealed under a passphrase (`signer/user.key`, 0600: argon2id and
 XChaCha20-Poly1305, core's `LocalSigner`), or a NIP-46 bunker whose session this worker holds. No
 method returns a key, and none imports one. A passphrase or bunker URI reaches the worker from main's
-own prompt window and never passes through the page. A sealed key exists only where `init` says
-`localKey: true`: shape (b) does not, so it has no path to one.
+own prompt window, which only the native Account menu opens, and never passes through the page. A
+sealed key is used only where `init` says `localKey: true`. Shape (b) does not, and neither does
+shape (a) when the user chose to run without Chromium's sandbox: then only a bunker signs, and a key
+already on disk stays there, unread and untouched (`keyFile: true`, `localAllowed: false`).
 
 `signer.sign` signs only kinds in `SIGNABLE_KINDS` (kind 38504), and only the exact draft
 `studio.publish` made for a video this node packaged, once. Only main reaches it, after the user
@@ -190,7 +192,8 @@ renderer publishes them.
 gets seeded: it can open a play of a free video the user never watched, and this computer will store
 it and serve it, which shares the user's IP address with whoever fetches it. The worker cannot tell
 whether anyone watched, and a "served enough bytes" check would only be something the page could
-fake. The limits above bound this; they do not prevent it.
+fake. The limits above bound this; they do not prevent it. The hourly counters are in memory, so they
+start again when the app restarts.
 
 A file that reached the renderer over WebRTC (`seeding.segment`) is taken only for an open play
 session whose verified hash list names its sha256 and size, whole, while the switch is on. It is
@@ -200,11 +203,17 @@ then re-seeded without being fetched again.
 
 `studio.source` takes a path from main's native dialog; the page only ever holds a token, good for
 one publish. There is one live token: a new pick revokes the old one, and it expires after 30
-minutes. A job's output is held to the space the store has left, at most 32 GiB. The
+minutes. A job's output is held to the store's quota, to a third of the real free disk space (read
+with `statfs`: the encode, the packaged files and the store's copy are on disk at once) and to 32 GiB.
+A title or tag refused for what it holds gets a specific error. Directional marks (U+200E, U+200F,
+U+061C) and joiners are kept, since Arabic, Hebrew, Persian and Indic text need them; embeddings,
+overrides, isolates, line breaks, tag characters and runs of more than 6 combining marks are not. The
 system's ffmpeg and ffprobe run from an argv, with `-protocol_whitelist file,pipe`, a demuxer
 allow-list (no HLS, DASH or concat, which would read other local files), `-max_pixels`, inputs and outputs confined
 to the picked file and a job directory under `tmp/`, and caps on size, length and time. If they are
-missing, `studio.ffmpeg` says how to install them.
+missing, `studio.ffmpeg` says how to install them. **Known limit:** on Linux ffmpeg dies with the
+worker (`setpriv --pdeathsig`). On macOS and Windows it is killed on exit and cancel, but can outlive
+a crash of the worker.
 
 #### `nfx.play.open`
 

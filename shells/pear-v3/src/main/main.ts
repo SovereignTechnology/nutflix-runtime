@@ -49,6 +49,13 @@ import {
   updateBannerText,
 } from '../../../../packages/renderer/src/update-text.ts';
 import type { UpdateStatus } from '../update/status.ts';
+import {
+  AccountRunner,
+  accountMenuPresent,
+  accountShortcut,
+  applicationMenu,
+  menuBarState,
+} from './account-menu.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
@@ -73,6 +80,7 @@ import {
   CONFIRM_YES,
   MainCalls,
   PICK_VIDEO_DIALOG,
+  accountProblemDialog,
   publishDialog,
   videoDialog,
 } from './main-calls.ts';
@@ -207,6 +215,19 @@ const mainCalls = new MainCalls({
   worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
 });
 
+/**
+ * The Account menu, and its shortcuts. It is the only way to secret entry. The page hears only that
+ * the signer may have changed, and asks `signer.status`.
+ */
+const account = new AccountRunner(async (action) => {
+  const win = mainWindow;
+  if (win === undefined || win.isDestroyed()) return;
+  const out = await mainCalls.account(win.webContents.id, action);
+  gate.fromMain('signer', { changed: true });
+  if (out.problem !== null && !win.isDestroyed())
+    await dialog.showMessageBox(win, accountProblemDialog(out.problem));
+});
+
 const links = new LinkOpener({
   open: (url) => {
     shell.openExternal(url).catch(() => {
@@ -295,9 +316,11 @@ if (app.commandLine.hasSwitch(SANDBOX_PREFLIGHT_SWITCH)) {
 async function main(): Promise<void> {
   await app.whenReady();
   Menu.setApplicationMenu(
-    process.platform === 'darwin'
-      ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }])
-      : null,
+    Menu.buildFromTemplate(
+      applicationMenu(process.platform, (action) => {
+        account.trigger(action);
+      }),
+    ),
   );
 
   // The page's policy is the renderer's own, read from the file the protocol serves.
@@ -384,6 +407,9 @@ async function main(): Promise<void> {
       vp9: probe.vp9,
       h264: probe.h264,
       updates: __NUTFLIX_UPDATES__ ? 'on' : 'off',
+      // Read back from Electron: secret entry is reachable only from this menu.
+      accountMenu: accountMenuPresent(Menu.getApplicationMenu()) ? 'present' : 'missing',
+      menuBar: mainWindow === undefined ? 'hidden' : menuBarState(process.platform, mainWindow),
     });
   };
 
@@ -410,8 +436,9 @@ async function main(): Promise<void> {
         v: 1,
         storage: join(app.getPath('userData'), 'worker'),
         diskCapBytes: NFX_DISK_CAP_BYTES,
-        // Shape (a) has Chromium's sandbox, so it may hold a sealed key (ADR 0001 §8).
-        localKey: true,
+        // A sealed key needs Chromium's sandbox. A user who chose to run without it signs through
+        // a bunker, the same rule as shape (b); a key on disk stays untouched (ADR 0001).
+        localKey: !unsandboxed,
       });
       await gate.request('status', {}, 30_000);
       state.worker = true;
@@ -433,6 +460,13 @@ async function main(): Promise<void> {
   });
   win.once('ready-to-show', () => {
     win.show();
+  });
+  // Before the page: a page cannot swallow these, and its own synthetic key events never get here.
+  win.webContents.on('before-input-event', (e, input) => {
+    const action = accountShortcut(input, process.platform);
+    if (action === null) return;
+    e.preventDefault();
+    account.trigger(action);
   });
   win.webContents.setWebRTCIPHandlingPolicy(WEBRTC_IP_POLICY);
   if (unsandboxed) win.setTitle('Nutflix (NO SANDBOX)');

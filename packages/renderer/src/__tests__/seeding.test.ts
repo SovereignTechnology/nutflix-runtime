@@ -24,10 +24,16 @@ import {
   BEACON_EVERY_MS,
   PUBLISH_DECLINED,
   SERVING_EVENT,
+  SIGNER_EVENT,
   SeedPublish,
   type SeedPublishOptions,
 } from '../seeding/controller.js';
-import { PANEL_ID, SEEDING_DISCLOSURE, installSeedPublishPanel } from '../seeding/panel.js';
+import {
+  ACCOUNT_MENU_NOTE,
+  PANEL_ID,
+  SEEDING_DISCLOSURE,
+  installSeedPublishPanel,
+} from '../seeding/panel.js';
 import { MAX_TAP_PENDING, SegmentTap, TAP_CHUNK_BYTES, toBase64 } from '../seeding/segment-tap.js';
 import { DEFAULT_SETTINGS } from '../settings/defaults.js';
 import { SettingsStore } from '../settings/store.js';
@@ -71,7 +77,13 @@ const servedStatus = (over: Partial<SeedingStatusWire> = {}): SeedingStatusWire 
   ...over,
 });
 
-const SIGNER: SignerStatusWire = { kind: 'none', pubkey: null, locked: true, keyFile: false };
+const SIGNER: SignerStatusWire = {
+  kind: 'none',
+  pubkey: null,
+  locked: true,
+  keyFile: false,
+  localAllowed: true,
+};
 
 interface Call {
   readonly m: string;
@@ -631,20 +643,12 @@ describe('the Settings section', () => {
     expect(c.querySelector(`#${PANEL_ID} input[type="file"]`)).toBeNull();
   });
 
-  it('has no field for a secret: the buttons ask main, with no arguments', async () => {
+  it('has no field and no button for a secret: it points at the Account menu', async () => {
     const worker = new FakeControl();
     worker.answers['seeding.status'] = () => IDLE;
-    worker.answers['signer.status'] = () => SIGNER;
+    let status: SignerStatusWire = SIGNER;
+    worker.answers['signer.status'] = () => status;
     worker.answers['studio.ffmpeg'] = () => ({ found: true, install: 'x' });
-    const unlocked: SignerStatusWire = {
-      kind: 'local',
-      pubkey: 'ab'.repeat(32),
-      locked: false,
-      keyFile: true,
-    };
-    worker.answers['app.signer.create'] = () => unlocked;
-    worker.answers['app.signer.unlock'] = () => unlocked;
-    worker.answers['app.signer.connect'] = () => unlocked;
     const control = new SeedPublish({
       worker,
       pool: { publish: () => Promise.resolve([]) },
@@ -658,18 +662,50 @@ describe('the Settings section', () => {
     const panel = installSeedPublishPanel(root, control);
     await settle();
     expect(root.querySelector('input[type="password"]')).toBeNull();
-    expect(root.querySelector('#nutflix-passphrase')).toBeNull();
-    expect(root.querySelector('#nutflix-bunker')).toBeNull();
-    for (const [id, method] of [
-      ['nutflix-signer-create', 'app.signer.create'],
-      ['nutflix-signer-unlock', 'app.signer.unlock'],
-      ['nutflix-signer-connect', 'app.signer.connect'],
-    ] as const) {
-      root.querySelector<HTMLButtonElement>(`#${id}`)?.click();
-      await settle();
-      expect(worker.calls.find((c) => c.m === method)?.a).toEqual({});
-    }
+    for (const id of ['passphrase', 'bunker', 'signer-create', 'signer-unlock', 'signer-connect'])
+      expect(root.querySelector(`#nutflix-${id}`)).toBeNull();
+    expect(root.querySelector('#nutflix-signer-lock')).toBeNull();
+    expect(root.querySelector('#nutflix-signer-note')?.textContent).toBe(ACCOUNT_MENU_NOTE);
+    expect(ACCOUNT_MENU_NOTE).toContain('use the Account menu');
+    expect(ACCOUNT_MENU_NOTE).toContain('never asks');
+    expect(worker.calls.some((c) => c.m.startsWith('app.signer'))).toBe(false);
+
+    // The menu changed the signer: the page hears only that, and reads the status again.
+    status = {
+      kind: 'local',
+      pubkey: 'ab'.repeat(32),
+      locked: false,
+      keyFile: true,
+      localAllowed: true,
+    };
+    worker.emit({ op: 'ev', e: SIGNER_EVENT, changed: true });
+    await settle();
     expect(root.querySelector('#nutflix-signer-status')?.textContent).toContain('unlocked');
+    panel.stop();
+    root.remove();
+  });
+
+  it('without the sandbox, says why a key on this computer is not used', async () => {
+    const worker = new FakeControl();
+    worker.answers['seeding.status'] = () => IDLE;
+    worker.answers['signer.status'] = () => ({ ...SIGNER, keyFile: true, localAllowed: false });
+    worker.answers['studio.ffmpeg'] = () => ({ found: true, install: 'x' });
+    const control = new SeedPublish({
+      worker,
+      pool: { publish: () => Promise.resolve([]) },
+      settings: { get: () => settings },
+    });
+    const root = document.createElement('div');
+    const body = document.createElement('div');
+    body.className = 'nf-settings__body';
+    root.append(body);
+    document.body.append(root);
+    const panel = installSeedPublishPanel(root, control);
+    await settle();
+    const line = root.querySelector('#nutflix-signer-status');
+    expect(line?.textContent).toContain('without Chromium');
+    expect(line?.textContent).toContain('untouched');
+    expect((line as HTMLElement).dataset['localAllowed']).toBe('false');
     panel.stop();
     root.remove();
   });

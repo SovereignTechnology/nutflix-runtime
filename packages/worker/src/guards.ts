@@ -28,6 +28,7 @@ import {
   ERROR_CODES,
   MAX_BOOTSTRAP_NODES,
   MAX_BUNKER_URI,
+  MAX_COMBINING_RUN,
   MAX_DESCRIPTION,
   MAX_LABEL,
   MAX_MANIFEST_CONTENT,
@@ -314,27 +315,66 @@ export const isSeedingSegmentArgs = refine(
 
 // ---- Studio ----------------------------------------------------------------------------------
 
-/**
- * What no title or tag may hold: control and line-separator characters, unpaired surrogates, bidi
- * controls and tag characters, each of which can make what a person reads differ from what is
- * signed. The joiners U+200C and U+200D stay: emoji sequences, Persian and Indic text need them.
- */
-const SPOOFING =
-  /[\p{Cc}\p{Cs}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u{E0000}-\u{E007F}]/u;
+const BIDI_FORMATTING = /[\u202a-\u202e\u2066-\u2069]/;
+const BREAKS = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+const TAG_CHARACTERS = /[\u{E0000}-\u{E007F}]/u;
+const UNPAIRED = /\p{Cs}/u;
 /** Everything a dialog strips before showing text. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const LONG_MARK_RUN = new RegExp(`\\p{M}{${String(MAX_COMBINING_RUN + 1)}}`, 'u');
+
+/**
+ * Why a title or tag cannot be published, or `null`. Refused: control and line-separator characters,
+ * unpaired surrogates, tag characters, and the bidi controls that reorder whole runs of text
+ * (embeddings, overrides, isolates). Kept: U+200C and U+200D (emoji, Persian, Indic) and the
+ * directional marks U+200E, U+200F and U+061C, which Arabic, Hebrew and Persian text needs and which
+ * move no text but the neutral characters next to them. Dialogs strip them all for display.
+ */
+export function videoTextProblem(t: string): string | null {
+  if (BIDI_FORMATTING.test(t))
+    return 'text-direction embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069) are not allowed';
+  if (BREAKS.test(t)) return 'control characters and line breaks are not allowed';
+  if (TAG_CHARACTERS.test(t)) return 'invisible tag characters are not allowed';
+  if (UNPAIRED.test(t)) return 'it holds a broken Unicode character';
+  // As a dialog would show it: a joiner between marks does not break up a stack.
+  const shown = t.replace(INVISIBLE, '');
+  if (shown.trim() === '') return 'it has no visible text';
+  if (LONG_MARK_RUN.test(shown))
+    return `more than ${String(MAX_COMBINING_RUN)} combining marks on one character are not allowed`;
+  return null;
+}
 
 /** The title a person would see is not empty, and nothing in it can spoof the text around it. */
-export const isVideoTitle = refine(
-  text(1, MAX_TITLE),
-  (t) => !SPOOFING.test(t) && t.replace(INVISIBLE, '').trim() !== '',
-);
+export const isVideoTitle = refine(text(1, MAX_TITLE), (t) => videoTextProblem(t) === null);
 
 /** A hashtag: one word, as NFX-02's `t` tags carry them, held to a title's rules. */
 const isVideoTag = refine(
   text(1, MAX_VIDEO_TAG),
-  (t) => !/\s/.test(t) && !SPOOFING.test(t) && t.replace(INVISIBLE, '') !== '',
+  (t) => !/\s/.test(t) && videoTextProblem(t) === null,
 );
+
+/**
+ * A specific reason for a refused request, where a person can act on it. Fixed text only: nothing
+ * of the request is echoed.
+ */
+export function refusalReason(msg: unknown): string | null {
+  if (typeof msg !== 'object' || msg === null) return null;
+  const { m, a } = msg as { readonly m?: unknown; readonly a?: unknown };
+  if (m !== 'studio.publish' || typeof a !== 'object' || a === null) return null;
+  const { title, tags } = a as { readonly title?: unknown; readonly tags?: unknown };
+  if (typeof title === 'string') {
+    if (title.length > MAX_TITLE) return 'the title is too long';
+    const why = videoTextProblem(title);
+    if (why !== null) return `the title cannot be published: ${why}`;
+  }
+  if (Array.isArray(tags))
+    for (const t of tags as readonly unknown[]) {
+      if (typeof t !== 'string') continue;
+      const why = videoTextProblem(t);
+      if (why !== null) return `a tag cannot be published: ${why}`;
+    }
+  return null;
+}
 
 export const isStudioPublishArgs = refine(
   obj<StudioPublishArgs>({

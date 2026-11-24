@@ -16,6 +16,7 @@
     "../../shells/pear-v3/src/main/rpc-gate.ts",
     "../../shells/pear-v3/src/main/main-calls.ts",
     "../../shells/pear-v3/src/main/prompt-window.ts",
+    "../../shells/pear-v3/src/main/account-menu.ts",
     "../../shells/pear-v3/src/main/csp.ts",
     "../../shells/pear-v3/src/main/schemes.ts",
     "../../shells/pear-v3/src/main/security.ts",

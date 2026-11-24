@@ -63,11 +63,11 @@ export interface StudioDeps {
    * The video is about to be stored: remember it as this user's, unsigned and not served. This
    * comes first, so that no crash can leave a stored video without a record of what it is.
    */
-  readonly onPackaged: (video: string, root: string) => Promise<void>;
+  readonly onPackaged: (video: string, root: string, title: string) => Promise<void>;
   /** It did not get stored after all. */
   readonly onAbandoned: (video: string) => Promise<void>;
   /** What the store can still take, in bytes; `null` when it has no cap. */
-  readonly room: () => number | null;
+  readonly room: () => Promise<number | null>;
   /** Unix seconds. */
   readonly now: () => number;
   /** TESTS ONLY: x264's preset (default `medium`), how long a picked file stays usable. */
@@ -145,6 +145,12 @@ function mediaFailure(e: unknown): never {
     fail('unsupported-input', 'this file or size cannot be published');
   fail('unsupported-input', 'ffmpeg could not process this file');
 }
+
+/**
+ * The copies of a video on disk at once while a job runs: the encode, the packaged files and the
+ * store's own. A job's output budget is the real free space divided by this.
+ */
+export const STUDIO_DISK_COPIES = 3;
 
 export class Studio {
   readonly #d: StudioDeps;
@@ -346,7 +352,9 @@ export class Studio {
     const workDir = d.fs.join(d.tmpDir, `studio-${d.randomHex(8)}`);
     const fsa = this.#fsAdapter();
     // The job's disk budget: what the store can still take, at most `MAX_STUDIO_JOB_BYTES`.
-    const budget = Math.min(MAX_STUDIO_JOB_BYTES, d.room() ?? MAX_STUDIO_JOB_BYTES);
+    const room = await d.room();
+    stopIfCancelled();
+    const budget = Math.min(MAX_STUDIO_JOB_BYTES, room ?? MAX_STUDIO_JOB_BYTES);
     let outputs: readonly string[] = [];
     const outputRoom = async (): Promise<number> => {
       let used = 0;
@@ -436,7 +444,7 @@ export class Studio {
       stopIfCancelled();
       emit({ stage: 'storing' });
       const bySha = new Map(packaged.files.map((f) => [f.entry.sha256, f] as const));
-      await d.onPackaged(addr.value.toString(), packaged.root);
+      await d.onPackaged(addr.value.toString(), packaged.root, a.title);
       let put: Awaited<ReturnType<NfxStore['putVideo']>>;
       try {
         put = await d.store.putVideo({

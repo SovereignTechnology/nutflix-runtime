@@ -6,7 +6,17 @@
  */
 import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { access, chmod, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  stat,
+  statfs,
+  writeFile,
+} from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -119,6 +129,17 @@ export function nodeSystem(over: Partial<WorkerSystem> = {}): WorkerSystem {
       const tmp = `${p}.tmp`;
       await writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
       await rename(tmp, p);
+      return true;
+    },
+    writeDurable: async (p, data) => {
+      const tmp = `${p}.tmp`;
+      await writeFile(tmp, data, { mode: 0o600 });
+      await rename(tmp, p);
+      return true;
+    },
+    freeBytes: async (p) => {
+      const s = await statfs(p);
+      return s.bavail * s.bsize;
     },
     connectRelay: nodeConnectRelay,
     ...over,

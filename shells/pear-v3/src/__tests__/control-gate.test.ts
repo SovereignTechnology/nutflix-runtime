@@ -3,18 +3,41 @@
  * it must not do alone. It never names a path or holds a secret (main's picker and prompt window
  * do), and whatever shares the user's IP address or deletes a video takes a native confirmation.
  */
-import { FrameDecoder, WorkerError, encodeFrame } from '@nutflix-runtime/worker';
-import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron';
+import {
+  FrameDecoder,
+  WorkerError,
+  encodeFrame,
+  type SignerStatusWire,
+} from '@nutflix-runtime/worker';
+import type {
+  BrowserWindow,
+  BrowserWindowConstructorOptions,
+  MenuItemConstructorOptions,
+  Session,
+} from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PROMPT_CANCEL, PROMPT_SUBMIT } from '../shared/ids.ts';
+import {
+  ACCOUNT_ITEMS,
+  ACCOUNT_MENU_LABEL,
+  ACCOUNT_REPEAT_MS,
+  AccountRunner,
+  accountMenuPresent,
+  accountShortcut,
+  applicationMenu,
+  menuBarState,
+  type KeyInput,
+} from '../main/account-menu.ts';
 import {
   CONFIRM_SEEDING_DIALOG,
   CONNECT_BUNKER_PROMPT,
   CREATE_KEY_PROMPT,
   DECLINED_WAIT_MS,
   MainCalls,
+  NO_SANDBOX_KEY_TEXT,
   PICK_VIDEO_DIALOG,
+  PROMPT_DECLINED_WAIT_MS,
   UNLOCK_KEY_PROMPT,
   publishDialog,
   shownText,
@@ -87,7 +110,6 @@ const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 describe('the window’s allow-list', () => {
   it.each([
     'signer.status',
-    'signer.lock',
     'seeding.status',
     'seeding.stop',
     'seeding.beacons',
@@ -212,12 +234,30 @@ describe('what main answers itself', () => {
     'app.seeding.resume',
     'app.seeding.delete',
     'app.publish.sign',
-    'app.signer.create',
-    'app.signer.unlock',
-    'app.signer.connect',
   ])('%s is main’s', (m) => {
     expect(MAIN_WINDOW_POLICY.mainMethods?.has(m)).toBe(true);
     expect(MAIN_WINDOW_POLICY.methods.has(m)).toBe(false);
+  });
+
+  it.each([
+    'app.signer.create',
+    'app.signer.unlock',
+    'app.signer.connect',
+    'signer.lock',
+    'signer.local.create',
+    'signer.local.unlock',
+    'signer.nip46.connect',
+  ])('no window can call %s: secret entry is the native menu’s', async (m) => {
+    const call = vi.fn(() => Promise.resolve(null));
+    const h = harness(call);
+    h.gate.attach(1, MAIN_WINDOW_POLICY);
+    h.ask(1, req(7, m));
+    await flush();
+    expect(call).not.toHaveBeenCalled();
+    expect(h.toWorker).toEqual([]);
+    expect(h.toWindow.get(1)?.map((x) => (x['e'] as Msg)['code'])).toEqual(['invalid-argument']);
+    expect(MAIN_WINDOW_POLICY.methods.has(m)).toBe(false);
+    expect(MAIN_WINDOW_POLICY.mainMethods?.has(m)).toBe(false);
   });
 
   it('passes on only a WorkerError’s words', async () => {
@@ -286,6 +326,19 @@ describe('what main answers itself', () => {
   });
 });
 
+const NO_KEY: SignerStatusWire = {
+  kind: 'none',
+  pubkey: null,
+  locked: true,
+  keyFile: false,
+  localAllowed: true,
+};
+const SEALED: SignerStatusWire = {
+  ...NO_KEY,
+  kind: 'local',
+  pubkey: 'ab'.repeat(32),
+  keyFile: true,
+};
 const KEY = 'ab'.repeat(32);
 const VIDEO = `nfx:testnet:1:nutflix-${'a'.repeat(32)}`;
 const CHECK: PublishShown = {
@@ -306,6 +359,7 @@ function deps(
     publish?: boolean;
     video?: boolean;
     secrets?: readonly (string | null)[];
+    status?: SignerStatusWire;
   } = {},
 ): {
   d: MainCallDeps;
@@ -358,6 +412,7 @@ function deps(
     worker: (m, a) => {
       calls.push([m, a]);
       if (m === 'signer.check') return Promise.resolve(CHECK);
+      if (m === 'signer.status') return Promise.resolve(o.status ?? NO_KEY);
       if (m === 'seeding.status')
         return Promise.resolve({
           answered: m,
@@ -546,9 +601,10 @@ describe('publishing', () => {
     });
     const open = m.answer(1, 'app.publish.sign', { video: VIDEO });
     await flush();
-    for (const method of ['app.signer.connect', 'app.signer.unlock', 'app.signer.create'])
-      await expect(m.answer(1, method, {})).rejects.toMatchObject({ code: 'rate-limited' });
+    for (const action of ['connect', 'unlock', 'create', 'lock'] as const)
+      expect((await m.account(1, action)).problem).toMatch(/dialog is open/);
     expect(t.specs).toEqual([]);
+    expect(t.calls.some(([x]) => x === 'signer.lock')).toBe(false);
     close(true);
     await open;
     expect(t.calls.at(-1)).toEqual(['signer.sign', { event: CHECK.event, signer: KEY }]);
@@ -599,8 +655,16 @@ describe('what the publish box shows', () => {
     expect(box({ title }).detail).toContain(`Title: ${title}\n`);
   });
 
-  it('strips joiners for display only', () => {
+  it('strips joiners and directional marks for display only', () => {
     expect(shownText('a\u200db\u200cc')).toBe('abc');
+    expect(shownText('a\u200eb\u200fc\u061cd')).toBe('abcd');
+  });
+
+  it('cuts a stack of combining marks, with or without joiners between them', () => {
+    const six = '\u0301'.repeat(6);
+    expect(shownText(`e${'\u0301'.repeat(40)}x`)).toBe(`e${six}x`);
+    expect(shownText(`e${'\u0301\u200c'.repeat(40)}x`)).toBe(`e${six}x`);
+    expect(shownText(`e${six}x`)).toBe(`e${six}x`);
   });
 
   it('shows the description’s length and first lines, each marked', () => {
@@ -647,6 +711,19 @@ describe('stopping, deleting, and seeding again', () => {
     expect(t.videos).toEqual([]);
   });
 
+  it('names the video by its stored title, stripped like any other text', () => {
+    const b = videoDialog('delete', {
+      video: VIDEO,
+      title: 'Holiday\u2028Video: another',
+      origin: 'published',
+      bytes: 2048,
+    });
+    expect(b.detail.split('\n')[0]).toBe('Title: HolidayVideo: another');
+    expect(b.detail.split('\n')[1]).toContain(VIDEO);
+    const none = videoDialog('resume', { video: VIDEO, origin: 'host', bytes: 2048 });
+    expect(none.detail).toContain('Title: no title recorded');
+  });
+
   it('says what deleting does, with "keep it" as the default answer', () => {
     const b = videoDialog('delete', { video: VIDEO, origin: 'published', bytes: 2048 });
     expect(b.message).toContain('deletes the video');
@@ -657,48 +734,187 @@ describe('stopping, deleting, and seeding again', () => {
   });
 });
 
-describe('secrets go through main’s own prompt', () => {
+describe('secrets go through the Account menu and main’s own prompt', () => {
   it.each([
-    ['app.signer.create', 'signer.local.create', 'passphrase', CREATE_KEY_PROMPT],
-    ['app.signer.unlock', 'signer.local.unlock', 'passphrase', UNLOCK_KEY_PROMPT],
-    ['app.signer.connect', 'signer.nip46.connect', 'uri', CONNECT_BUNKER_PROMPT],
-  ])('%s: the value goes to the worker, and the page gets the status', async (m, w, f, spec) => {
-    const value = 'a value only the prompt window saw';
-    const t = deps({ secrets: [value] });
-    const answer = await t.m.answer(1, m, {});
-    expect(t.specs).toEqual([spec]);
-    expect(t.calls).toEqual([[w, { [f]: value }]]);
-    expect(answer).toEqual({ answered: w });
-    expect(JSON.stringify(answer)).not.toContain(value);
-  });
-
-  it.each(['app.signer.create', 'app.signer.unlock', 'app.signer.connect'])(
-    '%s takes nothing from the page',
-    async (m) => {
-      const t = deps({ secrets: ['x'] });
-      for (const args of [{ passphrase: 'from the page' }, { uri: 'bunker://x' }])
-        await expect(t.m.answer(1, m, args)).rejects.toMatchObject({ code: 'invalid-argument' });
-      expect(t.specs).toEqual([]);
+    ['create', 'signer.local.create', 'passphrase', CREATE_KEY_PROMPT, NO_KEY],
+    ['unlock', 'signer.local.unlock', 'passphrase', UNLOCK_KEY_PROMPT, SEALED],
+    ['connect', 'signer.nip46.connect', 'uri', CONNECT_BUNKER_PROMPT, NO_KEY],
+  ] as const)(
+    '%s: the value goes to the worker, never back',
+    async (action, w, f, spec, status) => {
+      const value = 'a value only the prompt window saw';
+      const t = deps({ secrets: [value], status });
+      const out = await t.m.account(1, action);
+      expect(t.specs).toEqual([spec]);
+      expect(t.calls.filter(([m]) => m !== 'signer.status')).toEqual([[w, { [f]: value }]]);
+      expect(out).toEqual({ status: { answered: w }, problem: null });
+      expect(JSON.stringify(out)).not.toContain(value);
     },
   );
 
+  it('Lock asks nothing', async () => {
+    const t = deps();
+    expect((await t.m.account(1, 'lock')).problem).toBeNull();
+    expect(t.calls).toEqual([['signer.lock', {}]]);
+    expect(t.specs).toEqual([]);
+  });
+
   it('a wrong passphrase is said in the prompt, and it can be tried again', async () => {
-    const t = deps({ secrets: ['the wrong one', 'the right one'] });
-    expect(await t.m.answer(1, 'app.signer.unlock', {})).toEqual({
-      answered: 'signer.local.unlock',
+    const t = deps({ secrets: ['the wrong one', 'the right one'], status: SEALED });
+    expect(await t.m.account(1, 'unlock')).toEqual({
+      status: { answered: 'signer.local.unlock' },
+      problem: null,
     });
     expect(t.problems).toEqual(['that does not open this key', null]);
   });
 
-  it('cancelling calls nothing with a value, and answers with the status', async () => {
+  it('cancelling sends no value, and answers with the real status', async () => {
     const t = deps({ secrets: [null] });
-    expect(await t.m.answer(1, 'app.signer.connect', {})).toEqual({ answered: 'signer.status' });
+    expect(await t.m.account(1, 'connect')).toEqual({ status: NO_KEY, problem: null });
     expect(t.calls).toEqual([['signer.status', {}]]);
+  });
+
+  it('a closed prompt stays closed for a moment, per action', async () => {
+    const t = deps({ secrets: [null] });
+    await t.m.account(1, 'connect');
+    expect((await t.m.account(1, 'connect')).problem).toMatch(/try again/);
+    expect(t.specs).toHaveLength(1);
+    await t.m.account(1, 'create');
+    expect(t.specs).toHaveLength(2);
+    t.clock.t += PROMPT_DECLINED_WAIT_MS;
+    await t.m.account(1, 'connect');
+    expect(t.specs).toHaveLength(3);
+  });
+
+  it.each(['create', 'unlock'] as const)(
+    'without the sandbox, %s says why, and opens no prompt',
+    async (action) => {
+      const t = deps({
+        secrets: ['a passphrase'],
+        status: { ...NO_KEY, keyFile: true, localAllowed: false },
+      });
+      const out = await t.m.account(1, action);
+      expect(out).toEqual({ status: null, problem: NO_SANDBOX_KEY_TEXT });
+      expect(NO_SANDBOX_KEY_TEXT).toContain('untouched');
+      expect(t.specs).toEqual([]);
+      expect(t.calls).toEqual([['signer.status', {}]]);
+    },
+  );
+
+  it('without the sandbox, a bunker still works', async () => {
+    const t = deps({
+      secrets: ['bunker://value'],
+      status: { ...NO_KEY, keyFile: true, localAllowed: false },
+    });
+    expect((await t.m.account(1, 'connect')).problem).toBeNull();
+    expect(t.specs).toEqual([CONNECT_BUNKER_PROMPT]);
+  });
+
+  it('says so when there is a key to create over, or none to unlock', async () => {
+    const has = deps({ secrets: ['x'], status: SEALED });
+    expect((await has.m.account(1, 'create')).problem).toMatch(/already sealed/);
+    const none = deps({ secrets: ['x'] });
+    expect((await none.m.account(1, 'unlock')).problem).toMatch(/No key is sealed/);
+    expect([...has.specs, ...none.specs]).toEqual([]);
   });
 
   it('a new key must be typed twice', () => {
     expect(CREATE_KEY_PROMPT.repeatLabel).toBeDefined();
     expect(UNLOCK_KEY_PROMPT.repeatLabel).toBeUndefined();
+  });
+});
+
+describe('the Account menu', () => {
+  const input = (over: Partial<KeyInput>): KeyInput => ({
+    type: 'keyDown',
+    key: 'O',
+    shift: true,
+    control: true,
+    meta: false,
+    alt: false,
+    isAutoRepeat: false,
+    ...over,
+  });
+
+  it.each(['linux', 'win32', 'darwin'])('on %s it holds all four actions', (platform) => {
+    const run = vi.fn();
+    const template = applicationMenu(platform, run);
+    const account = template.find((x) => x.label === ACCOUNT_MENU_LABEL);
+    const items = account?.submenu as MenuItemConstructorOptions[];
+    expect(items.map((i) => i.label)).toEqual(ACCOUNT_ITEMS.map((i) => i.label));
+    for (const i of items) (i.click as () => void)();
+    expect(run.mock.calls.map((c) => c[0] as string)).toEqual(ACCOUNT_ITEMS.map((i) => i.action));
+  });
+
+  it.each(['linux', 'win32'])('on %s it is the whole bar: no reload, no DevTools', (platform) => {
+    const template = applicationMenu(platform, () => undefined);
+    expect(template).toHaveLength(1);
+    expect(JSON.stringify(template)).not.toMatch(/reload|toggleDevTools|toggledevtools/i);
+  });
+
+  it('reads the menu that is really in place', () => {
+    const good = {
+      items: [
+        { label: 'File' },
+        {
+          label: ACCOUNT_MENU_LABEL,
+          submenu: { items: ACCOUNT_ITEMS.map((i) => ({ label: i.label })) },
+        },
+      ],
+    };
+    expect(accountMenuPresent(good)).toBe(true);
+    expect(accountMenuPresent(null)).toBe(false);
+    expect(accountMenuPresent({ items: [{ label: ACCOUNT_MENU_LABEL }] })).toBe(false);
+    expect(
+      accountMenuPresent({
+        items: [{ label: ACCOUNT_MENU_LABEL, submenu: { items: [{ label: 'Lock' }] } }],
+      }),
+    ).toBe(false);
+  });
+
+  it('counts a hidden or auto-hidden bar as hidden; macOS uses the system bar', () => {
+    const w = (visible: boolean, auto: boolean) => ({
+      isMenuBarVisible: () => visible,
+      isMenuBarAutoHide: () => auto,
+    });
+    expect(menuBarState('linux', w(true, false))).toBe('visible');
+    expect(menuBarState('win32', w(false, false))).toBe('hidden');
+    expect(menuBarState('linux', w(true, true))).toBe('hidden');
+    expect(menuBarState('darwin', w(false, false))).toBe('system');
+  });
+
+  it('matches its shortcuts, on real key presses only', () => {
+    expect(accountShortcut(input({}), 'linux')).toBe('unlock');
+    expect(accountShortcut(input({ key: 'b' }), 'win32')).toBe('connect');
+    expect(accountShortcut(input({ key: 'K', control: false, meta: true }), 'darwin')).toBe(
+      'create',
+    );
+    expect(accountShortcut(input({ key: 'L', control: false, meta: true }), 'darwin')).toBe('lock');
+    for (const bad of [
+      input({ type: 'keyUp' }),
+      input({ isAutoRepeat: true }),
+      input({ shift: false }),
+      input({ control: false }),
+      input({ alt: true }),
+      input({ key: 'x' }),
+    ])
+      expect(accountShortcut(bad, 'linux')).toBeNull();
+    expect(accountShortcut(input({}), 'darwin')).toBeNull();
+  });
+
+  it('runs once per press, and a failure stays inside', async () => {
+    let t = 1000;
+    const run = vi.fn(() => Promise.reject(new Error('no')));
+    const r = new AccountRunner(run, () => t);
+    r.trigger('lock');
+    r.trigger('lock');
+    expect(run).toHaveBeenCalledTimes(1);
+    r.trigger('unlock');
+    expect(run).toHaveBeenCalledTimes(2);
+    t += ACCOUNT_REPEAT_MS;
+    r.trigger('lock');
+    expect(run).toHaveBeenCalledTimes(3);
+    await flush();
   });
 });
 
@@ -830,6 +1046,33 @@ describe('the prompt window', () => {
     expect(h.errors).toHaveLength(1);
     h.p.message(right, PROMPT_CANCEL, undefined);
     await asked;
+  });
+
+  it('closing during a submit waits for the call, and reports that it happened', async () => {
+    const h = host();
+    let finish: (x: string | null) => void = () => undefined;
+    const asked = h.p.ask(3, SPEC, () => new Promise((r) => (finish = r)));
+    h.p.message(right, PROMPT_SUBMIT, 'value');
+    h.gone();
+    let answered = false;
+    void asked.then(() => {
+      answered = true;
+    });
+    await flush();
+    expect(answered).toBe(false);
+    finish(null);
+    expect(await asked).toBe(true);
+  });
+
+  it('closing during a submit that then fails is a cancel, with nothing shown', async () => {
+    const h = host();
+    let finish: (x: string | null) => void = () => undefined;
+    const asked = h.p.ask(3, SPEC, () => new Promise((r) => (finish = r)));
+    h.p.message(right, PROMPT_SUBMIT, 'value');
+    h.gone();
+    finish('wrong');
+    expect(await asked).toBe(false);
+    expect(h.errors).toEqual([]);
   });
 
   it('closing the window is a cancel', async () => {

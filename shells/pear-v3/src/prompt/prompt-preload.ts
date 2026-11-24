@@ -123,6 +123,8 @@ function show(spec: Spec): void {
     ipcRenderer.send(PROMPT_CANCEL);
   });
   document.addEventListener('keydown', (e) => {
+    // A focused button answers Enter itself: Cancel must cancel, never submit.
+    if (e.key === 'Enter' && e.target instanceof HTMLButtonElement) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       send();

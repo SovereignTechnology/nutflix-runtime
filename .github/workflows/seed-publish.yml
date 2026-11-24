@@ -120,7 +120,7 @@ jobs:
           # Every proof reported its numbers, or the job fails. The reporter's colours come off first.
           sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/publish.log" | grep '^PROOF ' > "$RUNNER_TEMP/proofs"
           tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/proofs"
-          test "$(wc -l < "$RUNNER_TEMP/proofs")" -eq 10
+          test "$(wc -l < "$RUNNER_TEMP/proofs")" -eq 11
       # The real window, in real Electron under Xvfb, driven by a script: it proves the window's
       # confinement and its sender check. It is not a person using it, and it opens no native dialog.
       - name: main's prompt window, in real Electron, inside it

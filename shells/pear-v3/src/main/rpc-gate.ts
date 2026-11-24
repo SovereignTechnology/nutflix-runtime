@@ -18,14 +18,16 @@
  *   7. a `seeding.segment` or `seeding.watch` must name a play session this window holds: what it
  *      hands over or asks to seed is checked against THAT session's video and hash list;
  *   8. `mainMethods` are answered here and never reach the worker (`main-calls.ts`): the file
- *      picker, each thing that starts sharing the user's IP address or deletes a video (behind a
- *      native confirmation), and the signer methods that need a secret (main's own prompt window,
- *      so a passphrase or bunker URI never enters the page).
+ *      picker, and each thing that starts sharing the user's IP address or deletes a video (behind
+ *      a native confirmation).
+ *
+ * No window can open secret entry: it is reached only from the native Account menu
+ * (`account-menu.ts`), so a page cannot pose as the prompt by being what opens it.
  *
  * What the worker checks is the arguments, strictly, for every method (`guards.ts`). The methods
  * that take a path or a secret, turn the switch, sign, or delete (`studio.source`, `signer.local.*`,
- * `signer.nip46.connect`, `seeding.set`, `seeding.resume`, `seeding.delete`, `studio.discard`,
- * `signer.check`, `signer.sign`) are in no window's list: only main's own `request()` reaches them.
+ * `signer.nip46.connect`, `signer.lock`, `seeding.set`, `seeding.resume`, `seeding.delete`,
+ * `studio.discard`, `signer.check`, `signer.sign`) are in no window's list: only main's own `request()` reaches them.
  *
  * Main itself uses the same id space through `request()` (`init`, `status`). Runtime-neutral and
  * Electron-free: bytes in, bytes out, so the tests drive it with fakes.
@@ -66,8 +68,8 @@ export interface WindowPolicy {
  * The renderer's window: what `packages/renderer` uses, each with its own guard in the worker.
  *
  *   play      `status`, `nfx.play.open`, `nfx.play.close`
- *   signer    `signer.status`, `signer.lock`. No key, passphrase, bunker secret or derived key
- *             ever crosses this window: creating, unlocking and connecting are `app.signer.*`.
+ *   signer    `signer.status`. No key, passphrase, bunker secret or derived key ever crosses this
+ *             window: creating, unlocking, connecting and locking are the Account menu's.
  *   seeding   `seeding.status` (nothing of a private draft), `.watch` (its own open play, with the
  *             switch on), `.stop` (stops serving; the bytes stay), `.beacons` (the worker signs,
  *             the renderer publishes), `.segment` (a file its own play verified)
@@ -84,7 +86,6 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
     'nfx.play.open',
     'nfx.play.close',
     'signer.status',
-    'signer.lock',
     'seeding.status',
     'seeding.watch',
     'seeding.stop',
@@ -96,16 +97,13 @@ export const MAIN_WINDOW_POLICY: WindowPolicy = {
     'studio.cancel',
   ]),
   events: new Set(['status', 'studio.progress']),
-  mainEvents: new Set(['update', 'serving']),
+  mainEvents: new Set(['update', 'serving', 'signer']),
   mainMethods: new Set([
     'app.pickVideo',
     'app.seeding.set',
     'app.seeding.resume',
     'app.seeding.delete',
     'app.publish.sign',
-    'app.signer.create',
-    'app.signer.unlock',
-    'app.signer.connect',
   ]),
   maxInflight: 32,
 };

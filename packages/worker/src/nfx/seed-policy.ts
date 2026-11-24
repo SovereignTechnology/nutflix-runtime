@@ -10,12 +10,13 @@
  * NO RECORD MEANS NOT SERVED. A video that is stored for no reason this file gives (a crash between
  * the store and this file, a file that was lost or damaged) stays private until the user acts.
  *
- * Written whole through a temporary file. A file that is missing or not this shape means the
- * defaults: nothing is served.
+ * Written whole through a temporary file, and synced to disk where the runtime can: the start-up
+ * purge of unsigned drafts trusts this file, so a published video must not read as a draft after a
+ * power cut. A file that is missing or not this shape means the defaults: nothing is served.
  */
 import type { SeederFs } from '@sovit/seeder';
 
-import { MAX_NFX_STORED_VIDEOS } from '../protocol.js';
+import { MAX_NFX_STORED_VIDEOS, MAX_TITLE } from '../protocol.js';
 import type { SeedOrigin } from '../protocol.js';
 
 export const SEEDING_FILE = 'seeding.json';
@@ -29,6 +30,14 @@ export interface SeedRecord {
   readonly author: string | null;
   /** The user stopped serving it. The bytes stay until they delete it. */
   readonly stopped?: true;
+  /** Its title, so that a native dialog can say which video it means. */
+  readonly title?: string;
+}
+
+export interface SeedPolicyOptions {
+  /** Atomic, and on disk when it resolves. `false`: in place, but the directory was not synced. */
+  readonly durable?: (path: string, data: Uint8Array) => Promise<boolean>;
+  readonly warn?: (text: string) => void;
 }
 
 function isRecord(x: unknown): x is SeedRecord {
@@ -40,7 +49,8 @@ function isRecord(x: unknown): x is SeedRecord {
     typeof r['root'] === 'string' &&
     SHA.test(r['root']) &&
     (author === null || (typeof author === 'string' && SHA.test(author))) &&
-    (r['stopped'] === undefined || r['stopped'] === true)
+    (r['stopped'] === undefined || r['stopped'] === true) &&
+    (r['title'] === undefined || (typeof r['title'] === 'string' && r['title'].length <= MAX_TITLE))
   );
 }
 
@@ -50,10 +60,12 @@ export class SeedPolicy {
   readonly #records = new Map<string, SeedRecord>();
   #watched = false;
   #writes: Promise<void> = Promise.resolve();
+  readonly #o: SeedPolicyOptions;
 
-  constructor(fs: SeederFs, dir: string) {
+  constructor(fs: SeederFs, dir: string, o: SeedPolicyOptions = {}) {
     this.#fs = fs;
     this.#file = fs.join(dir, SEEDING_FILE);
+    this.#o = o;
   }
 
   async load(): Promise<void> {
@@ -129,6 +141,19 @@ export class SeedPolicy {
     return this.#save();
   }
 
+  /** `set`, on disk when it resolves. If the write fails, the record stays what it was. */
+  async setDurable(video: string, record: SeedRecord): Promise<void> {
+    const before = this.#records.get(video);
+    this.#records.set(video, record);
+    try {
+      await this.#save();
+    } catch (e) {
+      if (before === undefined) this.#records.delete(video);
+      else this.#records.set(video, before);
+      throw e;
+    }
+  }
+
   remove(video: string): Promise<void> {
     return this.#records.delete(video) ? this.#save() : Promise.resolve();
   }
@@ -148,8 +173,13 @@ export class SeedPolicy {
     this.#writes = this.#writes
       .catch(() => undefined)
       .then(async () => {
-        await this.#fs.writeFile(tmp, text);
-        await this.#fs.rename(tmp, this.#file);
+        const durable = this.#o.durable;
+        if (durable === undefined) {
+          await this.#fs.writeFile(tmp, text);
+          await this.#fs.rename(tmp, this.#file);
+        } else if (!(await durable(this.#file, new TextEncoder().encode(text)))) {
+          this.#o.warn?.('seeding.json is in place, but its directory could not be synced');
+        }
       });
     return this.#writes;
   }

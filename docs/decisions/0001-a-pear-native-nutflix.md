@@ -91,8 +91,25 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   have this computer store and serve it, sharing the user's IP address with whoever fetches it. A
   "served enough bytes" check would not help: the page could fake it. The limits stay (the switch is
   off by default and takes a native confirmation, 16 GiB, 20 new videos and a byte budget an hour),
-  and they bound the damage without removing it. Whether to accept this or to change how the
-  feature works is the maintainer's decision.
+  and they bound the damage without removing it. The hourly counters live in memory, so they start
+  again when the app restarts. Whether to accept this or to change how the feature works is the
+  maintainer's decision.
+- **Without Chromium's sandbox, no sealed key.** A key on disk needs the renderer to be confined, the
+  same reason shape (b) may not hold one. If the user chose to run without the sandbox (amendment,
+  item 2), the local key path is refused for that run and only a NIP-46 bunker can sign. A key
+  already on this computer stays on disk, unread and untouched, and works again on the next launch
+  with the sandbox on. The app says why, in Settings and in the Account menu's answer.
+- **Secret entry opens only from the native Account menu.** A compromised page can draw a box that
+  looks like the real prompt, so no window has a method that opens it. The rule a user can hold on
+  to: Nutflix asks for a passphrase or bunker link only after you chose it from the Account menu.
+  The page can still draw a fake box. What it cannot do is open the real one, or remove that menu.
+- **Known limit: an encode can outlive a crashed worker off Linux.** On Linux the kernel kills
+  ffmpeg with its parent (`setpriv --pdeathsig`). On macOS and Windows, or on Linux without
+  `setpriv`, ffmpeg is killed on a normal exit and on cancel, but not after a crash of the worker.
+- **Known limit: free space is read once, per job.** Studio reads the real free space
+  (`statfs`) and holds a job to a third of it, because the encode, the packaged files and the store's
+  copy are on disk at once. Anything else filling the disk during the job can still end it with an
+  error; it then cleans up after itself.
 
 ## Amendment, 2026-11-22
 

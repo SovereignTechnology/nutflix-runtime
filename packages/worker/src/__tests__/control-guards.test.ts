@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { isRequest } from '../guards.js';
+import { refusalReason, isRequest } from '../guards.js';
 import {
   MAX_BUNKER_URI,
   MAX_DESCRIPTION,
@@ -120,11 +120,16 @@ describe('titles and tags, as a person will read them', () => {
     ['a newline', 'a\nb'],
     ['a control character', 'a\u0007b'],
     ['a C1 control', 'a\u0085b'],
-    ['the Arabic letter mark', 'a\u061cb'],
-    ['a left-to-right mark', 'a\u200eb'],
-    ['a right-to-left mark', 'a\u200fb'],
+    ['a left-to-right embedding', 'a\u202ab'],
+    ['a right-to-left embedding', 'a\u202bb'],
+    ['a pop directional formatting', 'a\u202cb'],
+    ['a left-to-right override', 'a\u202db'],
     ['a right-to-left override', 'a\u202eb'],
+    ['a left-to-right isolate', 'a\u2066b'],
     ['a directional isolate', 'a\u2067b\u2069'],
+    ['a first-strong isolate', 'a\u2068b'],
+    ['seven combining marks', `e${'\u0301'.repeat(7)}`],
+    ['seven combining marks with joiners between', `e${'\u0301\u200c'.repeat(7)}`],
     ['a tag character', 'a\u{E0041}b'],
     ['an unpaired surrogate', 'a\ud800b'],
     ['only invisible characters', '\u200b\u200d\u2060'],
@@ -139,6 +144,10 @@ describe('titles and tags, as a person will read them', () => {
     ['Persian with a zero-width non-joiner', 'می\u200cخواهم'],
     ['Hindi with a joiner', 'क्\u200dष'],
     ['plain accents', 'Café crème'],
+    ['Arabic with a letter mark', '\u0645\u0631\u062d\u0628\u0627\u061c 2026'],
+    ['Hebrew with a right-to-left mark', '\u05e9\u05dc\u05d5\u05dd\u200f!'],
+    ['a left-to-right mark', 'Title\u200e (2026)'],
+    ['six combining marks', `e${'\u0301'.repeat(6)}`],
   ])('keeps a title with %s', (_name, t) => {
     ok('studio.publish', title(t));
   });
@@ -148,6 +157,36 @@ describe('titles and tags, as a person will read them', () => {
     no('studio.publish', { ...a, tags: ['a\u202eb'] });
     no('studio.publish', { ...a, tags: ['a\u2028b'] });
     no('studio.publish', { ...a, tags: ['\u200b'] });
+  });
+});
+
+describe('why a title was refused', () => {
+  const said = (title: string): string | null =>
+    refusalReason({ m: 'studio.publish', a: { title } });
+
+  it.each([
+    ['a\u202eb', /embeddings, overrides and isolates/],
+    ['a\u2067b', /embeddings, overrides and isolates/],
+    ['a\u2028b', /line breaks/],
+    ['a\u{E0041}b', /tag characters/],
+    ['a\ud800b', /broken Unicode/],
+    ['\u200b\u200d', /no visible text/],
+    [`e${'\u0301'.repeat(7)}`, /more than 6 combining marks/],
+  ])('says why for %j', (title, why) => {
+    expect(said(title)).toMatch(why);
+  });
+
+  it('names a tag, and has nothing to say about a good request or another method', () => {
+    expect(refusalReason({ m: 'studio.publish', a: { title: 'ok', tags: ['a\u202eb'] } })).toMatch(
+      /a tag cannot be published/,
+    );
+    expect(said('A good title')).toBeNull();
+    expect(refusalReason({ m: 'status', a: { title: 'a\u202eb' } })).toBeNull();
+    expect(refusalReason(null)).toBeNull();
+  });
+
+  it('never repeats what it was sent', () => {
+    expect(said('private words\u202e')).not.toContain('private');
   });
 });
 

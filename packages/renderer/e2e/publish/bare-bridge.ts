@@ -17,7 +17,12 @@ import Sidecar from 'bare-sidecar';
 
 import type { BootstrapNode } from '@nutflix-runtime/worker';
 
-import { MainCalls, type PublishShown } from '../../../../shells/pear-v3/src/main/main-calls.ts';
+import type { AccountAction } from '../../../../shells/pear-v3/src/main/account-menu.ts';
+import {
+  MainCalls,
+  type AccountOutcome,
+  type PublishShown,
+} from '../../../../shells/pear-v3/src/main/main-calls.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from '../../../../shells/pear-v3/src/main/rpc-gate.ts';
 import { PAGE_PIPE_SCRIPT } from '../helpers/worker-bridge.js';
 
@@ -42,7 +47,11 @@ export interface BareBridge {
     readonly secrets: string[];
     /** What the prompt would have said about a refused value. */
     readonly problems: string[];
+    /** Runs while the scripted prompt shows a refusal. */
+    afterRefusal: ((problem: string) => Promise<void>) | null;
   };
+  /** What choosing an item of the native Account menu does in main. No menu is clicked here. */
+  account(action: AccountAction): Promise<AccountOutcome>;
   attach(page: Page): Promise<void>;
   /** Main's own request. */
   request(m: string, a: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
@@ -89,6 +98,7 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
     publishes: [] as PublishShown[],
     secrets: [] as string[],
     problems: [] as string[],
+    afterRefusal: null as ((problem: string) => Promise<void>) | null,
   };
   const calls = new MainCalls({
     pickFile: () => {
@@ -111,6 +121,7 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
         const problem = await submit(value);
         if (problem === null) return true;
         dialogs.problems.push(problem);
+        await dialogs.afterRefusal?.(problem);
       }
     },
     worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
@@ -137,6 +148,11 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
   return {
     storage,
     dialogs,
+    account: async (action) => {
+      const out = await calls.account(WINDOW, action);
+      gate.fromMain('signer', { changed: true });
+      return out;
+    },
     attach: async (page) => {
       attached = page;
       gate.attach(WINDOW, MAIN_WINDOW_POLICY);
@@ -156,6 +172,23 @@ export async function startBareBridge(bootstrap: readonly BootstrapNode[]): Prom
       await Promise.race([exited, new Promise((r) => setTimeout(r, 15_000))]);
       sidecar.destroy();
       rmSync(dirname(storage), { recursive: true, force: true });
+    },
+  };
+}
+
+/** Runs one script under the real Bare runtime, as the worker runs. */
+export function startBareScript(entry: string): { stderr(): string; stop(): void } {
+  const sidecar = new Sidecar(entry);
+  let err = '';
+  sidecar.stderr?.on('data', (c: unknown) => {
+    if (c instanceof Uint8Array) err = (err + Buffer.from(c).toString('utf8')).slice(-4000);
+  });
+  sidecar.stdout?.resume();
+  sidecar.on('error', () => undefined);
+  return {
+    stderr: () => err,
+    stop: () => {
+      sidecar.destroy();
     },
   };
 }
