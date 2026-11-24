@@ -8,14 +8,20 @@
  *     response, anything else is dropped. Nothing unchecked reaches a handler;
  *   - requests run concurrently up to `maxInflight` (then `rate-limited`), so a host cannot make
  *     the worker hold unbounded work; a handler's failure becomes a `WireError` (`toWireError`:
- *     only this package's own codes and messages cross);
+ *     only this package's own codes and messages cross). One with no code of its own crosses as
+ *     `internal`, and `log` gets one line naming the method and the error's code, syscall and
+ *     class (`uncodedCause`), never its message, a path or the request's arguments (an answer
+ *     that could not be sent, also `internal`, is logged by its method alone);
  *   - the `ready` event follows a successful `init` response;
  *   - a corrupt stream (`FramingError`: an oversize length, bad UTF-8 or JSON) is terminal:
  *     `onFatal`, no resync (the entry exits). The frame cap bounds what one frame can buffer.
  *
  * `push()` never throws.
  */
-import { INTERNAL, toWireError } from './errors.js';
+import type { Logger } from '@sovit/seeder';
+
+import type { UncodedCause } from './errors.js';
+import { INTERNAL, toWireError, uncodedCause } from './errors.js';
 import { FrameDecoder, FramingError, encodeFrame } from './framing.js';
 import { isRequest, refusalReason, requestId } from './guards.js';
 import type { ArgsOf, ResultOf, WorkerEvent, WorkerMethod } from './protocol.js';
@@ -35,6 +41,8 @@ export interface WorkerRpcOptions {
   readonly maxInflight?: number;
   /** Payload cap per frame, both ways (default and maximum: `MAX_FRAME_BYTES`). */
   readonly maxFrameBytes?: number;
+  /** Where a failure that crosses as `internal` is noted (`../log.ts` `createWorkerLogger`). */
+  readonly log?: Pick<Logger, 'error'>;
 }
 
 export interface WorkerRpcStats {
@@ -129,18 +137,30 @@ export class WorkerRpc {
       .then(
         (r) => {
           if (!this.send({ op: 'res', id, ok: true, r: r ?? null })) {
+            this.note('rpc: an answer could not be sent', m);
             this.send({ op: 'res', id, ok: false, e: INTERNAL });
             return;
           }
           if (m === 'init') this.send({ op: 'ev', e: 'ready', v: PROTOCOL_V });
         },
         (err: unknown) => {
+          const cause = uncodedCause(err);
+          if (cause !== null) this.note('rpc: a request failed with no code', m, cause);
           this.send({ op: 'res', id, ok: false, e: toWireError(err) });
         },
       )
       .finally(() => {
         this.inflight--;
       });
+  }
+
+  /** One line for an answer that goes out as `internal`; a logger that throws changes nothing. */
+  private note(what: string, method: WorkerMethod, cause?: UncodedCause): void {
+    try {
+      this.o.log?.error(what, { method, ...cause });
+    } catch {
+      // The answer still goes out.
+    }
   }
 
   /** Frame and write; `false` when the message could not be framed or written. */
