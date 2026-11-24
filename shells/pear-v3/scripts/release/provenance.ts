@@ -8,7 +8,7 @@
  *     package of another run, or a mix of runs, is refused.
  *
  * If GitHub cannot be reached the answer is no: there is no offline path. Access goes through the
- * `gh` CLI, so this tool never holds a token.
+ * `gh` CLI, pinned to github.com, so this tool never holds a token.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, openSync, rmSync } from 'node:fs';
@@ -19,6 +19,7 @@ import { refuse } from './guards.ts';
 export const RELEASE_REPO = 'SovereignTechnology/nutflix-runtime';
 export const RELEASE_WORKFLOW = '.github/workflows/ci.yml';
 export const RELEASE_BRANCH = 'main';
+export const GITHUB_HOST = 'github.com';
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -31,42 +32,68 @@ export interface GitHubApi {
   download(path: string, file: string): Promise<void>;
 }
 
-/** The API through the `gh` CLI, GET only. */
-export const ghApi: GitHubApi = {
-  get: (path) => {
-    const r = spawnSync('gh', ['api', '--method', 'GET', path], {
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    if (r.error !== undefined || r.status !== 0)
-      return Promise.reject(
-        new Error(
-          `GitHub could not be asked for ${path}: ${(r.stderr || String(r.error)).slice(0, 200)}`,
-        ),
-      );
-    return Promise.resolve(JSON.parse(r.stdout) as unknown);
-  },
-  download: (path, file) =>
-    new Promise((resolvePromise, reject) => {
-      const fd = openSync(file, 'w');
-      const child = spawn('gh', ['api', '--method', 'GET', path], {
-        stdio: ['ignore', fd, 'pipe'],
+/**
+ * A `gh api` call: GET only, always github.com, whatever `GH_HOST` or `gh`'s own default says.
+ * `token` is given to `gh` alone; with none, `gh` uses its own sign-in.
+ */
+export function ghCommand(
+  path: string,
+  token?: string,
+  base: NodeJS.ProcessEnv = process.env,
+): { readonly args: string[]; readonly env: NodeJS.ProcessEnv } {
+  const env: NodeJS.ProcessEnv = { ...base };
+  // `--hostname` already wins over these; they are dropped so nothing else reads them either.
+  Reflect.deleteProperty(env, 'GH_HOST');
+  Reflect.deleteProperty(env, 'GH_ENTERPRISE_TOKEN');
+  Reflect.deleteProperty(env, 'GITHUB_ENTERPRISE_TOKEN');
+  if (token !== undefined && token !== '') {
+    Reflect.deleteProperty(env, 'GITHUB_TOKEN');
+    env['GH_TOKEN'] = token;
+  }
+  return { args: ['api', '--hostname', GITHUB_HOST, '--method', 'GET', path], env };
+}
+
+export function makeGhApi(token?: string): GitHubApi {
+  return {
+    get: (path) => {
+      const c = ghCommand(path, token);
+      const r = spawnSync('gh', c.args, {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        env: c.env,
       });
-      let err = '';
-      child.stderr?.on('data', (d: Buffer) => {
-        err += d.toString('utf8');
-      });
-      child.once('error', (e) => {
-        closeSync(fd);
-        reject(e);
-      });
-      child.once('exit', (code) => {
-        closeSync(fd);
-        if (code === 0) resolvePromise();
-        else reject(new Error(`GitHub could not send ${path}: ${err.slice(0, 200)}`));
-      });
-    }),
-};
+      if (r.error !== undefined || r.status !== 0)
+        return Promise.reject(
+          new Error(
+            `GitHub could not be asked for ${path}: ${(r.stderr || String(r.error)).slice(0, 200)}`,
+          ),
+        );
+      return Promise.resolve(JSON.parse(r.stdout) as unknown);
+    },
+    download: (path, file) =>
+      new Promise((resolvePromise, reject) => {
+        const fd = openSync(file, 'w');
+        const c = ghCommand(path, token);
+        const child = spawn('gh', c.args, { stdio: ['ignore', fd, 'pipe'], env: c.env });
+        let err = '';
+        child.stderr?.on('data', (d: Buffer) => {
+          err += d.toString('utf8');
+        });
+        child.once('error', (e) => {
+          closeSync(fd);
+          reject(e);
+        });
+        child.once('exit', (code) => {
+          closeSync(fd);
+          if (code === 0) resolvePromise();
+          else reject(new Error(`GitHub could not send ${path}: ${err.slice(0, 200)}`));
+        });
+      }),
+  };
+}
+
+/** The API with the `gh` CLI's own sign-in: what the release tool uses. */
+export const ghApi: GitHubApi = makeGhApi();
 
 async function ask(api: GitHubApi, path: string): Promise<Record<string, unknown>> {
   let v: unknown;
@@ -115,6 +142,27 @@ export async function verifyMainRun(api: GitHubApi, run: number, commit: string)
   if (r['head_sha'] !== commit) no(`it built ${String(r['head_sha'])}, not ${commit}`);
   if (r['status'] !== 'completed') no(`it has not completed (${String(r['status'])})`);
   if (r['conclusion'] !== 'success') no(`it did not succeed (${String(r['conclusion'])})`);
+  // A tag named `main` would also report `main` as the run's branch.
+  const tags = await askList(api, `repos/${RELEASE_REPO}/git/matching-refs/tags/${RELEASE_BRANCH}`);
+  if (tags.some((t) => t['ref'] === `refs/tags/${RELEASE_BRANCH}`))
+    no(`a tag named ${RELEASE_BRANCH} exists, so its runs cannot be told from the branch's`);
+  // And the commit is in main's history.
+  const c = await ask(api, `repos/${RELEASE_REPO}/compare/${RELEASE_BRANCH}...${commit}`);
+  if ((c['status'] !== 'identical' && c['status'] !== 'behind') || c['ahead_by'] !== 0)
+    no(`${commit} is not in ${RELEASE_BRANCH}'s history (compare says ${String(c['status'])})`);
+}
+
+async function askList(api: GitHubApi, path: string): Promise<Record<string, unknown>[]> {
+  let v: unknown;
+  try {
+    v = await api.get(path);
+  } catch (e) {
+    return refuse(
+      `GitHub could not be reached, and a release is not checked offline: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!Array.isArray(v)) return refuse(`GitHub answered ${path} with something else`);
+  return v as Record<string, unknown>[];
 }
 
 export interface RunArtifact {

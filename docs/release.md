@@ -18,8 +18,9 @@ The tool never reads, stores or prints a signing key. Multisig keys stay in each
 alias release='node shells/pear-v3/scripts/release/cli.ts'   # from the repository root
 ```
 
-It needs Node 22.18 or later, the [`gh` CLI](https://cli.github.com/) signed in (it reads the GitHub
-API and downloads artifacts, and the tool never sees its token), `unzip`, `unsquashfs` (the
+It needs Node 22.18 or later, the [`gh` CLI](https://cli.github.com/) signed in to github.com (it
+reads the GitHub API and downloads artifacts; the tool always asks github.com, whatever `GH_HOST`
+says, and never sees the token), `unzip`, `unsquashfs` (the
 `squashfs-tools` package) and Linux or macOS: a Windows file system cannot keep a macOS bundle's
 symlinks. Every `pear` command it runs is the pinned CLI (3.7.0, checked against the sha256 in
 `scripts/pear-ci/pins.ts`), kept in `~/.cache/nutflix-release/`. A Pear sidecar that is already
@@ -28,9 +29,10 @@ running keeps serving whatever CLI talks to it, so stop any other one first: `pe
 ## What the checks are, and what they are not
 
 - **What ties a release to reviewed code is where it came from.** `check` asks GitHub that the run is
-  this repository's `ci.yml`, a push to `main`, at the commit you name, and successful, and holds
-  each artifact to the digest GitHub reports for that run. If GitHub cannot be reached it refuses;
-  there is no offline path.
+  this repository's `ci.yml`, a push to `main`, at the commit you name, and successful; that the
+  commit is in `main`'s history; and that no tag named `main` exists (a tag's runs report it as
+  their branch). It holds each artifact to the digest GitHub reports for that run. If GitHub cannot
+  be reached it refuses; there is no offline path.
 - **Everything else is a check against a mistake, not against hostile code.** `verify-root`, the
   baked commit, main's updates switch and the CPU check read what a build declares. Hostile code can
   declare the right values and do something else. `--execute`, the typed-back link and the refusal
@@ -49,6 +51,7 @@ running keeps serving whatever CLI talks to it, so stop any other one first: `pe
 | 3 | owner | `pear multisig link --config pear.json` prints the **production link**. |
 | 4 | owner | Set `RELEASE_UPGRADE_LINK` to it, in a reviewed commit ([The day the link is set](#the-day-the-link-is-set)). |
 | 5 | owner | In nutflix-pear, set `RUNTIME_PRODUCTION_LINK` to the same link, in a reviewed commit, and move this repository's `vendor/nutflix-pear` submodule to a commit that has it. Until then its publish script refuses this app's notices. |
+| 6 | owner | Once there is an Apple Developer account and a Windows code-signing certificate: pin them in `scripts/release/signing-policy.ts` (`APPLE_TEAM_ID`, `WINDOWS_SIGNER`), in a reviewed commit. Until then a signer accepts only an ad-hoc macOS signature and no signed `.msix` ([What a signature may say](#what-a-signature-may-say)). |
 
 ```json
 {
@@ -92,7 +95,7 @@ record rather than trusting the files in `rel/`.
 
 | # | Who | Command |
 | --- | --- | --- |
-| 5 | owner | Copy each macOS bundle and the `.msix` out of `rel/apps/<target>/`, and sign, notarize and staple **the copy**. |
+| 5 | owner | Copy each macOS bundle and the `.msix` out of `rel/apps/<target>/`, and sign, notarize and staple **the copy**, as below. |
 | 6 | tool | `release record-signed --out rel --target <target> --signed <path to the signed Nutflix.app or Nutflix.msix>` |
 
 `record-signed` checks that CI's package is still what `check` read, then that the signed one is
@@ -100,6 +103,37 @@ that package **with signatures added and nothing else changed**: every file, sym
 bit equal, Mach-O code equal once the signature is taken out, every part of an `.msix` equal except
 its signature. It reads the root, version, commit and CPU again from the signed tree, and records
 both digests. CI's digest stays the reference and is never regenerated from a signed bundle.
+
+#### What a signature may say
+
+The signatures themselves are pinned in `scripts/release/signing-policy.ts`, and `record-signed` and
+every signer's `verify-request` hold each re-signed binary to it:
+
+- **macOS:** the Apple Team ID (`APPLE_TEAM_ID`; while it is `null`, only an ad-hoc signature is
+  accepted), the hardened runtime on every executable, and exactly the entitlements the policy names
+  for each binary: `com.apple.security.cs.allow-jit` for the app, its helpers and the Bare runtime,
+  and none for anything else. A signature that adds an entitlement (say `get-task-allow` or
+  `disable-library-validation`), drops the hardened runtime, or comes from another team is refused.
+  Only a bundle's own `Contents/_CodeSignature/`, a framework version's `_CodeSignature/` and the
+  stapled `Contents/CodeResources` may be added.
+- **Windows:** the certificate (`WINDOWS_SIGNER`: its SHA-256, subject and issuer; while it is
+  `null`, a signed `.msix` is refused). `[Content_Types].xml` may change only by the entries that
+  declare the signature and the code-integrity catalog. A catalog signing adds must be signed by the
+  same certificate, and every member must be the Authenticode digest of a binary in the package.
+
+Sign inside out, ad hoc today, with `--sign "Developer ID Application: …" --timestamp` in place of
+`--sign -` once a Team ID is pinned (the CI proof signs exactly this way):
+
+```sh
+E=shells/pear-v3/packaging/entitlements.mac.plist
+codesign --force --deep --options runtime --sign - Nutflix.app
+for h in Nutflix.app/Contents/Frameworks/Nutflix\ Helper*.app; do
+  codesign --force --options runtime --entitlements "$E" --sign - "$h"
+done
+codesign --force --options runtime --entitlements "$E" --sign - \
+  Nutflix.app/Contents/Resources/app/node_modules/bare-sidecar/prebuilds/darwin-*/bare
+codesign --force --options runtime --entitlements "$E" --sign - Nutflix.app
+```
 
 **Real certificates are unproven.** CI runs this step with an ad-hoc signature on macOS and a
 certificate made for the job on Windows. Apple's Developer ID signing, notarization, stapling and a
@@ -127,14 +161,14 @@ Each of these joins the public DHT. Run it as shown to see the command; add `--e
 | --- | --- | --- |
 | 9 | owner | `pear touch`, once, for a **staging** link, and again for a **pre-production** link. Keep both. |
 | 10 | owner | `release stage --link <staging> --out rel` |
-| 11 | owner | `release provision --source <staged verlink> --target <pre-production> --production <production verlink>` |
+| 11 | owner | `release provision --source <staged verlink> --target <pre-production> --production <production verlink> --out rel` |
 | 12 | owner | `release seed --link <pre-production>`, and the same on **two other machines** |
 | 13 | owner | `release multisig request --config pear.json --verlink <pre-production verlink>` |
 | 14 | **each signer** | `release verify-request --run <run id> --commit <sha> --config pear.json --verlink <pre-production verlink> --request <request> --work <empty folder> [--signed-target <target>]...` |
-| 15 | each signer | `pear multisig sign <request> <name>`, only after step 14 passed |
+| 15 | each signer | The `pear multisig sign <request> <name>` line step 14 printed, only after it passed |
 | 16 | owner | `release multisig verify --config pear.json --source <pre-production> --request <request> --response <r1> --response <r2>` |
 | 17 | owner | `pear seed <production>` on **two machines other than this one**, left running |
-| 18 | owner | `release multisig commit --config pear.json --source <pre-production> --production <production> --request <request> --response <r1> --response <r2>` |
+| 18 | owner | `release multisig commit --config pear.json --source <pre-production> --production <production> --out rel --request <request> --response <r1> --response <r2>` |
 
 - **`<production verlink>` in step 11** is the production link's current version,
   `pear://<fork>.<length>.<key>`. For the very first release it is `pear://0.0.<key>`. It must be a
@@ -144,7 +178,10 @@ Each of these joins the public DHT. Run it as shown to see the command; add `--e
   nothing is seeding, it waits for ever.
 - **`commit` checks the link first.** After you type the link, it asks Pear what `pear.json`
   derives, and refuses if that is not the source's production link.
-- `commit` prints the new **production verlink**. The notice names it.
+- **`--out rel` records the versions.** `provision` writes the version it supersedes to
+  `rel/provisioned.json`, and `commit` writes the new **production verlink** to `rel/committed.json`
+  (once: a second commit from the same folder is refused). The notice names exactly that version,
+  and only if it is newer than the one superseded.
 
 #### Step 14 is what the quorum is for
 
@@ -157,12 +194,21 @@ coordinator's word for anything but the verlink and the request**:
 1. It asks GitHub for what CI built at the run and commit, and downloads those five packages. **Get
    the run id and commit from the repository, not from the coordinator.** They are what you are
    approving.
-2. It asks Pear whether the request is for that drive at that exact length, onto the production link
-   your `pear.json` derives.
-3. It fetches that version of the drive from peers, and refuses unless it holds exactly CI's five
-   packages and nothing else. Name a target with `--signed-target` only if the owner signed it: it
-   may then differ from CI's package by its signatures, and by nothing else.
-4. It asks Pear about the request again, so that the drive cannot have changed underneath the check.
+2. Every Pear step runs in a Pear home of the check's own (`<work>/pear-home`), so every answer comes
+   from the same local cores. It checks that `pear.json` derives the production link, that the drive
+   is at the verlink's fork, and that the request writes exactly that version onto production.
+3. It fetches that version of the drive, then asks Pear (`pear provision --dry-run`) for the db and
+   blobs cores it now holds, by length and tree hash. Pear 3.7.0 reports them as held, not as of
+   the verlink, so both must equal what the request writes: then the cores the drive was read from
+   are exactly the version signed. The blobs core is what binds the file bytes (a db entry names a
+   blob, it does not hash it). A core that grew meanwhile is refused; start again in a new folder.
+4. It refuses unless the drive holds exactly CI's five packages and nothing else. Name a target with
+   `--signed-target` only if the owner signed it: it may then differ from CI's package by its
+   signatures, as [pinned](#what-a-signature-may-say), and by nothing else.
+5. It asks Pear about the request and the fork again: a core that was rewritten (forked) to the same
+   length is refused here.
+6. It prints the exact `pear multisig sign` line for the request it checked, with a short hash of
+   it. Compare the hash with the request you were sent, and sign that line, not a pasted one.
 
 It joins the public DHT and downloads about a gigabyte. It refuses on CI.
 
@@ -174,13 +220,15 @@ these from the root of this repository, with the submodule at a commit that has 
 
 | # | Who | Command |
 | --- | --- | --- |
-| 19 | tool | `release notice-draft --out rel --verlink <production verlink>` |
+| 19 | tool | `release notice-draft --out rel` |
 | 20 | owner | `node vendor/nutflix-pear/scripts/release-publish.mjs rel/release-event.unsigned.json --dir rel/notice-files --d nutflix-runtime` |
 | 21 | owner | Check it as a user would: `node vendor/nutflix-pear/scripts/release-verify.mjs rel/release-event.json --d nutflix-runtime --all rel/notice-files` |
 
 Step 19 writes `rel/release-event.unsigned.json`: a kind-30071 event with no `id` and no signature.
-Its commit is the one the packages carry, and it takes none from the command line. It must name a
-non-empty version of the production link. Step 20 checks every file against it, asks your NIP-46
+Its commit is the one the packages carry and its version the one `commit` recorded in
+`rel/committed.json`; it takes neither from the command line. It refuses a version that is not newer
+than the one `provision` recorded as superseded: a stale notice would only raise every install's
+replay floor. Step 20 checks every file against it, asks your NIP-46
 signer to sign it, shows you what it is about to publish, and sends it only after you type
 `publish`, to exactly:
 
@@ -236,19 +284,28 @@ and to the public relays, and the job fails unless the count is zero.
   notice naming all five is read by the app's own `notice.ts`.
 - A signer fetches those five from the private DHT and finds them equal to CI's. Two swapped entries
   are refused.
-- Two more builds go through `pear build`, `stage`, `provision`, a signer's check of the request,
-  `pear multisig` (three signers, quorum two, real `keys get` and `sign` on a terminal; one signature
-  is refused) and `commit`. A swapped entry, and a request for another version than the one checked,
-  are refused.
+- Two more builds go through `pear build`, `stage`, `provision`, a signer's check of the request
+  (`verify-request`'s own sequence, in the signer's Pear home: fork, request, fetch, db and blobs
+  cores, request and fork again), `pear multisig` (three signers, quorum two, real `keys get` and
+  `sign` on a terminal; one signature is refused) and `commit`. A swapped entry, a request for
+  another version than the one checked, and the cores of another version are refused.
 - The first is installed from the multisig link with `pear install`. The installed app holds the
   second with no notice, a wrong hash and a wrong signer, applies it for a notice this tool drafted,
   and restarts as the new version.
 - A real build with a link trips `no-updater.ts`. The build launched instead passes it, is refused
   by `verify-root`, and starts with its sandbox on and its updater off.
 
-The `signing-proof` job signs a real macOS bundle (ad-hoc) and a real `.msix` (a certificate made for
-the job), and `record-signed` accepts them. On macOS, a changed script, changed code and an added file
-are each refused.
+The `signing-proof` job signs a real macOS bundle and a real `.msix`:
+
+- macOS, ad hoc, as above: the production policy accepts it. A bundle re-signed with an entitlement
+  added, without the hardened runtime, or (with a Team ID pinned for the test) by no team is
+  refused, and so are a changed script, changed code and an added file.
+- Windows, with a certificate made for the job: the production policy refuses it (no certificate is
+  pinned), a policy pinning another certificate refuses it, and a policy pinning the job's
+  certificate, built in the proof and nowhere else, accepts it, content types and catalog included.
+
+The job's GitHub token goes to `gh` alone: the proof takes it out of its environment before it
+starts anything, and checks that a child process has none.
 
 It does **not** prove:
 
@@ -258,5 +315,9 @@ It does **not** prove:
 - the multisig chain on macOS or Windows: the `install` job proves `pear install` and the update
   gate on all five targets, on a plain link;
 - a deployment assembled on Linux installed on a real Mac;
-- signing with a real Apple or Windows certificate, notarization or stapling;
+- signing with a real Apple or Windows certificate, notarization or stapling, or a Team ID read from
+  a real Developer ID signature (the Team ID check runs on an ad-hoc signature, and on synthetic
+  signatures in the unit tests);
+- that a catalog SignTool writes for a real CA certificate has the same shape as the one for the
+  job's certificate;
 - that a build's code matches its source: the checks read what a build declares (see above).

@@ -3,11 +3,16 @@
  * changes their bytes, so a signed package cannot equal CI's digest. What it can be is CI's package
  * with signatures added and NOTHING else changed, and this is that check:
  *
- *   - A macOS bundle: every file, symlink and executable bit equal, except `_CodeSignature/`, the
- *     stapled `Contents/CodeResources`, and Mach-O binaries, whose code must be equal once their
- *     signature is taken out (`binary.ts`).
- *   - An `.msix`: every part equal, by sha256, except the signature part and the content-types part
- *     that declares it.
+ *   - A macOS bundle: every file, symlink and executable bit equal, except a bundle's or a
+ *     framework's own `_CodeSignature/`, the stapled `Contents/CodeResources`, and Mach-O binaries,
+ *     whose code must be equal once their signature is taken out (`binary.ts`). Each re-signed
+ *     binary's signature must then say what `signing-policy.ts` pins: who, which flags, which
+ *     entitlements.
+ *   - An `.msix`: every part equal, by sha256, except the signature part, and the content types,
+ *     which may differ only by the entries that declare it. The signer must be the pinned
+ *     certificate. A code-integrity catalog that signing adds must be a trust list signed by the
+ *     same certificate, every member of which is the Authenticode digest of a binary in the
+ *     package: a catalog cannot vouch for code the package does not hold.
  *
  * CI's digest is never regenerated from a signed package: it stays the reference.
  */
@@ -17,28 +22,61 @@ import { join } from 'node:path';
 
 import { treeManifest } from '../pear-ci/deployment.ts';
 import { readRelease, writeReleaseFile, type ReleaseRow } from './assemble.ts';
-import { machoCodeDigest } from './binary.ts';
+import { machoCodeDigest, machoSignatures, peAuthenticodeDigest } from './binary.ts';
 import { artifactBytes, digestOf } from './digest.ts';
 import { refuse } from './guards.ts';
 import { assertPackageArch, assertProductionRoot, packageFacts } from './inspect.ts';
+import { catalogMembers, msixSigner, signedContent, type SignerCertificate } from './pkcs7.ts';
+import {
+  assertMacSignature,
+  assertSigningPolicy,
+  fingerprintOf,
+  productionSigningPolicy,
+  type SigningPolicy,
+} from './signing-policy.ts';
 import { RELEASE_TARGETS, type ReleaseTarget } from './targets.ts';
 import { forEachZipFile, type ZipEntry } from './zip.ts';
 
-/** What signing and notarizing a bundle may add or rewrite. */
-export const isBundleSignaturePath = (path: string): boolean =>
-  /(^|\/)_CodeSignature\//.test(path) || path === 'Contents/CodeResources';
-
 /**
- * The parts of an `.msix` that signing it adds or rewrites: the signature, the content types that
- * declare it, and the code-integrity catalog SignTool may add for the package's binaries.
+ * What signing and notarizing a bundle may add or rewrite: an app bundle's own
+ * `Contents/_CodeSignature/`, a framework version's `_CodeSignature/`, and the stapled ticket.
  */
-export const MSIX_SIGNATURE_PARTS: ReadonlySet<string> = new Set([
-  'AppxSignature.p7x',
-  '[Content_Types].xml',
-  'AppxMetadata/CodeIntegrity.cat',
-]);
+export const isBundleSignaturePath = (path: string): boolean =>
+  /^(?:.+\.app\/)?Contents\/_CodeSignature\/[^/]+$/.test(path) ||
+  /^(?:.+\/)?[^/]+\.framework\/Versions\/[^/]+\/_CodeSignature\/[^/]+$/.test(path) ||
+  path === 'Contents/CodeResources';
 
-async function compareBundle(unsigned: string, signed: string): Promise<void> {
+/** The part of an `.msix` that signing it adds. */
+export const MSIX_SIGNATURE = 'AppxSignature.p7x';
+export const MSIX_CONTENT_TYPES = '[Content_Types].xml';
+/** The code-integrity catalog SignTool may add for the package's binaries. */
+export const MSIX_CATALOG = 'AppxMetadata/CodeIntegrity.cat';
+const MAX_CATALOG_BYTES = 1024 * 1024;
+/** What signing may add to the content types: the signature's own declaration, and nothing else. */
+export function isSignatureType(entry: string, catalogAdded = false): boolean {
+  const m = /^<(Default|Override)((?:\s+[A-Za-z]+="[^"<>]*")+)\s*\/>$/.exec(entry);
+  if (m === null) return false;
+  const attrs = new Map(
+    [...(m[2] ?? '').matchAll(/([A-Za-z]+)="([^"]*)"/g)].map((x) => [x[1], x[2]]),
+  );
+  if (attrs.size !== 2) return false;
+  const type = attrs.get('ContentType')?.toLowerCase();
+  if (type === 'application/vnd.ms-appx.signature')
+    return m[1] === 'Default'
+      ? attrs.get('Extension')?.toLowerCase() === 'p7x'
+      : attrs.get('PartName')?.toLowerCase() === '/appxsignature.p7x';
+  if (catalogAdded && type === 'application/vnd.ms-pkiseccat')
+    return m[1] === 'Default'
+      ? attrs.get('Extension')?.toLowerCase() === 'cat'
+      : attrs.get('PartName')?.toLowerCase() === `/${MSIX_CATALOG}`.toLowerCase();
+  return false;
+}
+
+async function compareBundle(
+  unsigned: string,
+  signed: string,
+  policy: SigningPolicy,
+): Promise<void> {
   const a = await treeManifest(unsigned);
   const b = await treeManifest(signed);
   for (const [path, x] of a) {
@@ -55,35 +93,148 @@ async function compareBundle(unsigned: string, signed: string): Promise<void> {
     }
     if (x.exec !== y.exec) refuse(`signing changed the executable bit of ${path}`);
     if (x.sha256 === y.sha256) continue;
+    const signedBytes = readFileSync(join(signed, ...path.split('/')));
     const before = machoCodeDigest(readFileSync(join(unsigned, ...path.split('/'))));
-    const after = machoCodeDigest(readFileSync(join(signed, ...path.split('/'))));
+    const after = machoCodeDigest(signedBytes);
     if (before === null || after === null || before !== after)
       refuse(`signing changed more than the signature of ${path}`);
+    // The code is CI's. What the new signature says is pinned.
+    const signatures = machoSignatures(signedBytes);
+    if (signatures === null) return refuse(`the signature of ${path} cannot be read`);
+    for (const slice of signatures)
+      assertMacSignature(path, slice.fileType, slice.signature, policy);
   }
   for (const path of b.keys())
     if (!a.has(path) && !isBundleSignaturePath(path)) refuse(`signing added ${path}`);
 }
 
-function msixParts(file: string): Map<string, string> {
-  const parts = new Map<string, string>();
+interface MsixPart {
+  readonly sha256: string;
+  /** Kept for the parts this reads: the signature, the content types, the catalog. */
+  readonly bytes: Buffer;
+  /** A Windows binary's Authenticode digests, as `sha1:<hex>` and `sha256:<hex>`. */
+  readonly authenticode: readonly string[];
+}
+
+function msixParts(file: string): Map<string, MsixPart> {
+  const parts = new Map<string, MsixPart>();
   forEachZipFile(file, (e: ZipEntry, bytes) => {
-    parts.set(e.name, createHash('sha256').update(bytes).digest('hex'));
+    const kept =
+      e.name === MSIX_SIGNATURE || e.name === MSIX_CONTENT_TYPES || e.name === MSIX_CATALOG;
+    const authenticode: string[] = [];
+    for (const algorithm of ['sha1', 'sha256'] as const) {
+      const d = peAuthenticodeDigest(bytes, algorithm);
+      if (d !== null) authenticode.push(`${algorithm}:${d}`);
+    }
+    parts.set(e.name, {
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      bytes: kept ? bytes : Buffer.alloc(0),
+      authenticode,
+    });
   });
   return parts;
 }
 
-function compareMsix(unsigned: string, signed: string): void {
+/**
+ * The entries of a content-types part, by a key that ignores attribute order, spacing and the case
+ * of values (OPC compares part names, extensions and types without case), and the text around them,
+ * without the XML declaration.
+ */
+function contentTypes(text: string): {
+  readonly frame: string;
+  readonly entries: ReadonlyMap<string, string>;
+} {
+  const entries = new Map<string, string>();
+  const frame = text
+    .replace(/^\uFEFF/, '')
+    .replace(/^\s*<\?xml[^<>]*\?>/, '')
+    .replace(/<(?:Default|Override)\s[^<>]*\/>/g, (e) => {
+      const kind = /^<(\w+)/.exec(e)?.[1] ?? '';
+      const attrs = [...e.matchAll(/([A-Za-z]+)\s*=\s*"([^"]*)"/g)]
+        .map(([, k = '', v = '']) => `${k}=${v.toLowerCase()}`)
+        .sort();
+      entries.set(`${kind} ${attrs.join(' ')}`, e.replace(/\s+/g, ' ').replace(/\s*\/>$/, '/>'));
+      return '';
+    })
+    .replace(/\s+/g, '');
+  return { frame, entries };
+}
+
+export function compareContentTypes(
+  unsigned: Buffer | undefined,
+  signed: Buffer | undefined,
+  catalogAdded: boolean,
+): void {
+  if (unsigned === undefined || signed === undefined)
+    return refuse(`${MSIX_CONTENT_TYPES} is missing`);
+  const a = contentTypes(unsigned.toString('utf8'));
+  const b = contentTypes(signed.toString('utf8'));
+  if (a.frame !== b.frame || [...a.entries.keys()].some((k) => !b.entries.has(k)))
+    refuse(`signing changed ${MSIX_CONTENT_TYPES}`);
+  for (const [k, e] of b.entries)
+    if (!a.entries.has(k) && !isSignatureType(e, catalogAdded))
+      refuse(`signing added ${e} to ${MSIX_CONTENT_TYPES}`);
+}
+
+const sameSigner = (a: SignerCertificate, b: SignerCertificate): boolean =>
+  fingerprintOf(a.sha256) === fingerprintOf(b.sha256) &&
+  a.subject === b.subject &&
+  a.issuer === b.issuer;
+
+function compareMsix(unsigned: string, signed: string, policy: SigningPolicy): void {
   const a = msixParts(unsigned);
   const b = msixParts(signed);
-  for (const [name, digest] of a) {
-    if (MSIX_SIGNATURE_PARTS.has(name)) continue;
+  const catalog = b.get(MSIX_CATALOG);
+  const catalogNew = catalog !== undefined && a.get(MSIX_CATALOG)?.sha256 !== catalog.sha256;
+  for (const [name, part] of a) {
+    if (name === MSIX_SIGNATURE || name === MSIX_CONTENT_TYPES || name === MSIX_CATALOG) continue;
     const other = b.get(name);
-    if (other === undefined) refuse(`signing removed ${name}`);
-    if (other !== digest) refuse(`signing changed ${name}`);
+    if (other === undefined) return refuse(`signing removed ${name}`);
+    if (other.sha256 !== part.sha256) refuse(`signing changed ${name}`);
   }
+  if (a.has(MSIX_CATALOG) && catalog === undefined) refuse(`signing removed ${MSIX_CATALOG}`);
   for (const name of b.keys())
-    if (!a.has(name) && !MSIX_SIGNATURE_PARTS.has(name)) refuse(`signing added ${name}`);
-  if (!b.has('AppxSignature.p7x')) refuse(`${signed} has no signature`);
+    if (!a.has(name) && name !== MSIX_SIGNATURE && name !== MSIX_CATALOG)
+      refuse(`signing added ${name}`);
+  compareContentTypes(
+    a.get(MSIX_CONTENT_TYPES)?.bytes,
+    b.get(MSIX_CONTENT_TYPES)?.bytes,
+    catalog !== undefined && !a.has(MSIX_CATALOG),
+  );
+  const signature = b.get(MSIX_SIGNATURE);
+  if (signature === undefined) return refuse(`${signed} has no signature`);
+  const pinned = policy.windowsSigner;
+  if (pinned === null)
+    return refuse(
+      `no Windows signing certificate is pinned (${policy.label}): a signed .msix is refused`,
+    );
+  const signer = msixSigner(signature.bytes);
+  if (!sameSigner(signer, pinned))
+    refuse(
+      `${signed} is signed by ${signer.subject} (${signer.sha256}), not the pinned certificate`,
+    );
+  if (catalogNew) assertCatalog(catalog.bytes, b, pinned);
+}
+
+/** A catalog signing added or replaced: bounded, the pinned signer's, and only this package's code. */
+function assertCatalog(
+  bytes: Buffer,
+  parts: ReadonlyMap<string, MsixPart>,
+  pinned: SignerCertificate,
+): void {
+  if (bytes.length > MAX_CATALOG_BYTES)
+    refuse(`${MSIX_CATALOG} is larger than any catalog of a package`);
+  const content = signedContent(bytes);
+  if (!sameSigner(content.signer, pinned))
+    refuse(`${MSIX_CATALOG} is signed by ${content.signer.subject}, not the pinned certificate`);
+  const members = catalogMembers(content);
+  const known = new Set<string>();
+  for (const p of parts.values()) for (const d of p.authenticode) known.add(d);
+  for (const m of members)
+    if (!known.has(`${m.algorithm}:${m.digest}`))
+      refuse(
+        `${MSIX_CATALOG} names ${m.algorithm} ${m.digest.slice(0, 16)}…, which is no binary in the package`,
+      );
 }
 
 /** Refuses unless `signed` is `unsigned` with signatures added, and nothing else changed. */
@@ -91,15 +242,17 @@ export async function compareSigned(
   t: ReleaseTarget,
   unsigned: string,
   signed: string,
+  policy: SigningPolicy = productionSigningPolicy(),
 ): Promise<void> {
   if (t.platform === 'linux') return refuse('an AppImage is not signed: it ships as CI built it');
+  assertSigningPolicy(policy);
   if (t.platform === 'darwin') {
     if (!lstatSync(signed).isDirectory()) return refuse(`${signed} is not a bundle`);
-    await compareBundle(unsigned, signed);
+    await compareBundle(unsigned, signed, policy);
     return;
   }
   if (!lstatSync(signed).isFile()) return refuse(`${signed} is not a file`);
-  compareMsix(unsigned, signed);
+  compareMsix(unsigned, signed, policy);
 }
 
 export interface SignedRecord {
@@ -118,6 +271,7 @@ export async function recordSigned(
   out: string,
   targetName: string,
   signed: string,
+  policy: SigningPolicy = productionSigningPolicy(),
 ): Promise<SignedRecord> {
   const release = readRelease(out);
   const t = RELEASE_TARGETS.find((x) => x.name === targetName);
@@ -137,7 +291,7 @@ export async function recordSigned(
   const app = join(dir, t.file);
   cpSync(signed, app, { recursive: true, verbatimSymlinks: true });
   try {
-    await compareSigned(t, row.app, app);
+    await compareSigned(t, row.app, app, policy);
     const facts = packageFacts(app);
     assertProductionRoot(app, facts);
     if (facts.version !== release.version)

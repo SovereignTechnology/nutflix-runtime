@@ -169,6 +169,34 @@ export function planVerifyRequest(o: {
   };
 }
 
+/**
+ * `pear provision --dry-run`: it fetches the source version into a temporary drive and reports that
+ * version's db and blobs cores (length, tree hash). A dry run reads no target (Pear does not even
+ * parse it), so the source's own link stands in for one.
+ */
+export function planProvisionDryRun(o: { source: string; production: string }): PlannedCommand {
+  const source = assertVerlink(o.source, 'the source');
+  return {
+    step: 'provision --dry-run',
+    args: [
+      'provision',
+      '--dry-run',
+      '--json',
+      source,
+      `pear://${linkKeyOf(source)}`,
+      assertVerlink(o.production, 'the production version'),
+    ],
+    confirm: null,
+    publicDht: true,
+  };
+}
+
+/** `pear info` of a link: its length and fork, and its blobs'. */
+export function planInfo(o: { link: string }): PlannedCommand {
+  const link = assertLink(o.link, 'the link');
+  return { step: 'info', args: ['info', '--json', link], confirm: link, publicDht: true };
+}
+
 /** Fetches one version of a drive into an empty folder, from peers. */
 export function planDump(o: { verlink: string; dir: string }): PlannedCommand {
   const verlink = assertVerlink(o.verlink, 'the version to fetch');

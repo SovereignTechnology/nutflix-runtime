@@ -40,6 +40,7 @@ import {
   lastRecord,
   parseRecords,
   succeeded,
+  type PearRecord,
 } from '../pear-ci/records.ts';
 import {
   installedIs,
@@ -68,7 +69,14 @@ import {
 import { artifactBytes, digestOf } from './digest.ts';
 import { noticeDraft, type UnsignedNotice } from './draft.ts';
 import { expectRefusal, linkKeyOf } from './guards.ts';
-import { assertRequestBinds, compareDrive, type CiEntry } from './signer.ts';
+import {
+  assertFetchedIsRequested,
+  assertRequestBinds,
+  checkRequestInOneHome,
+  compareDrive,
+  type CiEntry,
+  type PearInOneHome,
+} from './signer.ts';
 import { RELEASE_TARGETS, type ReleaseTarget } from './targets.ts';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -526,17 +534,24 @@ export async function proveReleaseChain(
       }
     };
 
+    /** What a signer checked for one release, for the next one's negatives. */
+    interface Checked {
+      readonly fetched: string;
+      readonly version: string;
+      readonly verlink: string;
+      readonly cores: Readonly<Record<string, unknown>> | undefined;
+    }
     const release = async (
       name: string,
       version: string,
       app: string,
       production: string,
-      previous?: { fetched: string; version: string; verlink: string },
+      previous?: Checked,
     ): Promise<{
       verlink: string;
       lengths: CoreLengths;
       deployment: string;
-      checked: { fetched: string; version: string; verlink: string };
+      checked: Checked;
     }> => {
       const project = join(root, `project-${name}`);
       mkdirSync(project, { recursive: true });
@@ -582,43 +597,30 @@ export async function proveReleaseChain(
       const request = field(lastRecord(requested.records, 'final'), 'request');
       if (request === undefined) throw new Error('pear multisig request printed no request');
 
-      // A signer's own check, as `verify-request` runs it: from its own sidecar, the request, then
-      // the drive at that exact version against what was built, then the request again.
+      // A signer's own check: `verify-request`'s own sequence (`checkRequestInOneHome`), every
+      // call in the signer's Pear home.
       const checker = setup.signers[0];
       if (checker === undefined) throw new Error('no signer');
-      const askPear = async (req: string, verlink: string, n: string): Promise<string> =>
-        assertRequestBinds(
-          lastRecord(
-            (
-              await planned(
-                checker.pear,
-                `signer-verify-${name}-${n}`,
-                planVerifyRequest({
-                  config: setup.config,
-                  source: setup.preProduction,
-                  request: req,
-                }),
-                600,
-              )
-            ).records,
-            'final',
-          )?.data,
-          setup.production,
-          verlink,
-        );
-      const before = await askPear(request, pre.verlink, '1');
+      const records = async (plan: PlannedCommand, n: string): Promise<PearRecord[]> =>
+        (await planned(checker.pear, `signer-${name}-${n}`, plan, 900)).records;
+      let calls = 0;
+      const inSignerHome: PearInOneHome = async (args, what) => {
+        const r = await checker.pear.run(`signer-${name}-${String(++calls)}`, args, 900);
+        if (r.code !== 0 || !succeeded(r.records))
+          throw new Error(`${what}: ${failureMessage(r.records) ?? r.out.slice(-400)}`);
+        return r.records;
+      };
       const fetched = join(root, `signer-drive-${name}`);
-      await planned(
-        checker.pear,
-        `signer-dump-${name}`,
-        planDump({ verlink: pre.verlink, dir: fetched }),
-        900,
-      );
+      const { requested: before, cores } = await checkRequestInOneHome(inSignerHome, {
+        config: setup.config,
+        verlink: pre.verlink,
+        request,
+        production: setup.production,
+        dumpDir: fetched,
+      });
       const digest = await digestOf(app);
       const rows = await compareDrive(fetched, version, [{ target, app, digest }]);
       if (rows[0]?.how !== 'exact') throw new Error('the signer did not get the exact build');
-      if ((await askPear(request, pre.verlink, '2')) !== before)
-        throw new Error('the request changed during the signer check');
       if (previous !== undefined) {
         // The drive of the last release, offered as this one: a swapped entry.
         await expectRefusal(
@@ -627,30 +629,32 @@ export async function proveReleaseChain(
           /is not what CI built/,
         );
         // A request for this version, offered to a signer who checked the last one.
-        const data = await planned(
-          checker.pear,
-          `signer-verify-${name}-other`,
+        const data = await records(
           planVerifyRequest({ config: setup.config, source: setup.preProduction, request }),
-          600,
+          'verify-other',
         );
         await expectRefusal(
           'a request for another version',
           () =>
-            assertRequestBinds(
-              lastRecord(data.records, 'final')?.data,
-              setup.production,
-              previous.verlink,
-            ),
+            assertRequestBinds(lastRecord(data, 'final')?.data, setup.production, previous.verlink),
           /the request releases length/,
+        );
+        // The cores the last release was fetched from (Pear's own report), against this request.
+        await expectRefusal(
+          'the cores of another version',
+          () => {
+            assertFetchedIsRequested(previous.cores, before);
+          },
+          /core fetched is not the one the request writes/,
         );
         row(
           `signer ${name}`,
-          'refused a swapped entry, and a request for another version than the one it checked',
+          'refused a swapped entry, a request for another version, and the cores of another version',
         );
       }
       row(
         `signer ${name}`,
-        `fetched ${pre.verlink} itself; it holds exactly the build, and the request is for it`,
+        `fetched ${pre.verlink} in its own Pear home; its db and blobs cores are the ones the request writes, and it holds exactly the build`,
       );
 
       // Quorum 2 of 3: the third signer does not sign.
@@ -707,7 +711,7 @@ export async function proveReleaseChain(
         `release ${name}`,
         `built, staged, provisioned, signed 2 of 3 (1 of 3 refused), committed at ${made.verlink}`,
       );
-      return { ...made, deployment, checked: { fetched, version, verlink: pre.verlink } };
+      return { ...made, deployment, checked: { fetched, version, verlink: pre.verlink, cores } };
     };
 
     const firstProduction = `pear://0.0.${linkKeyOf(setup.production)}`;

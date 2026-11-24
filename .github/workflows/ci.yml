@@ -497,8 +497,8 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: the release, end to end, on a private DHT with throwaway keys (Xvfb)
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          # Read once by prove.ts and handed to `gh` alone (prove.ts: TOKEN_NAMES).
+          RELEASE_PROOF_GH_TOKEN: ${{ github.token }}
         run: |
           xvfb-run -a node shells/pear-v3/scripts/release/prove.ts --target linux-x64 \
             --work "$RUNNER_TEMP/release-proof"

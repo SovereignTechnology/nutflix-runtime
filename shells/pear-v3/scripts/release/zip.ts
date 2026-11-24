@@ -4,10 +4,11 @@
  * used: they resolve a duplicate name, or a symlink entry another entry writes through, by their
  * own rules.
  *
- * Refused, before anything is written: a duplicate name (also by case, for the file systems these
- * packages land on), an absolute path, a `..`, a backslash or control character, an entry inside a
- * symlink or a file, a local header that disagrees with the central directory, entries that
- * overlap, encryption, and anything over the size limits. A symlink must stay inside the tree.
+ * Refused, before anything is written: a duplicate name (also by case and Unicode form, as APFS and
+ * NTFS compare names), an absolute path, a `..`, a backslash or control character, an entry inside
+ * a symlink or a file, a local header that disagrees with the central directory, entries that
+ * overlap, encryption, and anything over the size limits. A symlink must stay inside the tree,
+ * resolved through every other symlink as the file system would.
  */
 import {
   closeSync,
@@ -18,7 +19,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, posix } from 'node:path';
+import { dirname, join } from 'node:path';
 import { crc32, inflateRawSync } from 'node:zlib';
 
 import { refuse } from './guards.ts';
@@ -216,8 +217,20 @@ export function readZipIndex(file: string): ZipEntry[] {
   }
 }
 
-/** A name as a case-insensitive file system sees it. */
-const fold = (name: string): string => name.normalize('NFC').toLowerCase();
+/**
+ * Names as a case- and normalization-insensitive file system (APFS, NTFS) may see them. Two folds:
+ * the simple one, and Unicode full case folding approximated by upper-then-lower case under NFD
+ * (`ß` and `ss`, final and medial sigma, the Kelvin sign and `k` all meet). Names that meet under
+ * either are one name.
+ */
+const folds = (name: string): readonly string[] => [
+  ...new Set([
+    name.normalize('NFC').toLowerCase(),
+    name.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD'),
+  ]),
+];
+const fold = (name: string): string =>
+  name.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD');
 
 /** The name rules: see the header. */
 export function assertSafeNames(entries: readonly ZipEntry[], what: string): void {
@@ -233,19 +246,21 @@ export function assertSafeNames(entries: readonly ZipEntry[], what: string): voi
       refuse(`${what}: an unsafe entry name ${JSON.stringify(e.name)}`);
     if (name.split('/').some((s) => s === '' || s === '.' || s === '..'))
       refuse(`${what}: an unsafe entry name ${JSON.stringify(e.name)}`);
-    const folded = fold(name);
-    if (seen.has(folded)) refuse(`${what}: a duplicate entry ${JSON.stringify(name)}`);
-    seen.add(folded);
-    kinds.set(folded, e);
+    for (const f of folds(name)) {
+      if (seen.has(f)) refuse(`${what}: a duplicate entry ${JSON.stringify(name)}`);
+      seen.add(f);
+      kinds.set(f, e);
+    }
   }
   // By folded name: on a case-insensitive file system `a/x` would land inside a symlink `A`.
   for (const e of entries) {
-    const parts = fold(plainName(e)).split('/');
-    for (let i = 1; i < parts.length; i++) {
-      const parent = kinds.get(parts.slice(0, i).join('/'));
-      if (parent !== undefined && !isDirectory(parent))
-        refuse(`${what}: ${e.name} is inside a file or a symlink`);
-    }
+    const parts = plainName(e).split('/');
+    for (let i = 1; i < parts.length; i++)
+      for (const f of folds(parts.slice(0, i).join('/'))) {
+        const parent = kinds.get(f);
+        if (parent !== undefined && !isDirectory(parent))
+          refuse(`${what}: ${e.name} is inside a file or a symlink`);
+      }
   }
 }
 
@@ -290,23 +305,59 @@ export function forEachZipFile(
   }
 }
 
-/** A symlink's target stays inside the tree it sits in. */
-export function assertLinkInside(name: string, target: string, what: string): void {
-  // eslint-disable-next-line no-control-regex -- exactly what is being refused
-  if (target === '' || target.length > MAX_LINK_TARGET || /[\\\x00-\x1f\x7f]/.test(target))
-    refuse(`${what}: ${name} has an unsafe link target`);
-  if (target.startsWith('/')) refuse(`${what}: ${name} links to an absolute path`);
-  const resolved = posix.normalize(posix.join(posix.dirname(name), target));
-  if (resolved === '..' || resolved.startsWith('../'))
-    refuse(`${what}: ${name} links outside the tree`);
+/**
+ * A symlink's target stays inside the tree it sits in: resolved component by component, through
+ * every other link it passes, as the file system would resolve it. `links` maps each link's folded
+ * path to its target.
+ */
+export function assertLinkInside(
+  name: string,
+  target: string,
+  what: string,
+  links: ReadonlyMap<string, string>,
+): void {
+  const check = (t: string, at: string): void => {
+    // eslint-disable-next-line no-control-regex -- exactly what is being refused
+    if (t === '' || t.length > MAX_LINK_TARGET || /[\\\x00-\x1f\x7f]/.test(t))
+      refuse(`${what}: ${at} has an unsafe link target`);
+    if (t.startsWith('/')) refuse(`${what}: ${at} links to an absolute path`);
+  };
+  check(target, name);
+  const stack = name.split('/').slice(0, -1);
+  const queue = target.split('/');
+  let hops = 0;
+  while (queue.length > 0) {
+    const part = queue.shift() ?? '';
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (stack.length === 0) refuse(`${what}: ${name} links outside the tree`);
+      stack.pop();
+      continue;
+    }
+    stack.push(part);
+    const through = links.get(fold(stack.join('/')));
+    if (through !== undefined) {
+      if (++hops > 40) refuse(`${what}: ${name} is a loop of links`);
+      check(through, stack.join('/'));
+      stack.pop();
+      queue.unshift(...through.split('/'));
+    }
+  }
 }
 
 /** Unpacks into `dir`, which must be new. Executable bits and symlinks are kept. */
 export function extractZip(file: string, dir: string): void {
   const entries = readZipIndex(file);
-  mkdirSync(dir);
   const fd = openSync(file, 'r');
   try {
+    // Every link resolved against all the others before anything is written.
+    const links = new Map<string, string>();
+    for (const e of entries)
+      if (isSymlink(e)) links.set(fold(plainName(e)), entryBytes(fd, e, file).toString('utf8'));
+    for (const e of entries)
+      if (isSymlink(e))
+        assertLinkInside(plainName(e), links.get(fold(plainName(e))) ?? '', file, links);
+    mkdirSync(dir);
     for (const e of entries) {
       const p = join(dir, ...plainName(e).split('/'));
       if (isDirectory(e)) {
@@ -316,9 +367,7 @@ export function extractZip(file: string, dir: string): void {
       mkdirSync(dirname(p), { recursive: true });
       const bytes = entryBytes(fd, e, file);
       if (isSymlink(e)) {
-        const target = bytes.toString('utf8');
-        assertLinkInside(plainName(e), target, file);
-        symlinkSync(target, p);
+        symlinkSync(bytes.toString('utf8'), p);
       } else {
         writeFileSync(p, bytes, { flag: 'wx', mode: (e.mode & 0o100) !== 0 ? 0o755 : 0o644 });
       }

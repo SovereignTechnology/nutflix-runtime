@@ -26,6 +26,7 @@ import { APP, STAGED } from '../../../packaging/identity.ts';
 import { releaseRoot } from '../../../packaging/update-root.ts';
 import { encodeBakedRoot, parseTrustRoot } from '../../../src/update/root.ts';
 import { deploymentPackageJson } from '../../pear-ci/deployment.ts';
+import type { PearRecord } from '../../pear-ci/records.ts';
 import {
   RELEASE_SCHEMA,
   artifactZip,
@@ -41,22 +42,53 @@ import {
   type PackageRules,
   type ReleaseFile,
 } from '../assemble.ts';
-import { elfArch, machoArches, machoCodeDigest } from '../binary.ts';
+import {
+  CS_ADHOC,
+  CS_RUNTIME,
+  elfArch,
+  machoArches,
+  machoCodeDigest,
+  machoSignatures,
+  parseEntitlementsDer,
+  parseEntitlementsXml,
+  peAuthenticodeDigest,
+} from '../binary.ts';
 import { digestOf } from '../digest.ts';
 import { ReleaseRefusal } from '../guards.ts';
 import { assertPackageArch, assertProductionRoot, packageFacts, readPackaged } from '../inspect.ts';
 import {
   RELEASE_REPO,
   assertArtifactBytes,
+  ghCommand,
   parseRunId,
   runArtifacts,
   verifyMainRun,
   type GitHubApi,
 } from '../provenance.ts';
-import { assertRequestBinds, compareDrive } from '../signer.ts';
-import { compareSigned, recordSigned } from '../signing.ts';
+import {
+  assertFetchedIsRequested,
+  assertFork,
+  assertRequestBinds,
+  checkRequestInOneHome,
+  compareDrive,
+  type PearInOneHome,
+} from '../signer.ts';
+import { compareSigned, isBundleSignaturePath, isSignatureType, recordSigned } from '../signing.ts';
+import {
+  expectedEntitlements,
+  productionSigningPolicy,
+  type SigningPolicy,
+} from '../signing-policy.ts';
 import { RELEASE_TARGETS, deploymentEntry, type ReleaseTarget } from '../targets.ts';
 import { assertLinkInside, extractZip, readZipFile, readZipIndex } from '../zip.ts';
+import {
+  catalog,
+  entitlementsDer,
+  entitlementsXml,
+  p7x,
+  peFile,
+  testCertificate,
+} from './der-writer.ts';
 import { zipOf, type ZipItem } from './zip-writer.ts';
 
 const dirs: string[] = [];
@@ -119,6 +151,19 @@ describe('the zip reader', () => {
   it.each([
     ['a duplicate name', [{ name: 'a' }, { name: 'a' }], /duplicate/],
     ['a duplicate by case', [{ name: 'App.js' }, { name: 'app.js' }], /duplicate/],
+    ['a duplicate by Unicode form', [{ name: 'caf\u00e9' }, { name: 'cafe\u0301' }], /duplicate/],
+    [
+      'a duplicate by full case folding',
+      [{ name: 'Stra\u00dfe' }, { name: 'STRASSE' }],
+      /duplicate/,
+    ],
+    ['a duplicate by final sigma', [{ name: '\u03c3' }, { name: '\u03c2' }], /duplicate/],
+    ['a duplicate by the Kelvin sign', [{ name: '\u212a' }, { name: 'k' }], /duplicate/],
+    [
+      'an entry inside a symlink that only full folding names',
+      [{ name: '\u03c2', data: 'x', mode: 0o120755 }, { name: '\u03a3/f' }],
+      /inside a file or a symlink/,
+    ],
     ['an absolute path', [{ name: '/etc/passwd' }], /unsafe/],
     ['a parent segment', [{ name: 'a/../../b' }], /unsafe/],
     ['a backslash', [{ name: 'a\\b' }], /unsafe/],
@@ -209,19 +254,57 @@ describe('the zip reader', () => {
 
   it('keeps a link inside the tree', () => {
     expect(() => {
-      assertLinkInside('a/b/l', '../c', 'x');
+      assertLinkInside('a/b/l', '../c', 'x', new Map());
     }).not.toThrow();
     refused(() => {
-      assertLinkInside('a/l', '../../c', 'x');
+      assertLinkInside('a/l', '../../c', 'x', new Map());
     }, /outside/);
+  });
+
+  it('resolves a link through the other links, as the file system does', () => {
+    // `a/s -> ..` stays inside, and so does `L -> a/s/../..` read as text: on disk it climbs out.
+    const climb: ZipItem[] = [
+      { name: 'a/', mode: 0o040755 },
+      { name: 'a/s', data: '..', mode: 0o120755 },
+      { name: 'L', data: 'a/s/../..', mode: 0o120755 },
+    ];
+    refused(() => {
+      extractZip(zipFile(climb), join(tmp(), 'out'));
+    }, /L links outside the tree/);
+    const loop: ZipItem[] = [
+      { name: 'x', data: 'y', mode: 0o120755 },
+      { name: 'y', data: 'x', mode: 0o120755 },
+    ];
+    refused(() => {
+      extractZip(zipFile(loop), join(tmp(), 'out'));
+    }, /a loop of links/);
+    // A chain that stays inside is kept.
+    const inside: ZipItem[] = [
+      { name: 'a/', mode: 0o040755 },
+      { name: 'a/f', data: 'file' },
+      { name: 'b', data: 'a', mode: 0o120755 },
+      { name: 'c', data: 'b/f', mode: 0o120755 },
+    ];
+    if (process.platform === 'win32') return;
+    const d = join(tmp(), 'out');
+    extractZip(zipFile(inside), d);
+    expect(readFileSync(join(d, 'c'), 'utf8')).toBe('file');
+    // And none is created before every link is checked.
+    const d2 = join(tmp(), 'out');
+    refused(() => {
+      extractZip(zipFile([...inside, { name: 'z', data: 'c/../../..', mode: 0o120755 }]), d2);
+    }, /outside the tree/);
+    expect(existsSync(d2)).toBe(false);
   });
 });
 
 // ---- binaries --------------------------------------------------------------------------------
 
 /** A small 64-bit Mach-O: __TEXT, __LINKEDIT, and a code signature of `sigSize` bytes, or none. */
-function macho(o: { cpu?: number; sigSize?: number | null; code?: number } = {}): Buffer {
-  const sigSize = o.sigSize === undefined ? 32 : o.sigSize;
+function macho(
+  o: { cpu?: number; sigSize?: number | null; code?: number; sig?: Buffer } = {},
+): Buffer {
+  const sigSize = o.sig !== undefined ? o.sig.length : o.sigSize === undefined ? 32 : o.sigSize;
   const segment = 72;
   const sizeofcmds = segment * 2 + (sigSize !== null ? 16 : 0);
   const textEnd = 0x200;
@@ -248,12 +331,66 @@ function macho(o: { cpu?: number; sigSize?: number | null; code?: number } = {})
     file.writeUInt32LE(16, at + 4);
     file.writeUInt32LE(linkeditEnd, at + 8);
     file.writeUInt32LE(sigSize, at + 12);
-    file.fill(0xab, linkeditEnd);
+    if (o.sig === undefined) file.fill(0xab, linkeditEnd);
+    else o.sig.copy(file, linkeditEnd);
   }
   file.fill(o.code ?? 0x11, 0x100, textEnd);
   file.fill(0x22, textEnd, linkeditEnd);
   return file;
 }
+
+const JIT = { 'com.apple.security.cs.allow-jit': true };
+
+/** A code signature as `codesign` lays it out: a superblob of directories, entitlements, CMS. */
+function sigBlob(
+  o: {
+    flags?: number;
+    team?: string | null;
+    entitlements?: Readonly<Record<string, boolean>> | null;
+    der?: Readonly<Record<string, boolean>> | null;
+    identity?: boolean;
+    directories?: number;
+  } = {},
+): Buffer {
+  const blob = (magic: number, body: Buffer): Buffer => {
+    const h = Buffer.alloc(8);
+    h.writeUInt32BE(magic, 0);
+    h.writeUInt32BE(8 + body.length, 4);
+    return Buffer.concat([h, body]);
+  };
+  const team = o.team === undefined ? null : o.team;
+  const directory = (): Buffer => {
+    const fixed = Buffer.alloc(52 - 8);
+    fixed.writeUInt32BE(0x20400, 0);
+    fixed.writeUInt32BE(o.flags ?? CS_ADHOC | CS_RUNTIME, 4);
+    const ident = Buffer.from('nutflix\0');
+    const teamBytes = team === null ? Buffer.alloc(0) : Buffer.from(`${team}\0`);
+    fixed.writeUInt32BE(52, 12);
+    fixed.writeUInt32BE(team === null ? 0 : 52 + ident.length, 40);
+    return blob(0xfade0c02, Buffer.concat([fixed, ident, teamBytes]));
+  };
+  const ents = o.entitlements === undefined ? JIT : o.entitlements;
+  const derEnts = o.der === undefined ? ents : o.der;
+  const parts: Buffer[] = [];
+  for (let i = 0; i < (o.directories ?? 1); i++) parts.push(directory());
+  if (ents !== null) parts.push(blob(0xfade7171, Buffer.from(entitlementsXml(ents))));
+  if (derEnts !== null) parts.push(blob(0xfade7172, entitlementsDer(derEnts)));
+  parts.push(blob(0xfade0b01, o.identity === true ? Buffer.alloc(40, 1) : Buffer.alloc(0)));
+  const head = Buffer.alloc(12 + parts.length * 8);
+  head.writeUInt32BE(0xfade0cc0, 0);
+  head.writeUInt32BE(head.length + parts.reduce((n, p) => n + p.length, 0), 4);
+  head.writeUInt32BE(parts.length, 8);
+  let off = head.length;
+  parts.forEach((p, i) => {
+    head.writeUInt32BE(i, 12 + i * 8);
+    head.writeUInt32BE(off, 16 + i * 8);
+    off += p.length;
+  });
+  return Buffer.concat([head, ...parts]);
+}
+
+/** What the runbook's ad-hoc signature of the main executable says. */
+const goodSig = (): Buffer => sigBlob();
 
 function elfHeader(machine: number): Buffer {
   const h = Buffer.alloc(64);
@@ -300,6 +437,109 @@ describe('reading a binary', () => {
   it('a changed byte of code does', () => {
     expect(machoCodeDigest(macho({ code: 0x12 }))).not.toBe(machoCodeDigest(macho()));
     expect(machoCodeDigest(macho({ cpu: 0x01000007 }))).not.toBe(machoCodeDigest(macho()));
+  });
+
+  it('a signature may not start inside what the load commands point at', () => {
+    // A string table that runs to the end of __LINKEDIT, and a signature written over its tail.
+    const f = macho({ sigSize: null });
+    const withSymtab = (sigAt: number | null): Buffer => {
+      const b = Buffer.alloc(f.length + 64);
+      f.copy(b);
+      const cmds = b.readUInt32LE(20);
+      const at = 32 + cmds;
+      b.writeUInt32LE(0x02, at);
+      b.writeUInt32LE(24, at + 4);
+      b.writeUInt32LE(0x200, at + 16);
+      b.writeUInt32LE(0x40, at + 20);
+      let n = 3;
+      let size = cmds + 24;
+      if (sigAt !== null) {
+        b.writeUInt32LE(0x1d, at + 24);
+        b.writeUInt32LE(16, at + 28);
+        b.writeUInt32LE(sigAt, at + 32);
+        b.writeUInt32LE(32, at + 36);
+        n = 4;
+        size += 16;
+      }
+      b.writeUInt32LE(n, 16);
+      b.writeUInt32LE(size, 20);
+      return b;
+    };
+    expect(machoCodeDigest(withSymtab(0x240))).not.toBeNull();
+    expect(machoCodeDigest(withSymtab(0x238))).toBeNull();
+  });
+
+  describe('what a signature says', () => {
+    const read = (sig: Buffer) => machoSignatures(macho({ sig }))?.[0]?.signature;
+
+    it('reads the flags, the Team ID and the entitlements', () => {
+      expect(read(goodSig())).toEqual({
+        flags: CS_ADHOC | CS_RUNTIME,
+        teamId: null,
+        identity: false,
+        entitlements: new Map(Object.entries(JIT)),
+      });
+      const team = read(sigBlob({ flags: CS_RUNTIME, team: 'ABCDE12345', identity: true }));
+      expect(team?.teamId).toBe('ABCDE12345');
+      expect(team?.identity).toBe(true);
+      expect(machoSignatures(macho({ sigSize: null }))?.[0]?.signature).toBeNull();
+    });
+
+    it('refuses copies of the entitlements that disagree, and directories that do', () => {
+      refused(
+        () => read(sigBlob({ der: { ...JIT, 'com.apple.security.get-task-allow': true } })),
+        /disagree/,
+      );
+      const two = sigBlob({ directories: 2 });
+      // The second directory's flags, at its own offset, without the runtime flag.
+      const second = two.readUInt32BE(12 + 8 + 4);
+      two.writeUInt32BE(CS_ADHOC, second + 12);
+      refused(() => read(two), /two code directories disagree/);
+    });
+
+    it('refuses a second copy of the entitlements', () => {
+      const one = sigBlob();
+      // Point the DER entitlements' index entry at the XML blob: two XML copies.
+      const twice = Buffer.from(one);
+      twice.writeUInt32BE(twice.readUInt32BE(16 + 8), 16 + 16);
+      refused(() => read(twice), /holds a part twice/);
+    });
+
+    it('refuses what is not a signature, and entitlements that are not booleans', () => {
+      refused(() => read(Buffer.alloc(32, 0xab)), /superblob/);
+      refused(
+        () =>
+          parseEntitlementsXml(
+            '<plist version="1.0"><dict><key>a</key><string>b</string></dict></plist>',
+          ),
+        /booleans/,
+      );
+      refused(() => parseEntitlementsDer(Buffer.from([0x30, 0])), /not one/);
+    });
+
+    it('the entitlements file is the one the policy pins', () => {
+      const file = readFileSync(
+        new URL('../../../packaging/entitlements.mac.plist', import.meta.url),
+        'utf8',
+      );
+      const pinned = expectedEntitlements('Contents/MacOS/Nutflix');
+      expect(parseEntitlementsXml(file)).toEqual(pinned);
+      expect(pinned.size).toBeGreaterThan(0);
+      expect(expectedEntitlements('Contents/Resources/app/node_modules/x/y.node').size).toBe(0);
+    });
+  });
+
+  describe('a Windows binary’s Authenticode digest', () => {
+    it('leaves out the checksum, and nothing else', () => {
+      const base = peAuthenticodeDigest(peFile(), 'sha256');
+      expect(base).toMatch(/^[0-9a-f]{64}$/);
+      expect(peAuthenticodeDigest(peFile(0x90, 1234), 'sha256')).toBe(base);
+      expect(peAuthenticodeDigest(peFile(0x91), 'sha256')).not.toBe(base);
+      expect(peAuthenticodeDigest(peFile(), 'sha1')).toMatch(/^[0-9a-f]{40}$/);
+      expect(
+        peAuthenticodeDigest(Buffer.from('not a binary at all, but long enough to look'), 'sha256'),
+      ).toBeNull();
+    });
   });
 
   it('a file that is not a Mach-O has no code digest', () => {
@@ -368,9 +608,14 @@ function fakeApi(
   run: Record<string, unknown>,
   artifacts: readonly ApiArtifact[] = [],
   bytes: ReadonlyMap<number, Buffer> = new Map(),
+  history: { tags?: unknown[]; compare?: Record<string, unknown> } = {},
 ): GitHubApi {
   return {
     get: (path) => {
+      if (path === `repos/${RELEASE_REPO}/git/matching-refs/tags/main`)
+        return Promise.resolve(history.tags ?? []);
+      if (path === `repos/${RELEASE_REPO}/compare/main...${COMMIT}`)
+        return Promise.resolve(history.compare ?? { status: 'behind', ahead_by: 0 });
       if (path.endsWith('/actions/workflows/ci.yml'))
         return Promise.resolve({ id: WORKFLOW_ID, path: '.github/workflows/ci.yml' });
       if (path.includes('/artifacts?')) return Promise.resolve({ artifacts });
@@ -405,6 +650,56 @@ describe('where a release comes from', () => {
     ['another run', { id: 1 }, /another run/],
   ])('refuses %s', async (_n, over, re) => {
     await refusedAsync(verifyMainRun(fakeApi(goodRun(over)), RUN, COMMIT), re);
+  });
+
+  it('requires the commit to be in main’s history', async () => {
+    for (const status of ['identical', 'behind'])
+      await expect(
+        verifyMainRun(
+          fakeApi(goodRun(), [], new Map(), { compare: { status, ahead_by: 0 } }),
+          RUN,
+          COMMIT,
+        ),
+      ).resolves.toBeUndefined();
+    for (const compare of [
+      { status: 'ahead', ahead_by: 1 },
+      { status: 'diverged', ahead_by: 2 },
+      { status: 'behind', ahead_by: 1 },
+    ])
+      await refusedAsync(
+        verifyMainRun(fakeApi(goodRun(), [], new Map(), { compare }), RUN, COMMIT),
+        /is not in main's history/,
+      );
+  });
+
+  it('refuses while a tag named main exists: its runs report main as their branch', async () => {
+    await refusedAsync(
+      verifyMainRun(
+        fakeApi(goodRun(), [], new Map(), { tags: [{ ref: 'refs/tags/main' }] }),
+        RUN,
+        COMMIT,
+      ),
+      /a tag named main exists/,
+    );
+    await expect(
+      verifyMainRun(
+        fakeApi(goodRun(), [], new Map(), { tags: [{ ref: 'refs/tags/main-old' }] }),
+        RUN,
+        COMMIT,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('asks github.com, whatever GH_HOST says, and gives a token to gh alone', () => {
+    const base = { GH_HOST: 'evil.example', GITHUB_TOKEN: 'other', PATH: '/bin' };
+    const plain = ghCommand('repos/x', undefined, base);
+    expect(plain.args).toEqual(['api', '--hostname', 'github.com', '--method', 'GET', 'repos/x']);
+    expect(plain.env['GH_HOST']).toBeUndefined();
+    expect(plain.env['GH_TOKEN']).toBeUndefined();
+    const given = ghCommand('repos/x', 'job-token', base);
+    expect(given.env['GH_TOKEN']).toBe('job-token');
+    expect(given.env['GITHUB_TOKEN']).toBeUndefined();
+    expect(given.env['PATH']).toBe('/bin');
   });
 
   it('refuses when GitHub cannot be reached: there is no offline path', async () => {
@@ -713,11 +1008,17 @@ describe('five packages from one run', () => {
 
 // ---- signing -----------------------------------------------------------------------------------
 
-/** A bundle with a Mach-O, a script and (where symlinks can be made) a symlink. */
-function bundle(dir: string, sigSize: number | null = 32): void {
+/**
+ * A bundle with a Mach-O, a script and (where symlinks can be made) a symlink. `sig` is the main
+ * executable's signature: a real one, a placeholder of that many bytes, or none.
+ */
+function bundle(dir: string, sig: Buffer | number | null = 32): void {
   mkdirSync(join(dir, 'Contents', 'MacOS'), { recursive: true });
   mkdirSync(join(dir, 'Contents', 'Resources'), { recursive: true });
-  writeFileSync(join(dir, 'Contents', 'MacOS', APP.productName), macho({ sigSize }));
+  writeFileSync(
+    join(dir, 'Contents', 'MacOS', APP.productName),
+    Buffer.isBuffer(sig) ? macho({ sig }) : macho({ sigSize: sig }),
+  );
   chmodSync(join(dir, 'Contents', 'MacOS', APP.productName), 0o755);
   writeFileSync(join(dir, 'Contents', 'Resources', 'main.js'), 'script');
   chmodSync(join(dir, 'Contents', 'Resources', 'main.js'), 0o644);
@@ -730,7 +1031,7 @@ function readableApp(path: string, kind: 'unsigned' | 'signed'): void {
   mkdirSync(join(res, 'main'), { recursive: true });
   mkdirSync(join(path, 'Contents', 'MacOS'), { recursive: true });
   const exe = join(path, 'Contents', 'MacOS', APP.productName);
-  writeFileSync(exe, macho({ sigSize: kind === 'signed' ? 96 : 32 }));
+  writeFileSync(exe, kind === 'signed' ? macho({ sig: goodSig() }) : macho({ sigSize: 32 }));
   chmodSync(exe, 0o755);
   const root = releaseRoot();
   writeFileSync(join(res, 'package.json'), JSON.stringify({ version: '1.2.3', commit: COMMIT }));
@@ -745,12 +1046,12 @@ describe('a signed package', () => {
   const win = target('win32-x64');
 
   describe('a macOS bundle', () => {
-    const pair = (): { unsigned: string; signed: string } => {
+    const pair = (sig: Buffer = goodSig()): { unsigned: string; signed: string } => {
       const d = tmp();
       const unsigned = join(d, 'u', mac.file);
       const signed = join(d, 's', mac.file);
       bundle(unsigned, null);
-      bundle(signed, 96);
+      bundle(signed, sig);
       mkdirSync(join(signed, 'Contents', '_CodeSignature'));
       writeFileSync(join(signed, 'Contents', '_CodeSignature', 'CodeResources'), 'seal');
       writeFileSync(join(signed, 'Contents', 'CodeResources'), 'ticket');
@@ -760,6 +1061,121 @@ describe('a signed package', () => {
     it('may differ by its signatures', async () => {
       const { unsigned, signed } = pair();
       await expect(compareSigned(mac, unsigned, signed)).resolves.toBeUndefined();
+    });
+
+    describe('what its signature may say (signing-policy.ts)', () => {
+      const team: SigningPolicy = {
+        label: 'test',
+        appleTeamId: 'ABCDE12345',
+        windowsSigner: null,
+      };
+
+      it('a policy that pins something malformed is refused, not trusted', async () => {
+        const { unsigned, signed } = pair();
+        for (const bad of [
+          { label: 'x', appleTeamId: '', windowsSigner: null },
+          { label: 'x', appleTeamId: 'short', windowsSigner: null },
+          {
+            label: 'x',
+            appleTeamId: null,
+            windowsSigner: { sha256: '', subject: 'CN=a', issuer: 'CN=a' },
+          },
+          {
+            label: 'x',
+            appleTeamId: null,
+            windowsSigner: { sha256: 'AB'.repeat(32), subject: ' ', issuer: 'CN=a' },
+          },
+        ])
+          await refusedAsync(compareSigned(mac, unsigned, signed, bad), /pinned .* is not/);
+      });
+
+      it('production takes an ad-hoc signature with the hardened runtime and the pinned entitlements', async () => {
+        expect(productionSigningPolicy().appleTeamId).toBeNull();
+        const { unsigned, signed } = pair();
+        await expect(
+          compareSigned(mac, unsigned, signed, productionSigningPolicy()),
+        ).resolves.toBeUndefined();
+      });
+
+      it('refuses a bundle re-signed with an entitlement added', async () => {
+        const { unsigned, signed } = pair(
+          sigBlob({ entitlements: { ...JIT, 'com.apple.security.get-task-allow': true } }),
+        );
+        await refusedAsync(
+          compareSigned(mac, unsigned, signed),
+          /Contents\/MacOS\/Nutflix has the entitlements .*get-task-allow=true, not com\.apple\.security\.cs\.allow-jit=true$/,
+        );
+      });
+
+      it('refuses one with its entitlements taken away', async () => {
+        const { unsigned, signed } = pair(sigBlob({ entitlements: null }));
+        await refusedAsync(compareSigned(mac, unsigned, signed), /has the entitlements none/);
+      });
+
+      it('refuses one with the hardened runtime removed', async () => {
+        const { unsigned, signed } = pair(sigBlob({ flags: CS_ADHOC }));
+        await refusedAsync(
+          compareSigned(mac, unsigned, signed),
+          /Contents\/MacOS\/Nutflix is not signed with the hardened runtime/,
+        );
+      });
+
+      it('refuses any identity while no Team ID is pinned', async () => {
+        const { unsigned, signed } = pair(
+          sigBlob({ flags: CS_RUNTIME, team: 'OTHER12345', identity: true }),
+        );
+        await refusedAsync(
+          compareSigned(mac, unsigned, signed),
+          /signed by OTHER12345: with no Apple Team ID pinned, only an ad-hoc signature/,
+        );
+      });
+
+      it('with a Team ID pinned, takes that team and refuses another, or ad hoc', async () => {
+        const ours = pair(sigBlob({ flags: CS_RUNTIME, team: 'ABCDE12345', identity: true }));
+        await expect(compareSigned(mac, ours.unsigned, ours.signed, team)).resolves.toBeUndefined();
+        const other = pair(sigBlob({ flags: CS_RUNTIME, team: 'OTHER12345', identity: true }));
+        await refusedAsync(
+          compareSigned(mac, other.unsigned, other.signed, team),
+          /signed by OTHER12345, not Team ID ABCDE12345/,
+        );
+        const adHoc = pair();
+        await refusedAsync(
+          compareSigned(mac, adHoc.unsigned, adHoc.signed, team),
+          /signed by no team, not Team ID ABCDE12345/,
+        );
+      });
+
+      it('refuses a binary re-signed with the signature stripped', async () => {
+        const { unsigned, signed } = pair();
+        writeFileSync(join(signed, 'Contents', 'MacOS', APP.productName), macho({ sigSize: null }));
+        writeFileSync(join(unsigned, 'Contents', 'MacOS', APP.productName), macho({ sigSize: 32 }));
+        await refusedAsync(compareSigned(mac, unsigned, signed), /is not signed/);
+      });
+    });
+
+    it('exempts only a bundle’s or a framework’s own _CodeSignature', async () => {
+      for (const p of [
+        'Contents/_CodeSignature/CodeResources',
+        'Contents/Frameworks/Nutflix Helper.app/Contents/_CodeSignature/CodeResources',
+        'Contents/Frameworks/Electron Framework.framework/Versions/A/_CodeSignature/CodeResources',
+        'Contents/CodeResources',
+      ])
+        expect(isBundleSignaturePath(p)).toBe(true);
+      for (const p of [
+        'Contents/Resources/_CodeSignature/evil.js',
+        'Contents/Resources/app/_CodeSignature/CodeResources',
+        'Contents/_CodeSignature/a/b',
+        'Contents/Frameworks/Nutflix Helper.app/Contents/CodeResources',
+        'Contents/Frameworks/X.framework/_CodeSignature/CodeResources',
+      ])
+        expect(isBundleSignaturePath(p)).toBe(false);
+      const { unsigned, signed } = pair();
+      mkdirSync(join(signed, 'Contents', 'Resources', '_CodeSignature'));
+      writeFileSync(join(signed, 'Contents', 'Resources', '_CodeSignature', 'evil.js'), 'x');
+      await refusedAsync(
+        compareSigned(mac, unsigned, signed),
+        /signing added Contents\/Resources\/_CodeSignature\/evil\.js/,
+      );
     });
 
     it('refuses a changed script', async () => {
@@ -775,7 +1191,7 @@ describe('a signed package', () => {
       const { unsigned, signed } = pair();
       writeFileSync(
         join(signed, 'Contents', 'MacOS', APP.productName),
-        macho({ sigSize: 96, code: 0x12 }),
+        macho({ sig: goodSig(), code: 0x12 }),
       );
       await refusedAsync(compareSigned(mac, unsigned, signed), /more than the signature/);
     });
@@ -794,30 +1210,84 @@ describe('a signed package', () => {
   });
 
   describe('an msix', () => {
+    const TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
+    const types = (...extra: string[]): string =>
+      `<?xml version="1.0" encoding="UTF-8"?>\r\n<Types xmlns="${TYPES_NS}"><Default Extension="xml" ContentType="application/vnd.ms-appx.manifest+xml"/><Default Extension="exe" ContentType="application/x-msdownload"/>${extra.join('')}</Types>`;
+    const SIGNATURE_TYPE =
+      '<Override PartName="/AppxSignature.p7x" ContentType="application/vnd.ms-appx.signature"/>';
+    const CATALOG_TYPE =
+      '<Override PartName="/AppxMetadata/CodeIntegrity.cat" ContentType="application/vnd.ms-pkiseccat"/>';
+    const exe = peFile(0x90);
     const parts: ZipItem[] = [
       { name: 'AppxManifest.xml', data: 'manifest', deflate: true },
-      { name: 'app/Nutflix.exe', data: 'exe'.repeat(50), deflate: true },
-      { name: '[Content_Types].xml', data: 'types' },
+      { name: 'app/Nutflix.exe', data: exe, deflate: true },
+      { name: '[Content_Types].xml', data: types() },
     ];
-    const signedParts = (over: ZipItem[] = []): ZipItem[] => [
+    const cert = testCertificate('CN=Test Publisher');
+    const otherCert = testCertificate('CN=Test Publisher', 0x43);
+    const pinned: SigningPolicy = {
+      label: 'test',
+      appleTeamId: null,
+      windowsSigner: {
+        sha256: cert.x509.fingerprint256,
+        subject: cert.x509.subject,
+        issuer: cert.x509.issuer,
+      },
+    };
+    const signedParts = (
+      o: { over?: ZipItem[]; types?: string; by?: typeof cert; catalog?: Buffer } = {},
+    ): ZipItem[] => [
       ...parts
-        .filter((p) => !over.some((o) => o.name === p.name))
-        .map((p) => (p.name === '[Content_Types].xml' ? { ...p, data: 'types + p7x' } : p)),
-      ...over,
-      { name: 'AppxSignature.p7x', data: 'signature' },
+        .filter((p) => !(o.over ?? []).some((x) => x.name === p.name))
+        .map((p) =>
+          p.name === '[Content_Types].xml'
+            ? {
+                ...p,
+                data:
+                  o.types ??
+                  types(SIGNATURE_TYPE, ...(o.catalog === undefined ? [] : [CATALOG_TYPE])),
+              }
+            : p,
+        ),
+      ...(o.over ?? []),
+      ...(o.catalog === undefined
+        ? []
+        : [{ name: 'AppxMetadata/CodeIntegrity.cat', data: o.catalog }]),
+      { name: 'AppxSignature.p7x', data: p7x(o.by ?? cert) },
     ];
     const file = (items: ZipItem[]): string => {
       const f = join(tmp(), win.file);
       writeFileSync(f, zipOf(items));
       return f;
     };
+    const digestOfExe = (algorithm: 'sha1' | 'sha256') => ({
+      algorithm,
+      digest: peAuthenticodeDigest(exe, algorithm) ?? '',
+    });
 
-    it('may differ by its signature part', async () => {
-      await expect(compareSigned(win, file(parts), file(signedParts()))).resolves.toBeUndefined();
+    it('may differ by its signature part, signed by the pinned certificate', async () => {
+      await expect(
+        compareSigned(win, file(parts), file(signedParts()), pinned),
+      ).resolves.toBeUndefined();
+    });
+
+    it('is refused while no certificate is pinned: production today', async () => {
+      expect(productionSigningPolicy().windowsSigner).toBeNull();
+      await refusedAsync(
+        compareSigned(win, file(parts), file(signedParts())),
+        /no Windows signing certificate is pinned \(production\)/,
+      );
+    });
+
+    it('refuses another certificate than the one pinned', async () => {
+      await refusedAsync(
+        compareSigned(win, file(parts), file(signedParts({ by: otherCert })), pinned),
+        /not the pinned certificate/,
+      );
     });
 
     it('refuses an unsigned one', async () => {
-      await refusedAsync(compareSigned(win, file(parts), file(parts)), /no signature/);
+      await refusedAsync(compareSigned(win, file(parts), file(parts), pinned), /no signature/);
     });
 
     it('refuses a changed part', async () => {
@@ -825,7 +1295,8 @@ describe('a signed package', () => {
         compareSigned(
           win,
           file(parts),
-          file(signedParts([{ name: 'app/Nutflix.exe', data: 'evil', deflate: true }])),
+          file(signedParts({ over: [{ name: 'app/Nutflix.exe', data: 'evil', deflate: true }] })),
+          pinned,
         ),
         /signing changed app\/Nutflix\.exe/,
       );
@@ -833,9 +1304,107 @@ describe('a signed package', () => {
 
     it('refuses an added part', async () => {
       await refusedAsync(
-        compareSigned(win, file(parts), file(signedParts([{ name: 'app/evil.dll', data: 'x' }]))),
+        compareSigned(
+          win,
+          file(parts),
+          file(signedParts({ over: [{ name: 'app/evil.dll', data: 'x' }] })),
+          pinned,
+        ),
         /signing added app\/evil\.dll/,
       );
+    });
+
+    describe('its content types', () => {
+      it('may add the signature’s entry, in either form, and nothing else', async () => {
+        expect(isSignatureType(SIGNATURE_TYPE)).toBe(true);
+        expect(
+          isSignatureType(
+            '<Default ContentType="application/vnd.ms-appx.signature" Extension="P7X" />',
+          ),
+        ).toBe(true);
+        expect(isSignatureType(CATALOG_TYPE)).toBe(false);
+        expect(isSignatureType(CATALOG_TYPE, true)).toBe(true);
+        expect(
+          isSignatureType(
+            '<Default Extension="dll" ContentType="application/vnd.ms-appx.signature"/>',
+          ),
+        ).toBe(false);
+        await refusedAsync(
+          compareSigned(
+            win,
+            file(parts),
+            file(
+              signedParts({
+                types: types(SIGNATURE_TYPE, '<Default Extension="js" ContentType="text/plain"/>'),
+              }),
+            ),
+            pinned,
+          ),
+          /signing added <Default Extension="js"/,
+        );
+      });
+
+      it('refuses any other change', async () => {
+        for (const changed of [
+          types(SIGNATURE_TYPE).replace('application/x-msdownload', 'text/plain'),
+          types(SIGNATURE_TYPE).replace(
+            '<Default Extension="xml"',
+            '<!-- x --><Default Extension="xml"',
+          ),
+          types(SIGNATURE_TYPE).replace(TYPES_NS, 'urn:other'),
+        ])
+          await refusedAsync(
+            compareSigned(win, file(parts), file(signedParts({ types: changed })), pinned),
+            /signing changed \[Content_Types\]\.xml/,
+          );
+      });
+    });
+
+    describe('a code-integrity catalog signing adds', () => {
+      it('may name the package’s binaries, by either digest', async () => {
+        const cat = catalog([digestOfExe('sha256'), digestOfExe('sha1')], cert);
+        await expect(
+          compareSigned(win, file(parts), file(signedParts({ catalog: cat })), pinned),
+        ).resolves.toBeUndefined();
+      });
+
+      it('refuses one that names a binary the package does not hold', async () => {
+        const foreign = {
+          algorithm: 'sha256' as const,
+          digest: peAuthenticodeDigest(peFile(0x91), 'sha256') ?? '',
+        };
+        const cat = catalog([digestOfExe('sha256'), foreign], cert);
+        await refusedAsync(
+          compareSigned(win, file(parts), file(signedParts({ catalog: cat })), pinned),
+          /CodeIntegrity\.cat names sha256 .*, which is no binary in the package/,
+        );
+      });
+
+      it('refuses one signed by another certificate, and one too large', async () => {
+        const other = catalog([digestOfExe('sha256')], otherCert);
+        await refusedAsync(
+          compareSigned(win, file(parts), file(signedParts({ catalog: other })), pinned),
+          /CodeIntegrity\.cat is signed by .*not the pinned certificate/,
+        );
+        await refusedAsync(
+          compareSigned(
+            win,
+            file(parts),
+            file(signedParts({ catalog: Buffer.alloc(1024 * 1024 + 1) })),
+            pinned,
+          ),
+          /larger than any catalog/,
+        );
+      });
+
+      it('refuses a catalog the unsigned package had, removed or changed', async () => {
+        const cat = catalog([digestOfExe('sha256')], cert);
+        const withCat = [...parts, { name: 'AppxMetadata/CodeIntegrity.cat', data: cat }];
+        await refusedAsync(
+          compareSigned(win, file(withCat), file(signedParts()), pinned),
+          /signing removed AppxMetadata\/CodeIntegrity\.cat/,
+        );
+      });
     });
   });
 
@@ -990,7 +1559,7 @@ describe('what a signer checks', () => {
     mkdirSync(root);
     writeFileSync(join(root, 'package.json'), deploymentPackageJson({ version: '1.2.3' }));
     const entry = join(root, ...deploymentEntry(mac).split('/'));
-    bundle(entry, 96);
+    bundle(entry, goodSig());
     const ci = [{ target: mac, app, digest }];
     await refusedAsync(compareDrive(root, '1.2.3', ci), /is not what CI built/);
     const rows = await compareDrive(root, '1.2.3', ci, new Set([mac.name]));
@@ -1004,14 +1573,29 @@ describe('what a signer checks', () => {
 
   describe('the request', () => {
     const verified = (
-      over: { dstKey?: string; length?: number; treeHash?: string } = {},
+      over: { dstKey?: string; length?: number; treeHash?: string; blobs?: unknown } = {},
     ): Record<string, unknown> => ({
       dstKey: over.dstKey ?? KEY,
-      result: { db: { batch: { length: over.length ?? 9, treeHash: over.treeHash ?? 'hash' } } },
+      result: {
+        db: { batch: { length: over.length ?? 9, treeHash: over.treeHash ?? 'dbhash' } },
+        blobs: {
+          batch: 'blobs' in over ? over.blobs : { length: 30, treeHash: 'blobshash' },
+        },
+      },
+    });
+    const wants = {
+      db: { length: 9, treeHash: 'dbhash' },
+      blobs: { length: 30, treeHash: 'blobshash' },
+    };
+    const diffed = (
+      db: { length: number; hash: string } = { length: 9, hash: 'dbhash' },
+      blobs: { length: number; hash: string } = { length: 30, hash: 'blobshash' },
+    ): Record<string, unknown> => ({
+      source: { core: { id: 'x', ...db }, blobs: { id: 'y', ...blobs } },
     });
 
-    it('binds to this version of the production link', () => {
-      expect(assertRequestBinds(verified(), LINK, VERLINK)).toBe('hash');
+    it('binds to this version of the production link, by both cores', () => {
+      expect(assertRequestBinds(verified(), LINK, VERLINK)).toEqual(wants);
     });
 
     it('refuses a request onto another link', () => {
@@ -1028,9 +1612,116 @@ describe('what a signer checks', () => {
       );
     });
 
-    it('refuses an answer with no tree hash', () => {
+    it('refuses an answer with no tree hash, or no blobs', () => {
       refused(() => assertRequestBinds(verified({ treeHash: '' }), LINK, VERLINK), /no tree hash/);
+      refused(() => assertRequestBinds(verified({ blobs: undefined }), LINK, VERLINK), /no blobs/);
       refused(() => assertRequestBinds(undefined, LINK, VERLINK), /not the production link/);
+    });
+
+    it('the version fetched must have the cores the request writes: db and blobs', () => {
+      expect(() => {
+        assertFetchedIsRequested(diffed(), wants);
+      }).not.toThrow();
+      refused(() => {
+        assertFetchedIsRequested(diffed({ length: 9, hash: 'otherdb' }), wants);
+      }, /the db core fetched is not the one the request writes/);
+      // The same db, other blobs: a db entry names a blob, it does not hash it.
+      refused(() => {
+        assertFetchedIsRequested(diffed(undefined, { length: 30, hash: 'otherblobs' }), wants);
+      }, /the blobs core fetched is not the one the request writes: its file bytes may differ/);
+      refused(() => {
+        assertFetchedIsRequested({ source: { core: { length: 9, hash: 'dbhash' } } }, wants);
+      }, /no blobs core/);
+    });
+
+    it('the drive must be at the verlink’s fork, blobs too', () => {
+      expect(() => {
+        assertFork({ fork: 0, blobs: { fork: 0 } }, VERLINK);
+      }).not.toThrow();
+      refused(() => {
+        assertFork({ fork: 1, blobs: { fork: 1 } }, VERLINK);
+      }, /at fork 1/);
+      refused(() => {
+        assertFork({ fork: 0, blobs: { fork: 2 } }, VERLINK);
+      }, /blobs 2/);
+    });
+
+    describe('in one Pear home, in order', () => {
+      const line = (tag: string, data: Record<string, unknown>): PearRecord => ({ tag, data });
+      const script = (o: {
+        derived?: string;
+        fork?: number;
+        laterFork?: number;
+        later?: Record<string, unknown>;
+        fetched?: Record<string, unknown>;
+      }): { pear: PearInOneHome; calls: string[] } => {
+        const calls: string[] = [];
+        let verifies = 0;
+        let infos = 0;
+        const pear: PearInOneHome = (args) => {
+          calls.push(
+            args.slice(0, args[0] === 'multisig' || args[0] === 'provision' ? 2 : 1).join(' '),
+          );
+          if (args[0] === 'multisig' && args[1] === 'link')
+            return Promise.resolve([line('final', { link: o.derived ?? LINK })]);
+          if (args[0] === 'info') {
+            const fork = infos++ === 0 ? (o.fork ?? 0) : (o.laterFork ?? o.fork ?? 0);
+            return Promise.resolve([line('info', { fork, blobs: { fork } })]);
+          }
+          if (args[0] === 'multisig' && args[1] === 'verify')
+            return Promise.resolve([
+              line('final', verifies++ === 0 ? verified() : (o.later ?? verified())),
+            ]);
+          if (args[0] === 'provision')
+            return Promise.resolve([line('diffed', o.fetched ?? diffed())]);
+          return Promise.resolve([]);
+        };
+        return { pear, calls };
+      };
+      const check = (pear: PearInOneHome) =>
+        checkRequestInOneHome(pear, {
+          config: '/c/pear.json',
+          verlink: VERLINK,
+          request: 'yb'.repeat(40),
+          production: LINK,
+          dumpDir: '/w/drive',
+        });
+
+      it('asks every question of the same home, and the version is the request’s', async () => {
+        const { pear, calls } = script({});
+        await expect(check(pear)).resolves.toEqual({ requested: wants, cores: diffed() });
+        expect(calls).toEqual([
+          'multisig link',
+          'info',
+          'multisig verify',
+          'dump',
+          'provision --dry-run',
+          'multisig verify',
+          'info',
+        ]);
+      });
+
+      it('stops at a config that derives another link', async () => {
+        const { pear, calls } = script({ derived: `pear://${'q'.repeat(52)}` });
+        await refusedAsync(check(pear), /derives/);
+        expect(calls).toEqual(['multisig link']);
+      });
+
+      it('refuses blobs fetched that are not the request’s', async () => {
+        const { pear, calls } = script({
+          fetched: diffed(undefined, { length: 30, hash: 'otherblobs' }),
+        });
+        await refusedAsync(check(pear), /blobs core fetched/);
+        expect(calls.at(-1)).toBe('provision --dry-run');
+      });
+
+      it('refuses a request or a fork that changed during the check', async () => {
+        await refusedAsync(
+          check(script({ later: verified({ treeHash: 'moved' }) }).pear),
+          /changed during the check/,
+        );
+        await refusedAsync(check(script({ laterFork: 1 }).pear), /at fork 1/);
+      });
     });
   });
 });

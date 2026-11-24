@@ -12,20 +12,22 @@
  *                                     a package the owner signed: CI's, plus signatures, only
  *   build        --out <dir>          `pear build`: one deployment from the five
  *   digest       --out <dir>          what a notice names for each, read from the deployment
- *   notice-draft --out <dir> --verlink <pear://f.l.key> [--created-at <unix>]
- *                                     an UNSIGNED kind-30071 event; its commit is the packages'
+ *   notice-draft --out <dir> [--created-at <unix>]
+ *                                     an UNSIGNED kind-30071 event for the version `multisig commit`
+ *                                     recorded; its commit is the packages'
  *   verify-root  --app <resources/app dir>    the baked root and main's switch (never launches)
  *   bundle-digest --app <Nutflix.app> --write <file>    CI only, on the Mac that zips the bundle
  *
  * On a real link, on the public DHT:
  *   stage        --link <link> --out <dir>
- *   provision    --source <verlink> --target <link> --production <verlink>
+ *   provision    --source <verlink> --target <link> --production <verlink> --out <dir>
  *   multisig request --config <pear.json> --verlink <verlink>
  *   verify-request --run <id> --commit <sha> --config <pear.json> --verlink <verlink>
  *                --request <r> --work <empty dir> [--signed-target <target>]...
  *                                     EACH SIGNER, before `pear multisig sign`
  *   multisig verify  --config <pear.json> --source <link> --request <r> --response <s>...
- *   multisig commit  --config <pear.json> --source <link> --production <link> --request <r> --response <s>...
+ *   multisig commit  --config <pear.json> --source <link> --production <link> --out <dir>
+ *                --request <r> --response <s>...
  *   seed         --link <link>
  *
  * The second group only PRINTS the exact command by default. `--execute` runs it, after the link is
@@ -50,7 +52,7 @@ import {
   releaseRoot,
 } from '../../packaging/update-root.ts';
 import { sha256File } from '../pear-ci/deployment.ts';
-import { Pear, fetchPear } from '../pear-ci/pear.ts';
+import { Pear, fetchPear, isolatedEnv } from '../pear-ci/pear.ts';
 import { PEAR_PINS, PEAR_VERSION, type TargetName } from '../pear-ci/pins.ts';
 import { failureMessage, field, lastRecord, parseRecords, succeeded } from '../pear-ci/records.ts';
 import {
@@ -70,6 +72,7 @@ import {
   planBuild,
   planCommit,
   planDump,
+  planInfo,
   planMultisigLink,
   planProvision,
   planRequest,
@@ -95,7 +98,7 @@ import {
   type AskLine,
 } from './guards.ts';
 import { assertCommit, ghApi, parseRunId, type GitHubApi } from './provenance.ts';
-import { assertRequestBinds, compareDrive } from './signer.ts';
+import { checkRequestInOneHome, compareDrive, type PearInOneHome } from './signer.ts';
 import { recordSigned } from './signing.ts';
 import { RELEASE_TARGETS } from './targets.ts';
 
@@ -119,6 +122,8 @@ export interface Io {
   ensurePear(): Promise<string>;
   /** Runs `pear <args>` on the real network; its output also goes to the terminal. */
   runPublic(bin: string, args: readonly string[]): Promise<PearOutcome>;
+  /** The same, as a user whose home is `home`: a Pear sidecar and local cores of its own. */
+  runIsolated(bin: string, home: string, args: readonly string[]): Promise<PearOutcome>;
   /** `pear build`, local and offline. */
   runBuild(bin: string, out: string, args: readonly string[]): Promise<void>;
   nowS(): number;
@@ -263,10 +268,16 @@ async function multisig(io: Io, sub: string | undefined, rest: readonly string[]
       request: need(p, '--request'),
       responses: p.responses,
     });
+    // What `notice-draft` will name: the version this commit makes, and no other.
+    const record = needPath(p, '--out');
     return act(io, p, plan, {
       before: (production) => {
         if (given !== production)
           refuse(`--production is ${given}, but this source's production link is ${production}`);
+        if (!existsSync(join(record, PROVISIONED)))
+          refuse(`${join(record, PROVISIONED)} is missing: provision with --out ${record} first`);
+        if (existsSync(join(record, COMMITTED)))
+          refuse(`${join(record, COMMITTED)} exists: this release was committed already`);
       },
       // The link the signers' keys derive must be the one typed: before anything is written.
       confirmed: async (bin) => {
@@ -276,7 +287,12 @@ async function multisig(io: Io, sub: string | undefined, rest: readonly string[]
       },
       done: (out, production) => {
         const made = committed(lastRecord(parseRecords(out), 'final')?.data, linkKeyOf(production));
-        io.print(`production verlink: ${made.verlink}`);
+        writeFileSync(
+          join(record, COMMITTED),
+          `${JSON.stringify({ production, verlink: made.verlink, lengths: made.lengths }, null, 2)}\n`,
+          { flag: 'wx' },
+        );
+        io.print(`production verlink: ${made.verlink} (recorded in ${join(record, COMMITTED)})`);
       },
     });
   }
@@ -301,14 +317,14 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
   const source = `pear://${linkKeyOf(verlink)}`;
   const dump = planDump({ verlink, dir: join(work, 'drive') });
   const check = planVerifyRequest({ config, source, request });
+  const info = planInfo({ link: source });
   if (!p.execute) {
-    io.print('DRY RUN (verify-request): nothing was run. It would:');
+    io.print('DRY RUN (verify-request): nothing was run. It would, in a Pear home of its own:');
     io.print(`  check run ${String(run)} on GitHub, and fetch what CI built at ${commit}`);
-    io.print(`  ${renderCommand(io.pearPath(), check.args)}`);
-    io.print(`  ${renderCommand(io.pearPath(), dump.args)}`);
-    io.print(
-      `  hash the five entries, compare them with CI's, and ask Pear about the request again`,
-    );
+    for (const args of [planMultisigLink({ config }).args, info.args, check.args, dump.args])
+      io.print(`  ${renderCommand(io.pearPath(), args)}`);
+    io.print(`  pear provision --dry-run ${verlink} …: that version's db and blobs cores`);
+    io.print("  then the request and the fork again, and hash the five entries against CI's");
     io.print(`To run it: add --execute, and type this link back: ${source}`);
     return 0;
   }
@@ -330,29 +346,33 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
     productionRules(commit),
   );
 
+  // 2. Every Pear answer from one home of the check's own: one set of local cores.
   const bin = await io.ensurePear();
-  const derived = await derivedLink(io, bin, config);
-  if (derived !== production)
-    return refuse(`this config derives ${derived}, not the production link ${production}`);
-
-  // 2. The request, then the drive, then the request again.
-  const askPear = async (): Promise<string> => {
-    const { code, out } = await io.runPublic(bin, check.args);
-    if (code !== 0) return refuse(`Pear refused the request (exit ${String(code)}): do not sign`);
-    return assertRequestBinds(lastRecord(parseRecords(out), 'final')?.data, production, verlink);
+  const home = join(work, 'pear-home');
+  const pear: PearInOneHome = async (args, what) => {
+    const { code, out } = await io.runIsolated(bin, home, args);
+    if (code !== 0) return refuse(`${what} failed (exit ${String(code)}): do not sign`);
+    return parseRecords(out);
   };
-  const before = await askPear();
-  const fetched = await io.runPublic(bin, dump.args);
-  if (fetched.code !== 0)
-    return refuse(`could not fetch ${verlink} (exit ${String(fetched.code)}): do not sign`);
+  try {
+    await checkRequestInOneHome(pear, {
+      config,
+      verlink,
+      request,
+      production,
+      dumpDir: join(work, 'drive'),
+    });
+  } finally {
+    await io.runIsolated(bin, home, ['sidecar', 'shutdown']).catch(() => undefined);
+  }
+
+  // 3. The bytes.
   const rows = await compareDrive(
     join(work, 'drive'),
     built.version,
     built.packages.map((x) => ({ target: x.target, app: x.app, digest: x.digest })),
     signed,
   );
-  if ((await askPear()) !== before)
-    return refuse('the drive changed during the check: do not sign');
   for (const r of rows)
     io.print(
       `ok  ${r.target}  ${r.how === 'exact' ? "CI's bytes" : "CI's package, signed"}  ${r.digest}`,
@@ -360,8 +380,49 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
   io.print(
     `This request releases exactly what CI built at ${commit}, version ${built.version}, to ${production}.`,
   );
-  io.print('It is safe to run: pear multisig sign <request> <your key name>');
+  for (const l of signInstruction(request)) io.print(l);
   return 0;
+}
+
+/**
+ * What a signer runs next: the exact request checked, with a short hash of it to compare with what
+ * the coordinator sent, so that the string signed is the string checked.
+ */
+export function signInstruction(request: string): string[] {
+  const digest = createHash('sha256').update(request).digest('hex').slice(0, 16);
+  return [
+    `The request checked has sha256 ${digest}…. Sign exactly it, and nothing else:`,
+    `  pear multisig sign ${request} <your key name>`,
+  ];
+}
+
+/** What `provision --out` and `multisig commit --out` record, for `notice-draft`. */
+const PROVISIONED = 'provisioned.json';
+const COMMITTED = 'committed.json';
+
+/**
+ * The version a notice may name: the one `multisig commit` recorded, on the production link, newer
+ * than the version `provision` said it supersedes. A stale version would only be held by every
+ * install, after raising its replay floor.
+ */
+export function committedVersion(out: string, production: string): string {
+  const read = (name: string): Record<string, unknown> => {
+    const f = join(out, name);
+    if (!existsSync(f)) return refuse(`${f} is missing: provision and commit with --out ${out}`);
+    return JSON.parse(readFileSync(f, 'utf8')) as Record<string, unknown>;
+  };
+  const made = read(COMMITTED);
+  const old = read(PROVISIONED);
+  const verlink = assertVerlink(made['verlink'] as string | undefined, `${COMMITTED}: verlink`);
+  const superseded = assertVerlink(old['supersedes'] as string | undefined, PROVISIONED);
+  if (made['production'] !== production || linkKeyOf(verlink) !== linkKeyOf(production))
+    refuse(`${COMMITTED} is for another link than ${production}`);
+  if (linkKeyOf(superseded) !== linkKeyOf(production))
+    refuse(`${PROVISIONED} supersedes a version of another link`);
+  const length = (v: string): number => Number(v.slice('pear://'.length).split('.')[1]);
+  if (length(verlink) <= length(superseded))
+    refuse(`${verlink} is not newer than ${superseded}, the version it supersedes`);
+  return verlink;
 }
 
 /** How far ahead of this machine's clock a notice's date may be. */
@@ -447,9 +508,12 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
       const createdAt = at === undefined ? io.nowS() : Number(at);
       // A date ahead of the clock raises every install's replay floor, or is refused outright.
       if (createdAt > io.nowS() + MAX_CLOCK_SKEW_S) refuse('--created-at is in the future');
+      if (p.options.has('--verlink'))
+        refuse('--verlink is not taken here: the version is the one `multisig commit` recorded');
+      const verlink = committedVersion(out, production);
       const event = releaseNoticeDraft({
         version: d.version,
-        verlink: need(p, '--verlink'),
+        verlink,
         commit: d.commit,
         createdAt,
         artifacts: d.artifacts,
@@ -496,10 +560,22 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
         target: need(p, '--target'),
         production: need(p, '--production'),
       });
+      // What this release supersedes: `notice-draft` refuses anything not newer.
+      const record = needPath(p, '--out');
       return act(io, p, plan, {
         before: (production) => {
           if (linkKeyOf(need(p, '--production')) !== linkKeyOf(production))
             refuse(`--production is not a version of this source's production link ${production}`);
+          if (!existsSync(join(record, 'release.json')))
+            refuse(`${record} holds no release: --out is the folder of this release`);
+          if (existsSync(join(record, COMMITTED)))
+            refuse(`${join(record, COMMITTED)} exists: this release was committed already`);
+        },
+        done: () => {
+          writeFileSync(
+            join(record, PROVISIONED),
+            `${JSON.stringify({ supersedes: need(p, '--production') }, null, 2)}\n`,
+          );
         },
       });
     }
@@ -550,6 +626,28 @@ export async function ensurePinnedPear(target: TargetName, dir: string): Promise
 
 const KEEP_OUTPUT = 1024 * 1024;
 
+/** Runs `pear`, its output on this terminal and its last megabyte kept. */
+function runTee(
+  bin: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+): Promise<PearOutcome> {
+  return new Promise((res) => {
+    const child = spawn(bin, [...args], { stdio: ['inherit', 'pipe', 'inherit'], env });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => {
+      process.stdout.write(d);
+      out = (out + d.toString('utf8')).slice(-KEEP_OUTPUT);
+    });
+    child.once('error', () => {
+      res({ code: 1, out });
+    });
+    child.once('close', (code) => {
+      res({ code: code ?? 1, out });
+    });
+  });
+}
+
 export const realIo: Io = {
   env: process.env,
   ask: askOnTerminal,
@@ -560,21 +658,11 @@ export const realIo: Io = {
   },
   pearPath: () => join(toolsDir(), 'pear', PEAR_PINS[hostTarget()].binary),
   ensurePear: () => ensurePinnedPear(hostTarget(), toolsDir()),
-  runPublic: (bin, args) =>
-    new Promise((res) => {
-      const child = spawn(bin, [...args], { stdio: ['inherit', 'pipe', 'inherit'] });
-      let out = '';
-      child.stdout.on('data', (d: Buffer) => {
-        process.stdout.write(d);
-        out = (out + d.toString('utf8')).slice(-KEEP_OUTPUT);
-      });
-      child.once('error', () => {
-        res({ code: 1, out });
-      });
-      child.once('close', (code) => {
-        res({ code: code ?? 1, out });
-      });
-    }),
+  runPublic: (bin, args) => runTee(bin, args, process.env),
+  runIsolated: (bin, home, args) => {
+    mkdirSync(home, { recursive: true });
+    return runTee(bin, args, isolatedEnv(home));
+  },
   runBuild: async (bin, out, args) => {
     // `pear build` starts no sidecar and joins no DHT. Its own home, and a loopback bootstrap, so
     // that nothing here can touch the owner's Pear state even if that ever changes.

@@ -44,7 +44,7 @@ import {
 import type { UpdateStatus } from '../../../src/update/status.ts';
 import { PEAR_PINS, PEAR_VERSION } from '../../pear-ci/pins.ts';
 import { digestTargets, inputName, readDigests, readRelease, type Digest } from '../assemble.ts';
-import { parseOptions, runCli, type Io } from '../cli.ts';
+import { committedVersion, parseOptions, runCli, signInstruction, type Io } from '../cli.ts';
 import {
   PEER_UPDATE_TIMEOUT_MS,
   planBuild,
@@ -156,6 +156,7 @@ function fakeIo(
         });
       return Promise.resolve({ code: over.code ?? 0, out: '' });
     },
+    runIsolated: (bin, _home, args) => io.runPublic(bin, args),
     runBuild: (_bin, _out, args) => {
       io.built.push(args);
       return Promise.resolve();
@@ -381,6 +382,8 @@ describe('a step on a real link', () => {
         LINK_B,
         '--production',
         VERLINK_A,
+        '--out',
+        '/release',
       ],
     ],
     ['seed', ['seed', '--link', LINK_A]],
@@ -393,6 +396,30 @@ describe('a step on a real link', () => {
     expect(ci.ran).toEqual([]);
   });
 
+  it('provision records what it supersedes, for notice-draft', async () => {
+    const out = tmp();
+    const argv = [
+      'provision',
+      '--source',
+      `pear://0.9.${'n'.repeat(52)}`,
+      '--target',
+      LINK_A,
+      '--production',
+      `pear://0.3.${KEY_B}`,
+      '--out',
+      out,
+      '--execute',
+    ];
+    await refused(runCli(argv, fakeIo({ typed: LINK_A })), /holds no release/);
+    writeFileSync(join(out, 'release.json'), '{}');
+    expect(await runCli(argv, fakeIo({ typed: LINK_A }))).toBe(0);
+    expect(JSON.parse(readFileSync(join(out, 'provisioned.json'), 'utf8'))).toEqual({
+      supersedes: `pear://0.3.${KEY_B}`,
+    });
+    writeFileSync(join(out, 'committed.json'), '{}');
+    await refused(runCli(argv, fakeIo({ typed: LINK_A })), /committed already/);
+  });
+
   it('provision refuses a production verlink of another link', async () => {
     const argv = [
       'provision',
@@ -402,6 +429,8 @@ describe('a step on a real link', () => {
       LINK_A,
       '--production',
       `pear://0.3.${'d'.repeat(52)}`,
+      '--out',
+      tmp(),
       '--execute',
     ];
     const io = fakeIo({ typed: LINK_A });
@@ -433,7 +462,16 @@ describe('a step on a real link', () => {
       writeFileSync(f, '{}');
       return f;
     };
-    const commitArgv = (c: string): string[] => [
+    /** A release folder that `provision` recorded. */
+    const provisioned = (): string => {
+      const out = tmp();
+      writeFileSync(
+        join(out, 'provisioned.json'),
+        JSON.stringify({ supersedes: `pear://0.3.${KEY_B}` }),
+      );
+      return out;
+    };
+    const commitArgv = (c: string, out = provisioned()): string[] => [
       'multisig',
       'commit',
       '--config',
@@ -442,6 +480,8 @@ describe('a step on a real link', () => {
       LINK_A,
       '--production',
       LINK_B,
+      '--out',
+      out,
       '--request',
       REQUEST,
       '--response',
@@ -461,14 +501,35 @@ describe('a step on a real link', () => {
       expect(io.printed.join('\n')).toContain(`type this link back: ${LINK_B}`);
     });
 
-    it('commits only when the config derives the link typed, and prints the verlink', async () => {
+    it('commits only when the config derives the link typed, and records the verlink', async () => {
       const io = fakeIo({ typed: LINK_B, derived: LINK_B });
-      expect(await runCli([...commitArgv(config()), '--execute'], io)).toBe(0);
+      const out = provisioned();
+      expect(await runCli([...commitArgv(config(), out), '--execute'], io)).toBe(0);
       expect(io.ran.map((a) => a.slice(0, 2))).toEqual([
         ['multisig', 'link'],
         ['multisig', 'commit'],
       ]);
       expect(io.printed.join('\n')).toContain(`production verlink: pear://0.7.${KEY_B}`);
+      expect(JSON.parse(readFileSync(join(out, 'committed.json'), 'utf8'))).toMatchObject({
+        production: LINK_B,
+        verlink: `pear://0.7.${KEY_B}`,
+      });
+      // One commit per release folder.
+      const again = fakeIo({ typed: LINK_B, derived: LINK_B });
+      await refused(
+        runCli([...commitArgv(config(), out), '--execute'], again),
+        /committed already/,
+      );
+      expect(again.ran).toEqual([]);
+    });
+
+    it('commits nothing for a release folder provision did not record', async () => {
+      const io = fakeIo({ typed: LINK_B, derived: LINK_B });
+      await refused(
+        runCli([...commitArgv(config(), tmp()), '--execute'], io),
+        /provisioned\.json is missing/,
+      );
+      expect(io.ran).toEqual([]);
     });
 
     it('refuses when the signers’ config derives another link, and commits nothing', async () => {
@@ -869,7 +930,10 @@ describe('the notice draft', () => {
 
   describe('the notice-draft command', () => {
     const COMMIT = 'ab'.repeat(20);
-    const withDigests = (): string => {
+    /** A release folder after `digest`, `provision` and `multisig commit`. */
+    const withDigests = (
+      o: { committed?: string; supersedes?: string; production?: string } = {},
+    ): string => {
       const out = tmp();
       writeFileSync(
         join(out, 'digests.json'),
@@ -880,15 +944,17 @@ describe('the notice draft', () => {
           artifacts: FIVE,
         }),
       );
+      writeFileSync(
+        join(out, 'provisioned.json'),
+        JSON.stringify({ supersedes: o.supersedes ?? `pear://0.5.${KEY_A}` }),
+      );
+      writeFileSync(
+        join(out, 'committed.json'),
+        JSON.stringify({ production: o.production ?? LINK_A, verlink: o.committed ?? VERLINK_A }),
+      );
       return out;
     };
-    const argv = (out: string, verlink = VERLINK_A): string[] => [
-      'notice-draft',
-      '--out',
-      out,
-      '--verlink',
-      verlink,
-    ];
+    const argv = (out: string): string[] => ['notice-draft', '--out', out];
     const withLinkA = (): FakeIo => fakeIo({ production: LINK_A });
 
     it('writes it once, unsigned, with the commit the packages carry', async () => {
@@ -918,11 +984,44 @@ describe('the notice draft', () => {
       expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
     });
 
-    it('with a link set, drafts only for a version of that link', async () => {
+    it('names the version multisig commit recorded, and takes none from the command line', async () => {
       const out = withDigests();
-      await refused(runCli(argv(out, `pear://0.12.${KEY_B}`), withLinkA()), /is not a version of/);
-      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+      await refused(
+        runCli([...argv(out), '--verlink', VERLINK_A], withLinkA()),
+        /the version is the one `multisig commit` recorded/,
+      );
       expect(await runCli(argv(out), withLinkA())).toBe(0);
+      const ev = JSON.parse(readFileSync(join(out, 'release-event.unsigned.json'), 'utf8')) as {
+        tags: string[][];
+      };
+      expect(ev.tags.find((t) => t[0] === 'verlink')).toEqual(['verlink', VERLINK_A]);
+    });
+
+    it.each([
+      ['a version of another link', { committed: `pear://0.12.${KEY_B}` }, /for another link/],
+      ['a commit recorded for another link', { production: LINK_B }, /for another link/],
+      ['the version it supersedes', { supersedes: VERLINK_A }, /is not newer than/],
+      ['an older version', { supersedes: `pear://0.13.${KEY_A}` }, /is not newer than/],
+      ['a supersedes of another link', { supersedes: `pear://0.5.${KEY_B}` }, /another link/],
+    ])('refuses %s', async (_n, o, re) => {
+      const out = withDigests(o);
+      await refused(runCli(argv(out), withLinkA()), re);
+      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+    });
+
+    it('refuses a release that was not provisioned and committed with --out', async () => {
+      for (const missing of ['provisioned.json', 'committed.json']) {
+        const out = withDigests();
+        rmSync(join(out, missing));
+        await refused(runCli(argv(out), withLinkA()), new RegExp(`${missing} is missing`));
+      }
+      expect(() => committedVersion(tmp(), LINK_A)).toThrow(ReleaseRefusal);
+    });
+
+    it('tells a signer the exact request to sign, with its hash', () => {
+      const lines = signInstruction(REQUEST);
+      expect(lines[0]).toContain(createHash('sha256').update(REQUEST).digest('hex').slice(0, 16));
+      expect(lines[1]).toBe(`  pear multisig sign ${REQUEST} <your key name>`);
     });
 
     it('refuses a date ahead of the clock: it would raise every install’s replay floor', async () => {

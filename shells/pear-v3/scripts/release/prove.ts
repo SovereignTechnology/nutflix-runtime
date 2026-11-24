@@ -68,7 +68,7 @@ import {
   assertArtifactBytes,
   assertCommit,
   downloadArtifact,
-  ghApi,
+  makeGhApi,
   parseRunId,
   runArtifacts,
   verifyMainRun,
@@ -82,6 +82,16 @@ const say = (line: string): void => {
 };
 
 class Handled extends Error {}
+
+/**
+ * The job's token reaches `gh` alone. The workflow passes it under a name nothing else reads, and it
+ * leaves this process's environment before anything starts: no Pear sidecar, build, `script` or
+ * launched app inherits it, and none can write it into the uploaded logs.
+ */
+const TOKEN_NAMES = ['RELEASE_PROOF_GH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'] as const;
+const githubToken = process.env['RELEASE_PROOF_GH_TOKEN'];
+for (const k of TOKEN_NAMES) Reflect.deleteProperty(process.env, k);
+const github = makeGhApi(githubToken);
 
 function arg(argv: readonly string[], name: string): string {
   const i = argv.indexOf(name);
@@ -154,39 +164,50 @@ export async function prove(o: { target: TargetName; work: string }): Promise<nu
     const builtCommit = assertCommit(process.env['GITHUB_SHA'], 'GITHUB_SHA');
     const artifacts = join(work, 'artifacts');
     await phase('provenance: the real GitHub API, read-only', async () => {
-      const refusedHere = () => verifyMainRun(ghApi, runId, builtCommit);
+      const refusedHere = () => verifyMainRun(github, runId, builtCommit);
       await expectRefusal(
         'this run, as a release build',
         refusedHere,
         /triggered by "pull_request"|has not completed/,
       );
-      const listing = (await ghApi.get(
+      const listing = (await github.get(
         `repos/${RELEASE_REPO}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1`,
       )) as { workflow_runs?: { id?: unknown; head_sha?: unknown }[] };
       const main = listing.workflow_runs?.[0];
       if (typeof main?.id !== 'number' || typeof main.head_sha !== 'string')
         throw new Error('GitHub lists no successful run on main');
-      await verifyMainRun(ghApi, main.id, main.head_sha);
+      await verifyMainRun(github, main.id, main.head_sha);
       await expectRefusal(
         'a run on main, for another commit',
-        () => verifyMainRun(ghApi, main.id as number, 'f'.repeat(40)),
+        () => verifyMainRun(github, main.id as number, 'f'.repeat(40)),
         /it built /,
       );
       row(
         'provenance',
         `a green push to main passes; this ${String(process.env['GITHUB_EVENT_NAME'])} run and a wrong commit are refused`,
       );
+      // The token is in no child's environment (checked by name; nothing is printed).
+      const child = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `process.exit(${JSON.stringify(TOKEN_NAMES)}.some((k) => k in process.env) ? 3 : 0)`,
+        ],
+        { stdio: 'ignore' },
+      );
+      if (child.status !== 0) throw new Error('a child process still has the GitHub token');
+      row('token', 'only `gh` gets the GitHub token: a child process started here has none');
 
       // This run's five packages, each checked against GitHub's digest of its artifact.
-      const self = (await ghApi.get(`repos/${RELEASE_REPO}/actions/runs/${String(runId)}`)) as {
+      const self = (await github.get(`repos/${RELEASE_REPO}/actions/runs/${String(runId)}`)) as {
         head_sha?: string;
       };
       if (typeof self.head_sha !== 'string') throw new Error('GitHub names no head for this run');
       const names = RELEASE_TARGETS.map((t) => artifactName('shell', t));
-      const listed = await runArtifacts(ghApi, runId, self.head_sha, names);
+      const listed = await runArtifacts(github, runId, self.head_sha, names);
       mkdirSync(artifacts, { recursive: true });
       for (const a of listed.values())
-        await downloadArtifact(ghApi, a, join(artifacts, `${a.name}.zip`));
+        await downloadArtifact(github, a, join(artifacts, `${a.name}.zip`));
       const [one, two] = [...listed.values()];
       if (one === undefined || two === undefined) throw new Error('no artifacts');
       await expectRefusal(
