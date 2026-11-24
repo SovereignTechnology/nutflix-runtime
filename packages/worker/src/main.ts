@@ -22,7 +22,7 @@ import { bareRuntime } from './adapters/bare.js';
 import { toWireError } from './errors.js';
 import { WorkerHost } from './host.js';
 import { openCorestoreKeyring } from './keys.js';
-import { toLogEvent } from './log.js';
+import { createWorkerLogger, toLogEvent } from './log.js';
 import { WorkerRpc } from './rpc.js';
 
 const EXIT_CORRUPT = 3;
@@ -44,6 +44,12 @@ if (ipc === null) {
     onFatal: () => {
       Bare.exit(EXIT_CORRUPT);
     },
+    // A failure that crosses as `internal`: its method, code, syscall and class, as a `log` event.
+    log: createWorkerLogger({
+      emit: (ev) => {
+        rpc.emit(ev);
+      },
+    }),
   });
   const host: WorkerHost = new WorkerHost({
     runtime: bareRuntime(),

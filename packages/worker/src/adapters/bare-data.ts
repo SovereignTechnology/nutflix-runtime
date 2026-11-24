@@ -9,6 +9,7 @@ import type { FileStat, SeederFs } from '@sovit/seeder';
 import fs from 'bare-fs';
 import path from 'bare-path';
 
+import { withRenameRetry } from '../rename-retry.js';
 import type { HttpRequestHandler, HttpServerLike, WorkerRuntime } from '../runtime.js';
 
 function errno(err: unknown): string | undefined {
@@ -23,7 +24,7 @@ function bytes(b: unknown): Uint8Array {
   return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
 }
 
-export const bareSeederFs: SeederFs = {
+const bareFiles: SeederFs = {
   readFile: async (p) => bytes(await fs.promises.readFile(p)),
   writeFile: (p, data) => fs.promises.writeFile(p, data),
   rename: (from, to) => fs.promises.rename(from, to),
@@ -59,6 +60,12 @@ export const bareSeederFs: SeederFs = {
   },
   join: (...parts) => path.join(...parts),
 };
+
+/**
+ * The worker's files on bare-fs. Every rename (the NFX store's, `seeding.json`'s, the play
+ * spools') rides out a Windows sharing violation (`../rename-retry.ts`).
+ */
+export const bareSeederFs: SeederFs = withRenameRetry(bareFiles, { platform: Bare.platform });
 
 /** Remove a directory tree; a missing one is fine. */
 export async function bareRmTree(p: string): Promise<void> {
