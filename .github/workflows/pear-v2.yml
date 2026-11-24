@@ -1,0 +1,87 @@
+# The pinned `pear run` shell (shells/pear-v2, ADR 0001 shape b), as far as GitHub may take it.
+#
+# HARD CONSTRAINT: no runner is a peer of the public network. Pear v2.6.5 has no download but its
+# drive on the public DHT, so this job does not install it and never runs `pear`. The real
+# `pear run` proof (shells/pear-v2/proof) runs in a throwaway VM of ours instead. What this job
+# proves: the shell's own lockfile is clean, the app stages, and the staged worker loads and answers
+# through the page gate on a real Bare of the same minor as the pinned one (1.24.2 from npm, the
+# nearest published build to the platform's 1.24.3), with packets to the public DHT counted.
+name: pear-v2
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pear-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: ''
+  # A key nobody holds: this build is never run on a platform, only staged and loaded by Bare.
+  TEST_LINE: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy:0:3243
+  BARE_VERSION: 1.24.2
+  BARE_SHA512: OSg8/Uz/bDPz35XKDE4hB+c8+ZP3sQdEoU9wza45zfPQrEOvg1BKWLG2J1Mr4skudnW7I73/yrcr6cmkO0+GaQ==
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            shells/pear-v2/app/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: the app's own pins install from its lockfile
+        working-directory: shells/pear-v2/app
+        run: npm ci --ignore-scripts
+      - name: the app's lockfile has not drifted
+        working-directory: shells/pear-v2/app
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          git diff --exit-code --stat package-lock.json
+      - name: registry signatures and provenance of the app's pins
+        working-directory: shells/pear-v2/app
+        run: npm audit signatures
+      - name: advisories in the app's pins (high and above)
+        working-directory: shells/pear-v2/app
+        run: npm audit --audit-level=high
+      - run: npm run build
+      - name: stage a test build
+        run: node shells/pear-v2/scripts/stage.ts --test-line "$TEST_LINE" --with-smoke
+      - name: Bare from npm, checked against its pinned sha512
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libatomic1
+          mkdir -p "$RUNNER_TEMP/bare"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/bare/bare.tgz" \
+            "https://registry.npmjs.org/bare-runtime-linux-x64/-/bare-runtime-linux-x64-$BARE_VERSION.tgz"
+          got=$(openssl dgst -sha512 -binary "$RUNNER_TEMP/bare/bare.tgz" | base64 -w0)
+          [ "$got" = "$BARE_SHA512" ] || { echo "bare: sha512 $got is not the pin"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/bare/bare.tgz" -C "$RUNNER_TEMP/bare"
+          chmod +x "$RUNNER_TEMP/bare/package/bin/bare"
+      - name: count packets to the public DHT from here on
+        run: bash shells/pear-v2/scripts/ci-tripwire.sh arm
+      - name: the staged worker answers through the gate on a real Bare
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke-storage"
+          timeout 60 "$RUNNER_TEMP/bare/package/bin/bare" shells/pear-v2/out/app/smoke.js \
+            "$RUNNER_TEMP/smoke-storage" 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          grep -q "^NUTFLIX_V2_SMOKE ok bare v$BARE_VERSION$" "$RUNNER_TEMP/smoke.log"
+      - name: nothing reached the public DHT
+        run: bash shells/pear-v2/scripts/ci-tripwire.sh check

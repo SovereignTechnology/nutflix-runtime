@@ -1,0 +1,29 @@
+{
+  "name": "@nutflix-runtime/shell-pear-v2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The pinned `pear run` shell (ADR 0001 shape b): unsandboxed legacy software on Pear v2.6.5, for people who cannot use the Pear v3 app",
+  "license": "AGPL-3.0-or-later",
+  "author": "Sovereign Technology",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "stage": "node scripts/stage.ts",
+    "test": "vitest run",
+    "test:proof": "vitest run --config vitest.proof.config.ts",
+    "lint": "eslint src scripts proof"
+  },
+  "dependencies": {
+    "@nutflix-runtime/worker": "0.0.0"
+  },
+  "devDependencies": {
+    "@nutflix-runtime/renderer": "0.0.0",
+    "@sovit/core": "0.0.0",
+    "@sovit/seeder": "0.0.0",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
+    "hyperdht": "6.36.0",
+    "nostr-tools": "2.26.0",
+    "ws": "8.22.2"
+  }
+}
