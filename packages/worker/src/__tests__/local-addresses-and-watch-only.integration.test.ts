@@ -2,8 +2,9 @@
  * Two things a viewer's machine must not do, on a local hyperdht testnet against nutflix-pear's own
  * NFX-12 code:
  *
- *   - tell a peer its local addresses: unless its node is bound to 127.0.0.1, the worker dials
- *     with `localConnection: false` and listens with `shareLocalAddress: false`
+ *   - tell a peer its local addresses: unless its node's socket is really bound to 127.0.0.1
+ *     (read at each dial, and when a listener starts, after the bind), the worker dials with
+ *     `localConnection: false` and listens with `shareLocalAddress: false`
  *     (`../net/no-local-addresses.ts`). On a loopback test network the node is bound there and
  *     keeps hyperdht's defaults, so peers on one host still meet. The test switch only forces
  *     hiding on. The same two options can be set on a whole node (`hideLocalAddressesOn`, for
@@ -13,20 +14,22 @@
  */
 import { randomBytes } from 'node:crypto';
 
-import type { NfxDht, NfxFileSource } from '@sovit/seeder';
+import type { NfxFileSource } from '@sovit/seeder';
 import { hyperdhtEndpoint, listenNfx } from '@sovit/seeder';
 import DHT from 'hyperdht';
+import type { KeyPair } from 'hyperdht';
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
+import type { BindableNode } from '../net/no-local-addresses.js';
 import {
   hideLocalAddressesOn,
   hidesLocalAddresses,
   isLoopbackTestnet,
-  withoutLocalAddresses,
+  localAddressesByBind,
 } from '../net/no-local-addresses.js';
 import type { NfxHyperdhtEndpointWire, WorkerMethod } from '../protocol.js';
 import { startWorker, tempDir } from './helpers/harness.js';
@@ -37,44 +40,109 @@ vi.setConfig({ testTimeout: 120_000 });
 const SEEDER_NOSTR = 'ab'.repeat(32);
 const namespaceOf = (video: string): string => video.slice(0, video.lastIndexOf(':'));
 
-describe('withoutLocalAddresses', () => {
-  it('adds the two options and keeps every other', () => {
-    const seen: { connect?: unknown; server?: unknown } = {};
-    const dht = {
-      connect: (_k: Uint8Array, opts?: unknown) => {
-        seen.connect = opts;
-        return {} as never;
-      },
-      createServer: (opts: unknown) => {
-        seen.server = opts;
-        return {} as never;
-      },
-    } as unknown as NfxDht;
-    const keyPair = DHT.keyPair();
-    const firewall = (): boolean => false;
-    const wrapped = withoutLocalAddresses(dht);
-    wrapped.connect(new Uint8Array(32), { keyPair });
-    wrapped.createServer({ firewall }, () => undefined);
-    expect(seen.connect).toEqual({ keyPair, localConnection: false });
-    expect(seen.server).toEqual({ firewall, shareLocalAddress: false });
+/** A stand-in node bound to `host` (`null`: not yet), recording what each call was given. */
+function fakeNode(host: string | null | 'throws', bindTo?: string): {
+  node: BindableNode;
+  seen: unknown[];
+  listened: KeyPair[];
+} {
+  const seen: unknown[] = [];
+  const listened: KeyPair[] = [];
+  let bound = host;
+  const node: BindableNode = {
+    address: () => {
+      if (bound === 'throws') throw new Error('no socket');
+      return bound === null ? null : { host: bound };
+    },
+    bind: () => {
+      if (bindTo !== undefined) bound = bindTo;
+      return Promise.resolve();
+    },
+    connect: (_k, opts) => {
+      seen.push(opts);
+      return {} as never;
+    },
+    createServer: (opts) => {
+      seen.push(opts);
+      return {
+        publicKey: null,
+        listen: (kp: KeyPair) => {
+          listened.push(kp);
+          return Promise.resolve();
+        },
+        close: () => Promise.resolve(),
+      };
+    },
+  };
+  return { node, seen, listened };
+}
+
+describe('localAddressesByBind', () => {
+  const keyPair = DHT.keyPair();
+  const firewall = (): boolean => false;
+
+  it('keeps the defaults only on a socket really bound to 127.0.0.1', async () => {
+    const { node, seen } = fakeNode('127.0.0.1');
+    const view = localAddressesByBind(node);
+    view.connect(new Uint8Array(32), { keyPair });
+    await view.createServer({ firewall }, () => undefined).listen(keyPair);
+    expect(seen).toEqual([{ keyPair }, { firewall }]);
   });
 
-  it('a caller cannot turn them back on', () => {
-    const seen: unknown[] = [];
-    const dht = {
-      connect: (_k: Uint8Array, opts?: unknown) => {
-        seen.push(opts);
-        return {} as never;
-      },
-      createServer: (opts: unknown) => {
-        seen.push(opts);
-        return {} as never;
-      },
-    } as unknown as NfxDht;
-    const wrapped = withoutLocalAddresses(dht);
-    wrapped.connect(new Uint8Array(32), { localConnection: true });
-    wrapped.createServer({ shareLocalAddress: true }, () => undefined);
+  it.each([['0.0.0.0'], ['10.0.0.2'], ['127.0.0.2'], [null], ['throws']] as const)(
+    'hides on a socket bound to %j (or not bound, or unreadable), and a caller cannot undo it',
+    async (host) => {
+      const { node, seen } = fakeNode(host);
+      const view = localAddressesByBind(node);
+      view.connect(new Uint8Array(32), { keyPair, localConnection: true });
+      await view.createServer({ firewall, shareLocalAddress: true }, () => undefined).listen(keyPair);
+      expect(seen).toEqual([
+        { keyPair, localConnection: false },
+        { firewall, shareLocalAddress: false },
+      ]);
+    },
+  );
+
+  it('the switch only forces hiding on', async () => {
+    const { node, seen } = fakeNode('127.0.0.1');
+    const view = localAddressesByBind(node, { force: true });
+    view.connect(new Uint8Array(32));
+    await view.createServer({}, () => undefined).listen(keyPair);
     expect(seen).toEqual([{ localConnection: false }, { shareLocalAddress: false }]);
+  });
+
+  it('a listener decides after the bind, on what the socket got', async () => {
+    // Unbound when the listener is made; the bind then gives 127.0.0.1, or every interface.
+    for (const [bindTo, want] of [
+      ['127.0.0.1', {}],
+      ['0.0.0.0', { shareLocalAddress: false }],
+    ] as const) {
+      const { node, seen, listened } = fakeNode(null, bindTo);
+      const server = localAddressesByBind(node).createServer({}, () => undefined);
+      expect(seen).toEqual([]);
+      expect(server.publicKey).toBeNull();
+      await server.listen(keyPair);
+      expect(seen).toEqual([want]);
+      expect(listened).toEqual([keyPair]);
+    }
+  });
+
+  it('a listener closed before it listens never listens', async () => {
+    const { node, seen } = fakeNode('127.0.0.1');
+    const server = localAddressesByBind(node).createServer({}, () => undefined);
+    await server.close();
+    await expect(server.listen(keyPair)).rejects.toThrow(/^backend-down/);
+    expect(seen).toEqual([]);
+  });
+
+  it.each([
+    [null, false, true],
+    ['0.0.0.0', false, true],
+    ['127.0.0.1', false, false],
+    ['127.0.0.1', true, true],
+    ['127.1.2.3', false, true],
+  ])('bound to %j, forced: %s, hides: %s', (host, force, want) => {
+    expect(hidesLocalAddresses({ boundHost: host, force })).toBe(want);
   });
 
   it.each([
@@ -100,15 +168,6 @@ describe('withoutLocalAddresses', () => {
     [[{ host: '10.0.0.1', port: 1 }], false],
   ])('treats %j as a loopback test network: %s', (b, want) => {
     expect(isLoopbackTestnet(b)).toBe(want);
-  });
-
-  it.each([
-    [false, false, true],
-    [false, true, true],
-    [true, false, false],
-    [true, true, true],
-  ])('a node bound to loopback only: %s, forced: %s, hides: %s', (loopbackOnly, force, want) => {
-    expect(hidesLocalAddresses({ loopbackOnly, force })).toBe(want);
   });
 });
 
@@ -254,7 +313,7 @@ describe('the worker on a testnet', () => {
     // Bound to 127.0.0.1, and only then hyperdht's defaults.
     expect(first.host.internals?.dht.loopbackOnly).toBe(true);
     expect(firstDht?.address()?.host).toBe('127.0.0.1');
-    expect(first.host.internals?.hidesLocalAddresses).toBe(false);
+    expect(first.host.internals?.hidesLocalAddresses()).toBe(false);
     const firstCalls = calls.filter((c) => c.self === firstDht);
     expect(firstCalls.map((c) => c.kind).sort()).toEqual(['connect', 'server']);
     for (const c of firstCalls) {
@@ -278,7 +337,7 @@ describe('the worker on a testnet', () => {
       .catch(() => undefined);
     const secondDht = second.host.internals?.dht.dht;
     expect(secondDht).toBeTruthy();
-    expect(second.host.internals?.hidesLocalAddresses).toBe(true);
+    expect(second.host.internals?.hidesLocalAddresses()).toBe(true);
     const mine = calls.filter((c) => c.self === secondDht);
     expect(mine.some((c) => c.kind === 'server')).toBe(true);
     expect(mine.some((c) => c.kind === 'connect')).toBe(true);
@@ -289,6 +348,50 @@ describe('the worker on a testnet', () => {
     // The test's own nodes were seen too, with hyperdht's defaults: the spies see every call.
     expect(calls.some((c) => c.self !== firstDht && c.self !== secondDht)).toBe(true);
     expect([...first.fatal, ...second.fatal]).toEqual([]);
+  });
+
+  it('real nodes: the view reads the bound socket, 127.0.0.1 keeps the defaults, any other hides', async () => {
+    const calls: { self: unknown; kind: 'connect' | 'server'; opts: unknown }[] = [];
+    const proto = DHT.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+    const realConnect = proto['connect'];
+    const realServer = proto['createServer'];
+    if (realConnect === undefined || realServer === undefined)
+      throw new Error('no hyperdht methods');
+    vi.spyOn(DHT.prototype, 'connect').mockImplementation(function (this: DHT, key, opts) {
+      calls.push({ self: this, kind: 'connect', opts });
+      return Reflect.apply(realConnect, this, [key, opts]) as ReturnType<DHT['connect']>;
+    });
+    vi.spyOn(DHT.prototype, 'createServer').mockImplementation(function (this: DHT, opts, cb) {
+      calls.push({ self: this, kind: 'server', opts });
+      return Reflect.apply(realServer, this, [opts, cb]) as ReturnType<DHT['createServer']>;
+    });
+    for (const [host, hidden] of [
+      ['127.0.0.1', false],
+      [undefined, true],
+    ] as const) {
+      const n = new DHT({ bootstrap: testnet.bootstrap, ...(host === undefined ? {} : { host }) });
+      cleanups.push(() => n.destroy());
+      const view = localAddressesByBind(n);
+      // A listener made before the bind decides only once it is bound.
+      const server = view.createServer({}, () => undefined);
+      await server.listen(DHT.keyPair());
+      cleanups.push(() => server.close());
+      expect(n.address()?.host).toBe(host ?? '0.0.0.0');
+      const stream = view.connect(DHT.keyPair().publicKey);
+      stream.on('error', () => undefined);
+      stream.destroy();
+      const mine = calls.filter((c) => c.self === n);
+      expect(mine.map((c) => c.kind).sort()).toEqual(['connect', 'server']);
+      for (const c of mine)
+        if (hidden)
+          expect(c.opts).toMatchObject(
+            c.kind === 'connect' ? { localConnection: false } : { shareLocalAddress: false },
+          );
+        else {
+          expect(c.opts ?? {}).not.toHaveProperty('localConnection');
+          expect(c.opts ?? {}).not.toHaveProperty('shareLocalAddress');
+        }
+    }
   });
 
   it('a node not bound to 127.0.0.1 hides, whatever the bootstrap or the test switch says', async () => {
@@ -308,7 +411,7 @@ describe('the worker on a testnet', () => {
       await w.client.request('init', { v: 1, storage: d.dir, bootstrap: c.bootstrap });
       expect(w.host.internals?.dht.state).toBe('idle');
       expect(w.host.internals?.dht.loopbackOnly).toBe(false);
-      expect(w.host.internals?.hidesLocalAddresses).toBe(true);
+      expect(w.host.internals?.hidesLocalAddresses()).toBe(true);
       await w.close();
     }
   });

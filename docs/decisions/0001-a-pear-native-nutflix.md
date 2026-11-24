@@ -133,17 +133,21 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   turning WebRTC off would not keep those addresses from strangers. The cost: a viewer and a seeder
   on the same LAN, behind a router without NAT loopback, may fail to connect, because neither learns
   the other's LAN address, and so may two apps on one machine.
-  - The worker's one exception is a node whose socket is bound to 127.0.0.1. It binds its node
-    there when every bootstrap is `127.0.0.1` (a test network of this machine's own processes,
-    whose peers bind there too). Such a node reaches nothing off this machine, whatever its
-    bootstrap is connected to, and keeps hyperdht's defaults: on one host, hyperdht carries data
-    only between peers that share local addresses and bind alike (measured), so that is how the
-    tests and proofs connect. A `127.0.0.1` bootstrap bridged to the public DHT therefore gets a
-    node that cannot reach public peers, not one that shares local addresses with them.
+  - The worker's one exception is a node whose socket is bound to 127.0.0.1. It asks for that bind
+    when every bootstrap is `127.0.0.1` (a test network of this machine's own processes, whose
+    peers bind there too), and the exception reads the address the socket really got, at each dial
+    and when each listener starts, not the option; an address it cannot read yet means hiding.
+    Such a node reaches nothing off this machine, whatever its bootstrap is connected to, and
+    keeps hyperdht's defaults: on one host, hyperdht carries data only between peers that share
+    local addresses and bind alike (measured), so that is how the tests and proofs connect. A
+    `127.0.0.1` bootstrap bridged to the public DHT therefore gets a node that cannot reach public
+    peers, not one that shares local addresses with them.
   - The updater hides on every release root. A test build's root names a private `127.0.0.1`
     DHT, which a release root refuses, and there the updater keeps Hyperswarm's own node and its
     defaults, because its peer is Pear's sidecar bound to every interface. No run-time input
-    reaches that choice: the root is compiled into the build.
+    reaches that choice: the root is compiled into the build. Its Noise key pair is new every run
+    too, unlike `pear-runtime`'s store-derived one, so a peer on the update topic cannot link one
+    user's update checks across days by it (`shells/pear-v3/src/update/swarm.ts`).
   - Pear's own processes are not this app's code, and this is not verified for them: shape (b)'s
     Pear v2.6.5 sidecar, which replicates the app, platform and UI drives with its own swarm, and
     Pear v3's `pear install`. They plausibly share local addresses with the peers of those drives.

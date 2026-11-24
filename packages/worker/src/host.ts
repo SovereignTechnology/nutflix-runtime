@@ -28,6 +28,7 @@ import type { signer as coreSigner } from '@sovit/core';
 import { nfx } from '@sovit/core';
 import { npubEncode } from 'nostr-tools/nip19';
 import type { Logger, NfxDht } from '@sovit/seeder';
+import type DHT from 'hyperdht';
 import { DiskCap, NfxStore } from '@sovit/seeder';
 
 import { randomHex, sodiumCrypto, sodiumSha256 } from './crypto.js';
@@ -37,9 +38,10 @@ import { WatcherKeys, openCorestoreKeyring } from './keys.js';
 import { createWorkerLogger } from './log.js';
 import { DhtNode } from './net/dht-node.js';
 import {
+  boundHost,
   hidesLocalAddresses,
   isLoopbackTestnet,
-  withoutLocalAddresses,
+  localAddressesByBind,
 } from './net/no-local-addresses.js';
 import { signBeacons, type BeaconTarget } from './nfx/beacons.js';
 import { NfxPeerPool } from './nfx/hyperdht-fetcher.js';
@@ -109,8 +111,8 @@ interface Running {
   readonly keys: Keyring;
   readonly store: NfxStore;
   readonly dht: DhtNode;
-  /** Whether the pool and the seeds see the node without local addresses (always, but on loopback). */
-  readonly hidesLocalAddresses: boolean;
+  /** Whether a dial now would hide local addresses (always, but on a socket bound to 127.0.0.1). */
+  readonly hidesLocalAddresses: () => boolean;
   /** This run's random watcher key pairs, one per network: in memory only. */
   readonly watcherKeys: WatcherKeys;
   readonly pool: NfxPeerPool;
@@ -531,13 +533,15 @@ export class WorkerHost implements WorkerRpcHandler {
       },
       ...(this.o.bootstrapWaitMs === undefined ? {} : { bootstrapWaitMs: this.o.bootstrapWaitMs }),
     });
-    // No local addresses to any peer, unless the node is bound to 127.0.0.1
-    // (`./net/no-local-addresses.ts`). The switch can only force hiding on.
-    const hideLocal = hidesLocalAddresses({
-      loopbackOnly: dht.loopbackOnly,
-      force: this.o.hideLocalAddresses === true,
-    });
-    const nfxView = (node: NfxDht): NfxDht => (hideLocal ? withoutLocalAddresses(node) : node);
+    // No local addresses to any peer, unless the node's socket is really bound to 127.0.0.1, read
+    // at each dial and when each listener starts (`./net/no-local-addresses.ts`). The switch can
+    // only force hiding on.
+    const force = this.o.hideLocalAddresses === true;
+    const nfxView = (node: DHT): NfxDht => localAddressesByBind(node, { force });
+    const hidesNow = (): boolean => {
+      const node = dht.dht;
+      return hidesLocalAddresses({ boundHost: node === null ? null : boundHost(node), force });
+    };
     // Never derived from storage: a seeder sees a new watcher key every run (`./keys.ts`).
     const watcherKeys = new WatcherKeys();
     const pool = new NfxPeerPool({
@@ -662,7 +666,7 @@ export class WorkerHost implements WorkerRpcHandler {
       keys,
       store,
       dht,
-      hidesLocalAddresses: hideLocal,
+      hidesLocalAddresses: hidesNow,
       watcherKeys,
       pool,
       watching,

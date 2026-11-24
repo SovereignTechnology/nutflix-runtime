@@ -191,12 +191,15 @@ fails on any difference. It prints one sha256 over the staged tree.
 
 The bundles (`index.js`, the page's `app.js` and `legacy.js`) and the worker and nutflix-pear
 modules come from the root `node_modules` and the `tsc` output. A test build takes those as they are
-on disk, which is what CI builds just before. **A release never does:** `stage.ts` without
-`--test-line` exports the commit checked out (HEAD, and the submodule at its pinned commit, from
-the local object stores) into a new directory, runs a clean `npm ci --ignore-scripts` of the root
-lockfile and `npm run build` there, and stages with that copy's own `stage.ts`. A checkout with
-local changes is refused, because what is staged is a commit. `--clean` makes a test build the
-same way.
+on disk, which is what CI builds just before. **A release never does.** It is staged by
+`scripts/release.ts`, whose own imports are `node:*` only, so no package code of this checkout runs
+in it. It refuses a checkout with local changes, because what is staged is a commit. It exports
+that commit (HEAD, and the submodule at its pinned commit, from the local object stores) into a new
+folder under a private (0700) directory in the user's cache, and refuses if any folder above the
+copy holds a `node_modules` or `package.json`. It runs a clean `npm ci --ignore-scripts` of the
+root lockfile and `npm run build` there, without `NODE_OPTIONS` or `NODE_PATH`, and stages with
+that copy's own `stage.ts`, which refuses a release anywhere else. `release.ts --test-line …` makes
+a test build the same way.
 
 **The Electron UI drive is not on a SovTech key.** `pear-electron` 1.7.28 names
 `pear://0.940.cktxz…`, a versioned link on Holepunch's key: it fixes the fork and length, not a

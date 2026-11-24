@@ -21,13 +21,10 @@
 import './bare-text.ts';
 
 import { FrameDecoder, encodeFrame } from '@nutflix-runtime/worker';
-import { hideLocalAddressesOn } from '@nutflix-runtime/worker/no-local-addresses';
 import fs from 'bare-fs';
 import path from 'bare-path';
 import { Socket as WebSocket } from 'bare-ws';
 import Corestore from 'corestore';
-import DHT from 'hyperdht';
-import Hyperswarm from 'hyperswarm';
 import PearRuntimeUpdater from 'pear-runtime-updater';
 import sodium from 'sodium-native';
 
@@ -37,6 +34,7 @@ import { parseFloor, type Floor } from './notice.ts';
 import { MAX_RELAY_MESSAGE_BYTES, fetchNotices, type RelayConnect } from './relays.ts';
 import { decodeBakedRoot, type TrustRoot } from './root.ts';
 import { parseUpdateStart, type UpdateStart, type UpdateStatus } from './status.ts';
+import { updaterSwarm } from './swarm.ts';
 
 /** Replaced by the bundler (`packaging/stage.ts`) with the root this build was packaged with. */
 declare const __NUTFLIX_UPDATE_ROOT__: string;
@@ -179,20 +177,9 @@ async function run(
     send({ state: 'watching', reason: 'updater-error' });
   });
   await updater.ready();
-  // No local addresses to the drive's peers (`packages/worker/src/net/no-local-addresses.ts`): left
-  // to hyperdht's defaults, anyone announcing on this public drive's topic would get every local
-  // IPv4 address of this machine. A test build's private DHT (`root.dht`: 127.0.0.1 nodes only, and
-  // refused in a release root, so no release and no run-time input reaches this) keeps the swarm's
-  // own node and its defaults: its peer is Pear's sidecar on this machine, bound to every
-  // interface, and on one host hyperdht carries data only between peers that share their local
-  // addresses and bind alike (measured; see that file).
-  // A client of this one drive: it announces nothing and serves no topic of its own.
-  const swarm = new Hyperswarm({
-    keyPair: await store.createKeyPair('pear-runtime'),
-    ...(root.dht === null
-      ? { dht: hideLocalAddressesOn(new DHT()) }
-      : { bootstrap: root.dht.map(dhtNode) }),
-  });
+  // A client of this one drive, with a key pair new every run and no local addresses on a
+  // release root (`./swarm.ts`).
+  const swarm = updaterSwarm(root.dht === null ? null : root.dht.map(dhtNode));
   swarm.on('connection', (connection) => {
     store.replicate(connection);
   });

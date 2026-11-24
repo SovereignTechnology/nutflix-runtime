@@ -289,6 +289,8 @@ declare module 'hyperdht' {
     static keyPair(seed?: Uint8Array): KeyPair;
     /** The bound UDP address once bound, else `null`. */
     address(): { host: string; port: number } | null;
+    /** dht-rpc: binds both UDP sockets, once (the same promise after); resolves once bound. */
+    bind(): Promise<void>;
     fullyBootstrapped(): Promise<void>;
     /** Every accepted connection is a secret-stream whose `remotePublicKey` is the dialer's. */
     createServer(opts: ServerOptions, onconnection: (socket: NoiseSecretStream) => void): Server;

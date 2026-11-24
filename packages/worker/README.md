@@ -147,9 +147,10 @@ Every other request fails `not-ready` until `init` has answered. A second `init`
   - `nfx/` is the NFX store;
   - `tmp/` is wiped at every start and holds the play spools.
 - **`bootstrap`** lists 1 to 16 `{ host, port }` nodes. When it is absent or `null`, the node uses
-  HyperDHT's public bootstrap. When every node is `127.0.0.1`, the node's socket is bound to
-  127.0.0.1, and only then does it keep hyperdht's defaults on local addresses; otherwise it tells
-  no peer any local address (`src/net/no-local-addresses.ts`).
+  HyperDHT's public bootstrap. When every node is `127.0.0.1`, the node asks for its socket to be
+  bound to 127.0.0.1. Only a socket really bound there, as read at each dial and when each listener
+  starts, keeps hyperdht's defaults on local addresses; otherwise the worker tells no peer any
+  local address (`src/net/no-local-addresses.ts`).
 - **`diskCapBytes`** caps the store. Without it there is no cap.
 - **`logLevel`** is the least severe level sent as `log` events. The default is `info`.
 

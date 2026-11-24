@@ -14,9 +14,10 @@
  *   - `loopbackOnly`: bind the UDP socket to 127.0.0.1, which needs a 127.0.0.1 bootstrap. The
  *     host sets it exactly when every bootstrap is 127.0.0.1 (a network of this machine's own
  *     processes: the tests, the e2e suites, the `pear run` proof). Bound there, the node reaches
- *     nothing off this machine, whatever its bootstrap is connected to, and that is what lets it
- *     keep hyperdht's local-address defaults (`./no-local-addresses.ts`). dht-rpc binds both of
- *     its sockets to the host it is given and has no fallback to another.
+ *     nothing off this machine, whatever its bootstrap is connected to, which is what lets it keep
+ *     hyperdht's local-address defaults (`./no-local-addresses.ts`). That module reads the address
+ *     the socket is really bound to, not this option; `ready()` waits for the bind, so a dial can.
+ *     (dht-rpc 6.28 binds both sockets to the host it is given, with no fallback to another.)
  */
 import type { Logger } from '@sovit/seeder';
 import DHT from 'hyperdht';
@@ -57,7 +58,7 @@ export class DhtNode {
     return this.stateNow;
   }
 
-  /** Whether the UDP socket is (or will be) bound to 127.0.0.1 and nothing else. */
+  /** Whether this node asks for its UDP socket to be bound to 127.0.0.1 (what it got: `dht.address()`). */
   get loopbackOnly(): boolean {
     return this.o.loopbackOnly === true;
   }
@@ -115,6 +116,9 @@ export class DhtNode {
   }
 
   private async bootstrap(node: DHT): Promise<DHT> {
+    // Bound first, so that what a dial reads of the socket's address is there to read. A bind
+    // that fails leaves no address, and the dial then hides (`./no-local-addresses.ts`).
+    await node.bind().catch(() => undefined);
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       node.fullyBootstrapped().catch(() => undefined),
