@@ -2,17 +2,19 @@
  * The host ⇄ worker wire (`../rpc.ts`, `../client.ts`, `../guards.ts`): requests before `init`
  * are refused, `init` answers once and is followed by `ready`, junk never reaches a handler (a
  * request-shaped frame is answered `invalid-argument`, anything else dropped), requests in flight
- * are bounded, only the package's own error codes and messages cross, and a corrupt stream is
- * terminal on both sides.
+ * are bounded, only the package's own error codes and messages cross, a failure with no code is
+ * logged as its method, code, syscall and class and nothing else, and a corrupt stream is terminal
+ * on both sides.
  */
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerClient } from '../client.js';
-import { WorkerError } from '../errors.js';
+import { INTERNAL, WorkerError, uncodedCause } from '../errors.js';
 import { FrameDecoder, MAX_FRAME_BYTES, encodeFrame } from '../framing.js';
 import { isAbsolutePath, isPlayOpenArgs } from '../guards.js';
+import { createWorkerLogger } from '../log.js';
 import type { NfxPlayOpenArgs, WorkerToHost } from '../protocol.js';
 import { WorkerRpc } from '../rpc.js';
 import type { RunningWorker } from './helpers/harness.js';
@@ -24,9 +26,10 @@ vi.setConfig({ testTimeout: 60_000 });
 function bareRpc(
   handle: (m: string, a: unknown) => Promise<unknown>,
   maxInflight?: number,
-): { rpc: WorkerRpc; out: WorkerToHost[]; fatal: Error[] } {
+): { rpc: WorkerRpc; out: WorkerToHost[]; fatal: Error[]; logged: string[] } {
   const out: WorkerToHost[] = [];
   const fatal: Error[] = [];
+  const logged: string[] = [];
   const decoder = new FrameDecoder((m) => out.push(m as WorkerToHost));
   const rpc = new WorkerRpc({
     write: (b) => {
@@ -34,9 +37,10 @@ function bareRpc(
     },
     handler: { handle: handle as never },
     onFatal: (err) => fatal.push(err),
+    log: createWorkerLogger({ emit: (ev) => logged.push(ev.msg) }),
     ...(maxInflight === undefined ? {} : { maxInflight }),
   });
-  return { rpc, out, fatal };
+  return { rpc, out, fatal, logged };
 }
 
 const req = (id: number, m: string, a: unknown): Uint8Array => encodeFrame({ op: 'req', id, m, a });
@@ -143,6 +147,153 @@ describe('WorkerRpc', () => {
     c.rpc.push(req(1, 'status', {}).subarray(0, 6));
     c.rpc.end();
     expect(c.fatal).toHaveLength(1);
+  });
+});
+
+/** What bare-fs throws (its `lib/errors.js`): `name` and `syscall` are getters. */
+class FileErrorLike extends Error {
+  readonly code: string;
+  readonly operation: string;
+  readonly path: string;
+  readonly destination: string;
+  constructor(code: string, operation: string, path: string, destination: string) {
+    super(`${code}: operation not permitted, ${operation} "${path}" -> "${destination}"`);
+    this.code = code;
+    this.operation = operation;
+    this.path = path;
+    this.destination = destination;
+  }
+  get syscall(): string {
+    return this.operation;
+  }
+}
+Object.defineProperty(FileErrorLike.prototype, 'name', { get: () => 'FileError' });
+
+describe('a failure with no code', () => {
+  const PRIVATE = '/home/someone/Videos/a private title';
+  const VIDEO = 'nfx:testnet:1:video-secretarg';
+  const parsed = (line: string | undefined): Record<string, unknown> =>
+    JSON.parse(line ?? 'null') as Record<string, unknown>;
+
+  it('crosses as internal, and is logged as its method, code, syscall and class only', async () => {
+    const errors: Error[] = [
+      // Node's: the message, `path` and `dest` name the files.
+      Object.assign(new Error(`EPERM: operation not permitted, rename '${PRIVATE}.tmp'`), {
+        errno: -4048,
+        code: 'EPERM',
+        syscall: 'rename',
+        path: `${PRIVATE}.tmp`,
+        dest: PRIVATE,
+        info: { title: PRIVATE },
+      }),
+      new FileErrorLike('EBUSY', 'rename', `${PRIVATE}.tmp`, PRIVATE),
+    ];
+    const { rpc, out, logged } = bareRpc((_m, a) => {
+      const err = errors[Number((a as { video: string }).video.at(-1))];
+      return err === undefined ? Promise.resolve(null) : Promise.reject(err);
+    });
+    rpc.push(req(1, 'seeding.stop', { video: `${VIDEO}0` }));
+    rpc.push(req(2, 'nfx.seed.stop', { video: `${VIDEO}1` }));
+    await sleep(10);
+    expect(out).toEqual([
+      { op: 'res', id: 1, ok: false, e: INTERNAL },
+      { op: 'res', id: 2, ok: false, e: INTERNAL },
+    ]);
+    expect(logged).toHaveLength(2);
+    const [first, second] = logged.map((l) => parsed(l));
+    expect(Object.keys(first ?? {}).sort()).toEqual(['fields', 'level', 'msg', 'ts']);
+    expect(first).toMatchObject({ level: 'error', msg: 'rpc: a request failed with no code' });
+    expect(first?.['fields']).toEqual({
+      component: 'worker',
+      method: 'seeding.stop',
+      code: 'EPERM',
+      syscall: 'rename',
+      name: 'Error',
+    });
+    expect(second?.['fields']).toEqual({
+      component: 'worker',
+      method: 'nfx.seed.stop',
+      code: 'EBUSY',
+      syscall: 'rename',
+      name: 'FileError',
+    });
+    const leaks = ['someone', 'Videos', 'private title', 'secretarg', 'not permitted', '4048'];
+    for (const line of logged) for (const leak of leaks) expect(line).not.toContain(leak);
+  });
+
+  it('a code, syscall or class not shaped like one is left out', () => {
+    const odd = Object.assign(new Error('x'), {
+      code: PRIVATE,
+      syscall: 'rename /home/someone',
+      name: 'Error: at /home/someone',
+    });
+    expect(uncodedCause(odd)).toEqual({ code: null, syscall: null, name: null });
+    const throwing = Object.defineProperty(new Error('x'), 'code', {
+      get: (): never => {
+        throw new Error(PRIVATE);
+      },
+    });
+    expect(uncodedCause(throwing)).toEqual({ code: null, syscall: null, name: 'Error' });
+    expect(uncodedCause(`boom at ${PRIVATE}`)).toEqual({ code: null, syscall: null, name: null });
+    expect(uncodedCause(undefined)).toEqual({ code: null, syscall: null, name: null });
+    expect(uncodedCause({ code: 'ERR_STREAM_PREMATURE_CLOSE', name: 'AbortError' })).toEqual({
+      code: 'ERR_STREAM_PREMATURE_CLOSE',
+      syscall: null,
+      name: 'AbortError',
+    });
+  });
+
+  it('a failure with a code of its own is not logged: its message says what went wrong', async () => {
+    expect(uncodedCause(new WorkerError('io', 'the store could not write'))).toBeNull();
+    expect(uncodedCause(new Error('no-seeders: nobody had it'))).toBeNull();
+    const { rpc, out, logged } = bareRpc(() =>
+      Promise.reject(new WorkerError('io', 'the store could not write')),
+    );
+    rpc.push(req(1, 'seeding.stop', { video: `${VIDEO}0` }));
+    await sleep(10);
+    expect(out).toEqual([
+      { op: 'res', id: 1, ok: false, e: { code: 'io', message: 'io: the store could not write' } },
+    ]);
+    expect(logged).toEqual([]);
+  });
+
+  it('an answer that cannot be sent crosses as internal, logged by its method alone', async () => {
+    const { rpc, out, logged } = bareRpc(() =>
+      Promise.resolve({ big: 'x'.repeat(MAX_FRAME_BYTES), title: PRIVATE }),
+    );
+    rpc.push(req(1, 'status', {}));
+    await sleep(10);
+    expect(out).toEqual([{ op: 'res', id: 1, ok: false, e: INTERNAL }]);
+    expect(logged).toHaveLength(1);
+    expect(parsed(logged[0])).toMatchObject({
+      msg: 'rpc: an answer could not be sent',
+      fields: { component: 'worker', method: 'status' },
+    });
+    expect(Object.keys(parsed(logged[0])['fields'] as object).sort()).toEqual([
+      'component',
+      'method',
+    ]);
+    expect(logged[0]).not.toContain('someone');
+  });
+
+  it('a logger that throws does not keep the answer back', async () => {
+    const out: WorkerToHost[] = [];
+    const decoder = new FrameDecoder((m) => out.push(m as WorkerToHost));
+    const rpc = new WorkerRpc({
+      write: (b) => {
+        decoder.push(b);
+      },
+      handler: { handle: () => Promise.reject(new Error(PRIVATE)) },
+      onFatal: () => undefined,
+      log: {
+        error: () => {
+          throw new Error('the log is gone');
+        },
+      },
+    });
+    rpc.push(req(1, 'status', {}));
+    await sleep(10);
+    expect(out).toEqual([{ op: 'res', id: 1, ok: false, e: INTERNAL }]);
   });
 });
 
