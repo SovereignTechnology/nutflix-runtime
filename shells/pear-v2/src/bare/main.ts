@@ -28,6 +28,7 @@ import { dataPlaneOnly, watchOnlyRefusal } from './data-plane.ts';
 import { PageGate } from './page-gate.ts';
 import { PAGE_PORT_TRIES, pagePort } from './page-port.ts';
 import { BASE_HEADERS, answerPageRequest } from './page-server.ts';
+import { stderrWorkerLog } from './worker-log.ts';
 
 /** Written in by `scripts/stage.ts`. */
 declare const __PLATFORM_LINE__: ReleaseLine;
@@ -151,6 +152,11 @@ async function startWorker(
       gate.workerGone();
       Bare.exit(3);
     },
+    // A request that failed with no code: its method, code, syscall and class, on this process's
+    // stderr. The page gate passes no `log` event to the page, and must not.
+    log: stderrWorkerLog((line) => {
+      console.error(line);
+    }),
   });
   const host: WorkerHost = new WorkerHost({
     runtime: dataPlaneOnly(bareDataPlane()),
