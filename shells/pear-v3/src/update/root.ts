@@ -10,6 +10,9 @@
  *     the app starts no updater at all, until a real upgrade link exists.
  *   - `test`: a throwaway key, relays and DHT on 127.0.0.1 only. Only the package step's
  *     `test-build` command can make one, and it refuses the production key.
+ *   - `launch`: a throwaway key and a relay on 127.0.0.1, and NO link, so no updater runs. It is
+ *     what CI launches once the release build carries a real link (a build with a link is never
+ *     launched on a runner). `test-build` makes it too.
  *
  * Pure and runtime-neutral: it runs in Bare, in Node and in the tests.
  */
@@ -19,7 +22,7 @@ export const NOTICE_D = 'nutflix-runtime';
 
 export interface TrustRoot {
   readonly v: 1;
-  readonly channel: 'release' | 'test';
+  readonly channel: 'release' | 'test' | 'launch';
   /** The key that signs release notices, as 64 lowercase hex. */
   readonly pubkey: string;
   readonly relays: readonly string[];
@@ -68,7 +71,8 @@ export function parseTrustRoot(x: unknown): TrustRoot {
     return refuse('wrong fields');
   if (r['v'] !== 1) return refuse('unknown version');
   const channel = r['channel'];
-  if (channel !== 'release' && channel !== 'test') return refuse('unknown channel');
+  if (channel !== 'release' && channel !== 'test' && channel !== 'launch')
+    return refuse('unknown channel');
   const pubkey = r['pubkey'];
   if (typeof pubkey !== 'string' || !HEX64.test(pubkey))
     return refuse('the key must be 64 lowercase hex');
@@ -88,6 +92,10 @@ export function parseTrustRoot(x: unknown): TrustRoot {
   if (channel === 'release') {
     if (r['dht'] !== null) return refuse('a release build names no DHT bootstrap');
     if (r['delayMs'] !== null) return refuse('a release build keeps the default delay');
+  } else if (channel === 'launch') {
+    if (upgrade !== null) return refuse('a launch build has no upgrade link');
+    if (r['dht'] !== null) return refuse('a launch build names no DHT bootstrap');
+    if (r['delayMs'] !== null) return refuse('a launch build has no updater delay');
   } else {
     dht = stringList(r['dht'], 'dht', 16);
     if (dht.some((n) => !LOOPBACK_NODE.test(n)))

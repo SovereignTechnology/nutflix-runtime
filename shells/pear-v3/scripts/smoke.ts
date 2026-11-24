@@ -174,8 +174,10 @@ export interface LaunchResult {
   readonly tail: string[];
   readonly ms: number;
   readonly ready: ReadyFields | null;
-  /** The names of the events main printed. */
+  /** The names of the events main printed before the harness began to stop it. */
   readonly events: readonly string[];
+  /** The names of the events it printed while being stopped (SIGTERM to its process group). */
+  readonly teardown: readonly string[];
   /** Every `update` status main printed, in order. */
   readonly updates: readonly Record<string, unknown>[];
 }
@@ -233,6 +235,10 @@ export async function launch(
     exited: boolean;
     exitCode: number | null;
     events: Set<string>;
+    teardown: Set<string>;
+    stopping: boolean;
+    /** A failure event after the verdict, before the stop: the run still fails. */
+    late: string | null;
     updates: Record<string, unknown>[];
     updateSeen: boolean;
   } = {
@@ -242,6 +248,9 @@ export async function launch(
     exited: false,
     exitCode: null,
     events: new Set(),
+    teardown: new Set(),
+    stopping: false,
+    late: null,
     updates: [],
     updateSeen: false,
   };
@@ -274,7 +283,7 @@ export async function launch(
         continue;
       }
       const name = eventName(line);
-      if (name !== null) st.events.add(name);
+      if (name !== null) (st.stopping ? st.teardown : st.events).add(name);
       if (name === 'update') {
         const status = eventFields(line);
         if (status !== null) {
@@ -283,12 +292,13 @@ export async function launch(
         }
       }
       if (name === 'sandbox-warning') st.warned = true;
-      if (
-        name !== null &&
-        (FAILURE_EVENTS as readonly string[]).includes(name) &&
-        st.verdict === null
-      )
-        st.verdict = { ok: false, reason: `the app reported ${name}` };
+      if (name !== null && (FAILURE_EVENTS as readonly string[]).includes(name) && !st.stopping) {
+        const fields = eventFields(line);
+        const described = `${name}${fields !== null && Object.keys(fields).length > 0 ? ` ${JSON.stringify(fields)}` : ''}`;
+        if (st.verdict === null)
+          st.verdict = { ok: false, reason: `the app reported ${described}` };
+        else st.late ??= described;
+      }
     }
   });
 
@@ -329,15 +339,25 @@ export async function launch(
       keep('onReady', e instanceof Error ? e.message : String(e));
     }
   }
+  // What the app said before the harness stops it is the run; what it says while being killed is
+  // teardown, kept apart. A failure event after the ready line still fails the run.
+  st.stopping = true;
+  const events = [...st.events];
+  const updates = [...st.updates];
+  const final =
+    verdict.ok && st.late !== null
+      ? { ok: false, reason: `the app reported ${st.late} after it was ready` }
+      : verdict;
   await stop(child, exited);
   return {
-    ok: verdict.ok,
-    reason: verdict.reason,
+    ok: final.ok,
+    reason: final.reason,
     tail,
     ms: Date.now() - started,
     ready: st.ready,
-    events: [...st.events],
-    updates: st.updates,
+    events,
+    teardown: [...st.teardown],
+    updates,
   };
 }
 

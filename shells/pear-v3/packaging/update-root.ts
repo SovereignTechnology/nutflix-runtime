@@ -8,7 +8,9 @@
  * maintainer's step, once the production `pear multisig` link exists.
  *
  * The TEST path (`package.ts test-build`) takes a root from a file, for CI's update proof. It is
- * refused unless the key is NOT the production key and every address is on loopback.
+ * refused unless the key is NOT the production key and every address is on loopback. A `launch`
+ * root is the same with no link at all: what CI launches once the release build carries a real
+ * link, because a build with a link never runs on a runner (`assertNoUpgradeLink`).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -74,6 +76,22 @@ export function testRootFromText(text: string): TrustRoot {
   return root;
 }
 
+/** Throws unless `root` is a throwaway root with no link: a build of it starts no updater. */
+export function assertLaunchRoot(root: TrustRoot): void {
+  if (root.channel !== 'launch') throw new Error('a launch build needs the launch channel');
+  if (root.pubkey === RELEASE_PUBKEY)
+    throw new Error('a launch build never uses the production key');
+  if (root.upgrade !== null) throw new Error('a launch build has no upgrade link');
+}
+
+/** What `test-build` accepts: a `test` root or a `launch` root, each with its own checks. */
+export function throwawayRootFromText(text: string): TrustRoot {
+  const root = parseTrustRoot(JSON.parse(text));
+  if (root.channel === 'launch') assertLaunchRoot(root);
+  else assertTestRoot(root);
+  return root;
+}
+
 /** The one root a bundle holds; throws on none, or on two that differ. */
 export function bakedRootIn(bundle: string): TrustRoot {
   const found = new Set(bundle.match(BAKED_PATTERN) ?? []);
@@ -93,6 +111,22 @@ export function assertNoUpgradeLink(bundle: string): void {
     );
 }
 
+/**
+ * Throws unless main's own switch agrees with the root: `__NUTFLIX_UPDATES__` is compiled into
+ * main's bundle (`stage.ts`), and it is what decides whether an updater starts at all. Both places
+ * it lands must say the same. This is a check against a mistake in the build, not against hostile
+ * code, which can say anything here and do something else.
+ */
+export function assertMainMatchesRoot(mainBundle: string, root: TrustRoot): void {
+  const reported = [...mainBundle.matchAll(/updates: (true|false) \? "on" : "off"/g)];
+  const started = [...mainBundle.matchAll(/if \((true|false)\) await startUpdates\(\)/g)];
+  if (reported.length !== 1 || started.length !== 1)
+    throw new Error("main's bundle does not show its updates switch where it should");
+  const want = root.upgrade === null ? 'false' : 'true';
+  if (reported[0]?.[1] !== want || started[0]?.[1] !== want)
+    throw new Error(`main's updates switch is not ${want}, which is what this root needs`);
+}
+
 /** Reads the staged updater back and refuses a root that is not what this build is allowed. */
 export function assertStagedRoot(
   stageDir: string,
@@ -103,5 +137,6 @@ export function assertStagedRoot(
   if (JSON.stringify(baked) !== JSON.stringify(expected))
     throw new Error('the staged updater does not hold the root it was given');
   if (mode === 'release') assertReleaseRoot(baked);
+  else if (baked.channel === 'launch') assertLaunchRoot(baked);
   else assertTestRoot(baked);
 }

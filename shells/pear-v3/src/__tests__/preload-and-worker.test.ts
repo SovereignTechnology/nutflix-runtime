@@ -190,6 +190,20 @@ describe('startWorker', () => {
     }).toThrow();
   });
 
+  it('says which error ended the worker', () => {
+    const sc = new FakeSidecar();
+    const logged: [string, unknown][] = [];
+    startWorker({
+      entry: '/app/worker.js',
+      run: vi.fn(() => sc as never),
+      gate: { fromWorker: vi.fn(), workerGone: vi.fn() },
+      log: (n, f) => logged.push([n, f]),
+      stderr: () => undefined,
+    });
+    sc.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    expect(logged).toEqual([['worker-error', { code: 'EPIPE' }]]);
+  });
+
   it('prints worker stderr, bounded in all, and drains stdout', () => {
     const { sc, err } = mk();
     sc.stderr.emit('data', Buffer.from('boom\n'));
