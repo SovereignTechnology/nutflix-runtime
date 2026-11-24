@@ -21,6 +21,7 @@
 import './bare-text.ts';
 
 import { FrameDecoder, encodeFrame } from '@nutflix-runtime/worker';
+import { renameRetrying } from '@nutflix-runtime/worker/rename-retry';
 import fs from 'bare-fs';
 import path from 'bare-path';
 import { Socket as WebSocket } from 'bare-ws';
@@ -162,7 +163,10 @@ async function run(
     writeFloor: async (floor) => {
       const tmp = `${floorFile}.tmp`;
       await fs.promises.writeFile(tmp, `${JSON.stringify({ v: 1, ...floor })}\n`);
-      await fs.promises.rename(tmp, floorFile);
+      // On Windows, rides out a moment's sharing violation (`packages/worker/src/rename-retry.ts`).
+      await renameRetrying((a, b) => fs.promises.rename(a, b), tmp, floorFile, {
+        platform: Bare.platform,
+      });
     },
     now: () => Date.now(),
     status: send,

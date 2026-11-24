@@ -44,7 +44,8 @@ which both `pear-runtime`'s `run()` and `bare-sidecar` provide.
 
 The package exports its host-side modules for the shells and the tests: `.` (the protocol, framing
 and `WorkerClient`, which a renderer can import), `./host`, `./rpc` and `./runtime`, `./main` (the
-Bare entry), and `./no-local-addresses` (it loads no module; shape (a)'s updater uses it).
+Bare entry), and `./no-local-addresses` and `./rename-retry` (neither loads a module; shape (a)'s
+updater uses both).
 
 Its tests (`src/__tests__/`) run under Node with injected dependencies: node:http, `nodeFs`,
 and a hyperdht testnet on loopback. They include the ported nutflix-pear tests:

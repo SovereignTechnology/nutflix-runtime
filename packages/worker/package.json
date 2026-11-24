@@ -17,6 +17,10 @@
       "types": "./dist/net/no-local-addresses.d.ts",
       "default": "./dist/net/no-local-addresses.js"
     },
+    "./rename-retry": {
+      "types": "./dist/rename-retry.d.ts",
+      "default": "./dist/rename-retry.js"
+    },
     "./host": {
       "types": "./dist/host.d.ts",
       "default": "./dist/host.js"
