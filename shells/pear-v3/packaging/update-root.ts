@@ -58,6 +58,13 @@ export function releaseRoot(): TrustRoot {
   });
 }
 
+/**
+ * Words only the packaged-playback proof's own module puts in a bundle (`src/main/play-proof.ts`: the
+ * event it ends with, and the frame counter it reads). A main built for any root but a `test` one
+ * bundles `play-proof-off.ts` instead (`stage.ts`), so none of them may be in it.
+ */
+export const PLAY_PROOF_WORDS: readonly string[] = ['play-proof-done', 'getVideoPlaybackQuality'];
+
 /** Throws unless `root` is exactly the production root. */
 export function assertReleaseRoot(root: TrustRoot): void {
   const want = releaseRoot();
@@ -136,6 +143,8 @@ export function assertMainMatchesRoot(mainBundle: string, root: TrustRoot): void
   }
   if (JSON.stringify(held) !== JSON.stringify(root))
     throw new Error("main's bundle holds another root than the updater's");
+  if (root.channel !== 'test' && PLAY_PROOF_WORDS.some((w) => mainBundle.includes(w)))
+    throw new Error("main's bundle carries the playback proof, and only a test build may");
   const reported = [...mainBundle.matchAll(/updates: (true|false) \? "on" : "off"/g)];
   const started = [...mainBundle.matchAll(/if \((true|false)\) await startUpdates\(\)/g)];
   if (reported.length !== 1 || started.length !== 1)

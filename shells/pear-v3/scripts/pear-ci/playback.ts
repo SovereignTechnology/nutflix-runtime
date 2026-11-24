@@ -40,7 +40,7 @@ import {
 import { TestRelay } from '../../../../packages/renderer/e2e/helpers/relay.ts';
 import { STAGED } from '../../packaging/identity.ts';
 import { PKG_DIR } from '../../packaging/paths.ts';
-import { bakedRootIn, releaseRoot } from '../../packaging/update-root.ts';
+import { PLAY_PROOF_WORDS, bakedRootIn, releaseRoot } from '../../packaging/update-root.ts';
 import type { PlayPath } from '../../src/main/play-proof.ts';
 import { TrustRootError, parseTrustRoot, type PlayProof } from '../../src/update/root.ts';
 import { readPackaged } from '../release/inspect.ts';
@@ -608,6 +608,17 @@ export async function proveReleaseRefusal(r: RefusalContext): Promise<void> {
     r.say(
       'the release-shaped build holds the production root in main and the updater: no DHT, no play',
     );
+    // Not even the code: a release build's main bundles the proof's stand-in (`stage.ts`).
+    const testMain = readFileSync(join(r.testApp, ...STAGED.main.split('/')), 'utf8');
+    const inRelease = PLAY_PROOF_WORDS.filter((w) => main.includes(w));
+    const inTest = PLAY_PROOF_WORDS.filter((w) => testMain.includes(w));
+    if (inRelease.length > 0 || inTest.length !== PLAY_PROOF_WORDS.length)
+      throw new Error(
+        `the proof's own words: in the release build's main ${JSON.stringify(inRelease)}, in build A's ${JSON.stringify(inTest)}`,
+      );
+    r.say(
+      `the release build's main holds none of the proof's words (${PLAY_PROOF_WORDS.join(', ')}); build A's holds them all`,
+    );
 
     const releasePlay = { ...releaseRoot(), play: r.play };
     refusedWith(() => parseTrustRoot(releasePlay), 'a release build opens no video by itself');
@@ -663,7 +674,7 @@ export async function proveReleaseRefusal(r: RefusalContext): Promise<void> {
     r.say("verify-root refuses build A, and the release updater spliced with build A's main");
     r.row(
       'release-shaped refusal',
-      "this target's release build holds the production root in main and the updater (no DHT, no play); the root parser refuses play in a release and a launch root; `package.ts build` takes no root; `test-build` refuses a release root with play; `verify-root` refuses build A, and refuses the release updater spliced with build A's main",
+      "this target's release build holds the production root in main and the updater (no DHT, no play), and its main has none of the proof's code (build A's has it); the root parser refuses play in a release and a launch root; `package.ts build` takes no root; `test-build` refuses a release root with play; `verify-root` refuses build A, and refuses the release updater spliced with build A's main",
     );
   });
 }

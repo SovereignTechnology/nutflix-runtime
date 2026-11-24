@@ -32,7 +32,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { build } from 'esbuild';
+import { build, type BuildOptions, type Plugin } from 'esbuild';
 
 import {
   runtimeClosure,
@@ -136,6 +136,46 @@ function updateSources(): string[] {
   ].map((p) => p.replaceAll('\\', '/'));
 }
 
+/**
+ * How main is bundled for `root`. The packaged-playback proof (`src/main/play-proof.ts`) goes into a
+ * TEST build's main only: any other root's main gets `play-proof-off.ts` in its place, which does
+ * nothing, and `assertMainMatchesRoot` refuses one that holds the proof's own words.
+ */
+export function mainBuildOptions(
+  root: TrustRoot,
+): Pick<
+  BuildOptions,
+  'entryPoints' | 'plugins' | 'platform' | 'format' | 'target' | 'external' | 'define'
+> {
+  const mainTs = join(PKG_DIR, 'src', 'main', 'main.ts').replaceAll('\\', '/');
+  const noPlayProof: Plugin = {
+    name: 'no-play-proof',
+    setup(b) {
+      b.onResolve({ filter: /^\.\/play-proof\.ts$/ }, (args) =>
+        args.importer.replaceAll('\\', '/') === mainTs
+          ? { path: join(PKG_DIR, 'src', 'main', 'play-proof-off.ts') }
+          : undefined,
+      );
+    },
+  };
+  return {
+    entryPoints: ['src/main/main.ts'],
+    plugins: root.channel === 'test' ? [] : [noPlayProof],
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    // pear-runtime is loaded at run time from node_modules (it spawns Bare from real file paths).
+    external: ['electron', 'pear-runtime'],
+    // Whether this build starts an updater, and the same root the updater holds: main reads a test
+    // root's private DHT and playback proof from it (`src/update/root.ts`); a release root has
+    // neither. `assertStagedRoot` reads both bundles back.
+    define: {
+      __NUTFLIX_UPDATES__: root.upgrade === null ? 'false' : 'true',
+      __NUTFLIX_ROOT__: JSON.stringify(encodeBakedRoot(root)),
+    },
+  };
+}
+
 export async function stageApp(o: StageOptions): Promise<StageReport> {
   assertReplaceable(o.out);
   for (const need of [
@@ -189,20 +229,8 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
   };
   const mainBuild = await build({
     ...common,
-    entryPoints: ['src/main/main.ts'],
+    ...mainBuildOptions(o.updateRoot),
     outfile: join(o.out, STAGED.main),
-    platform: 'node',
-    format: 'cjs',
-    target: 'node22',
-    // pear-runtime is loaded at run time from node_modules (it spawns Bare from real file paths).
-    external: ['electron', 'pear-runtime'],
-    // Whether this build starts an updater, and the same root the updater holds: main reads a test
-    // root's private DHT and playback proof from it (`src/update/root.ts`); a release root has
-    // neither. `assertStagedRoot` reads both bundles back.
-    define: {
-      __NUTFLIX_UPDATES__: o.updateRoot.upgrade === null ? 'false' : 'true',
-      __NUTFLIX_ROOT__: JSON.stringify(encodeBakedRoot(o.updateRoot)),
-    },
   });
   const preloadBuild = await build({
     ...common,

@@ -17,9 +17,13 @@
  *
  * It runs once per installed copy (main keeps a marker in the user-data directory, made before the
  * first play), so the later launches of the same build in the install job are left alone. It prints
- * numbers and fixed words only (`play-proof` events, then `play-proof-done`) and decides nothing: what passes is the install job's call, from these measurements and the seeders' own
- * counts (`scripts/pear-ci/playback.ts`). Everything it does in the page runs in main's isolated
- * world, as main's other page reads do. Electron-free: the tests drive it with fakes.
+ * numbers and fixed words only (`play-proof` events, then `play-proof-done`) and decides nothing:
+ * what passes is the install job's call, from these measurements and the seeders' own counts
+ * (`scripts/pear-ci/playback.ts`). Everything it does in the page runs in main's isolated world, as
+ * main's other page reads do. Electron-free: the tests drive it with fakes.
+ *
+ * Only a test build bundles it: any other root's main gets `play-proof-off.ts` in its place
+ * (`packaging/stage.ts`), and must not hold this module's own words (`PLAY_PROOF_WORDS`).
  */
 import type { PlayProof } from '../update/root.ts';
 import type { Fields } from './log.ts';

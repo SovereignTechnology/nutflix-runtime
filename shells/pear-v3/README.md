@@ -422,7 +422,10 @@ settings as Settings would (the root's relay, WebRTC off), opens the renderer's 
 video, presses "Play — free", and reads the `<video>` from main's isolated world. Then the same with
 WebRTC on (that relay for signaling, a STUN address on loopback that nothing answers). It runs once
 per installed copy (a marker in the user-data directory), so the gate's later launches of the same
-builds are left alone. Nothing at run time names any of it: no page, setting, variable or switch. The window's sandbox, context isolation,
+builds are left alone. Nothing at run time names any of it: no page, setting, variable or switch.
+Nor is its code in any other build: `stage.ts` bundles `play-proof-off.ts`, which does nothing, into
+the main of every root but a test one, and `assertMainMatchesRoot` refuses a non-test main that holds
+the proof's own words (`PLAY_PROOF_WORDS`). The window's sandbox, context isolation,
 CSP and RPC allow-list are the shipped ones.
 
 The world, on loopback: nutflix-pear's e2e relay with the signed manifest and live beacons;
@@ -440,7 +443,8 @@ playlists as they are and every init and segment with each byte flipped.
 | nothing left loopback | main counts every request of the window's session from the moment the proof's settings are stored to the end of the run (the loopback guard's observer, which decides nothing): zero to anything but `127.0.0.1`, the app's files and `blob:`. The first page load, with the renderer's defaults, does ask for the default relays: the sinkhole sends those names to loopback and the tripwire counts zero packets to their real addresses. The observer does not see the worker's own traffic or WebRTC's ICE; the tripwire does, for the public addresses it watches |
 
 Then a **release-shaped build refuses it**: this target's `shell` package (made by `package.ts build`)
-holds the production root in main and the updater, with no DHT and no `play`; the root parser refuses
+holds the production root in main and the updater, with no DHT and no `play`, and its main holds none
+of the proof's code (build A's holds it); the root parser refuses
 `play` in a release and a launch root; `package.ts build` takes no root at all, and `test-build`
 refuses a release root with `play`; and `verify-root` refuses build A and a release updater spliced
 with build A's main ("main's bundle holds another root than the updater's").
