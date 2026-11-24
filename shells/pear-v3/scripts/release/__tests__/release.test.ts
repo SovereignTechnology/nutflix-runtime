@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -318,7 +318,9 @@ describe('a step on a real link', () => {
     expect(io.asked).toEqual([]);
     const text = io.printed.join('\n');
     expect(text).toMatch(/DRY RUN/);
-    expect(text).toContain(`/pinned/pear stage --json ${LINK_A} ${join(out, 'deployment')}`);
+    expect(text).toContain(
+      renderCommand('/pinned/pear', ['stage', '--json', LINK_A, join(out, 'deployment')]),
+    );
   });
 
   it('runs on --execute only after the link is typed back', async () => {
@@ -473,7 +475,7 @@ async function gateDecides(
     now: () => 1_800_000_000_000,
     status: (s) => seen.push(s),
     join: (...p) => join(...p),
-    basename: (p) => p.slice(p.lastIndexOf('/') + 1),
+    basename: (p) => basename(p),
   });
   await gate.onUpdated();
   return seen;

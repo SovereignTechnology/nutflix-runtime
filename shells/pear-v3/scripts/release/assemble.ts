@@ -146,10 +146,10 @@ export interface ReleaseFile {
 
 /** `checkPackages`, then the folder `pear build` takes. Never over an earlier one. */
 export async function assemble(artifacts: string, out: string): Promise<ReleaseFile> {
-  // A Windows file system cannot keep a macOS bundle's symlinks, so the digest would be wrong.
-  if (process.platform === 'win32') refuse('assemble on Linux or macOS');
   if (existsSync(join(out, 'release.json')) || existsSync(join(out, 'apps')))
     refuse(`${out} already holds a release: use an empty folder`);
+  // A Windows file system cannot keep a macOS bundle's symlinks, so the digest would be wrong.
+  if (process.platform === 'win32') refuse('assemble on Linux or macOS');
   const { version, packages } = checkPackages(artifacts);
   const noticeDir = join(out, 'notice-files');
   mkdirSync(noticeDir, { recursive: true });
