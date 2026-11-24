@@ -440,6 +440,25 @@ describe('updates: only the gate can apply one, and a shipped build has no link'
       );
   });
 
+  it('the updater dials with a key new every run, from a node that hides local addresses', () => {
+    const worker = code(readFileSync(join(pkg, 'src', 'update', 'update-worker.ts'), 'utf8'));
+    const swarm = code(readFileSync(join(pkg, 'src', 'update', 'swarm.ts'), 'utf8'));
+    // The one swarm is `swarm.ts`'s, given the root's DHT list and nothing else: no store, so no
+    // key derived from it.
+    expect(worker).not.toMatch(/new Hyperswarm\(|createKeyPair\(|from 'hyperswarm'/);
+    expect(worker.match(/updaterSwarm\(/g)).toHaveLength(1);
+    expect(worker).toContain('updaterSwarm(root.dht === null ? null : root.dht.map(dhtNode))');
+    expect(swarm).not.toMatch(/createKeyPair|corestore|[Ss]tore\b/);
+    expect(swarm.match(/new Hyperswarm\(/g)).toHaveLength(1);
+    expect(swarm).toMatch(/new Hyperswarm\(\{\s*keyPair: DHT\.keyPair\(\),/);
+    // On a release root (no DHT named) it is given one node, built here and hidden; only a test
+    // build's private 127.0.0.1 DHT, which a release root refuses, keeps the swarm's own.
+    expect(swarm.match(/new DHT\(/g)).toHaveLength(1);
+    expect(swarm).toMatch(
+      /testDht === null\s*\?\s*\{ dht: hideLocalAddressesOn\(new DHT\(\)\) \}\s*:\s*\{ bootstrap: \[\.\.\.testDht\] \}/,
+    );
+  });
+
   it('the shell has no upgrade field of its own to point anywhere', () => {
     const own = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')) as Record<
       string,

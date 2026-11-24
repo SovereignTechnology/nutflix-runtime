@@ -21,11 +21,11 @@
 import './bare-text.ts';
 
 import { FrameDecoder, encodeFrame } from '@nutflix-runtime/worker';
+import { renameRetrying } from '@nutflix-runtime/worker/rename-retry';
 import fs from 'bare-fs';
 import path from 'bare-path';
 import { Socket as WebSocket } from 'bare-ws';
 import Corestore from 'corestore';
-import Hyperswarm from 'hyperswarm';
 import PearRuntimeUpdater from 'pear-runtime-updater';
 import sodium from 'sodium-native';
 
@@ -35,6 +35,7 @@ import { parseFloor, type Floor } from './notice.ts';
 import { MAX_RELAY_MESSAGE_BYTES, fetchNotices, type RelayConnect } from './relays.ts';
 import { decodeBakedRoot, type TrustRoot } from './root.ts';
 import { parseUpdateStart, type UpdateStart, type UpdateStatus } from './status.ts';
+import { updaterSwarm } from './swarm.ts';
 
 /** Replaced by the bundler (`packaging/stage.ts`) with the root this build was packaged with. */
 declare const __NUTFLIX_UPDATE_ROOT__: string;
@@ -162,7 +163,10 @@ async function run(
     writeFloor: async (floor) => {
       const tmp = `${floorFile}.tmp`;
       await fs.promises.writeFile(tmp, `${JSON.stringify({ v: 1, ...floor })}\n`);
-      await fs.promises.rename(tmp, floorFile);
+      // On Windows, rides out a moment's sharing violation (`packages/worker/src/rename-retry.ts`).
+      await renameRetrying((a, b) => fs.promises.rename(a, b), tmp, floorFile, {
+        platform: Bare.platform,
+      });
     },
     now: () => Date.now(),
     status: send,
@@ -177,11 +181,9 @@ async function run(
     send({ state: 'watching', reason: 'updater-error' });
   });
   await updater.ready();
-  // A client of this one drive: it announces nothing and serves no topic of its own.
-  const swarm = new Hyperswarm({
-    keyPair: await store.createKeyPair('pear-runtime'),
-    ...(root.dht === null ? {} : { bootstrap: root.dht.map(dhtNode) }),
-  });
+  // A client of this one drive, with a key pair new every run and no local addresses on a
+  // release root (`./swarm.ts`).
+  const swarm = updaterSwarm(root.dht === null ? null : root.dht.map(dhtNode));
   swarm.on('connection', (connection) => {
     store.replicate(connection);
   });

@@ -3,13 +3,15 @@
  * what `init` builds and what every request reaches (`./rpc.ts` validated it first).
  *
  * `init` (once) builds, under `storage`:
- *   - `keys/`: a Corestore, used only for its primary key: the NFX-12 key pairs
- *     `nfx:<namespace>:seeder` and `nfx:<namespace>:watcher` (`./keys.ts`);
+ *   - `keys/`: a Corestore, used only for its primary key: the seeders' NFX-12 key pairs
+ *     `nfx:<namespace>:seeder`, the same every run because beacons name them (`./keys.ts`);
  *   - `nfx/`: `@sovit/seeder`'s `NfxStore` (every file sha256-checked, NFX-05 §4), with the
  *     disk cap `init` names;
  *   - `tmp/`: wiped, then the play spools (`tmp/nfx-play/<sid>/`);
  * and one HyperDHT node (`./net/dht-node.ts`) with the bootstrap `init` names, one peer pool
- * (one connection per seeder and network, shared by play sessions and seed fetches), the play
+ * (one connection per seeder and network, shared by play sessions and seed fetches) that dials with
+ * a random watcher key pair per network, made for this run and never stored (`./keys.ts`
+ * `WatcherKeys`), the play
  * sessions with their two loopback servers (`./nfx/watching.ts`) and the seeds with one NFX-12
  * listener per network (`./nfx/seeds.ts`), whose stored videos are served again at once.
  *
@@ -20,28 +22,34 @@
  *   - Studio (`./studio/studio.ts`), when the runtime can run the system's ffmpeg.
  *
  * `close` takes it down in order: Studio, sessions and servers, seeds and listeners, the pool, the
- * DHT node, the signer, the keys.
+ * DHT node, the watcher keys, the signer, the keys.
  */
 import type { signer as coreSigner } from '@sovit/core';
 import { nfx } from '@sovit/core';
 import { npubEncode } from 'nostr-tools/nip19';
 import type { Logger, NfxDht } from '@sovit/seeder';
+import type DHT from 'hyperdht';
 import { DiskCap, NfxStore } from '@sovit/seeder';
 
 import { randomHex, sodiumCrypto, sodiumSha256 } from './crypto.js';
 import { fail } from './errors.js';
 import type { Keyring } from './keys.js';
-import { openCorestoreKeyring } from './keys.js';
+import { WatcherKeys, openCorestoreKeyring } from './keys.js';
 import { createWorkerLogger } from './log.js';
 import { DhtNode } from './net/dht-node.js';
-import { isLoopbackTestnet, withoutLocalAddresses } from './net/no-local-addresses.js';
+import {
+  boundHost,
+  hidesLocalAddresses,
+  isLoopbackTestnet,
+  localAddressesByBind,
+} from './net/no-local-addresses.js';
 import { signBeacons, type BeaconTarget } from './nfx/beacons.js';
 import { NfxPeerPool } from './nfx/hyperdht-fetcher.js';
 import { OFFERED_DIR, SegmentOffers } from './nfx/offers.js';
 import { SeedPolicy, seedingStatusOf, titleField } from './nfx/seed-policy.js';
 import { SeederKeys } from './nfx/seeder-key.js';
 import { NfxSeeds } from './nfx/seeds.js';
-import { NFX_PLAY_DIR, NfxWatching, watcherKeyName } from './nfx/watching.js';
+import { NFX_PLAY_DIR, NfxWatching } from './nfx/watching.js';
 import type {
   ArgsOf,
   InitArgs,
@@ -83,10 +91,11 @@ export interface WorkerHostOptions {
   readonly readWaitMs?: number;
   readonly originWaitMs?: number;
   /**
-   * TESTS ONLY: hide local addresses (`../net/no-local-addresses.ts`) even on a loopback test
-   * network, which keeps hyperdht's defaults otherwise.
+   * TESTS ONLY: `true` hides local addresses (`./net/no-local-addresses.ts`) even on a node bound to
+   * 127.0.0.1, which keeps hyperdht's defaults otherwise. It only ever forces hiding on: `false`
+   * is the same as leaving it out, never "share them".
    */
-  readonly hideLocalAddresses?: boolean;
+  readonly hideLocalAddresses?: true;
   /** TESTS ONLY: the local signer's KDF cost, a bunker's wait, x264's preset. */
   readonly signerCost?: coreSigner.KdfCost;
   readonly bunkerWaitMs?: number;
@@ -102,6 +111,10 @@ interface Running {
   readonly keys: Keyring;
   readonly store: NfxStore;
   readonly dht: DhtNode;
+  /** Whether a dial now would hide local addresses (always, but on a socket bound to 127.0.0.1). */
+  readonly hidesLocalAddresses: () => boolean;
+  /** This run's random watcher key pairs, one per network: in memory only. */
+  readonly watcherKeys: WatcherKeys;
   readonly pool: NfxPeerPool;
   readonly watching: NfxWatching;
   readonly seeds: NfxSeeds;
@@ -511,18 +524,29 @@ export class WorkerHost implements WorkerRpcHandler {
 
     const dht = new DhtNode({
       bootstrap: a.bootstrap ?? null,
+      // A network whose every bootstrap is 127.0.0.1 is one of this machine's own processes: the
+      // node binds there, so it cannot reach anything else, whatever that bootstrap is bridged to.
+      loopbackOnly: isLoopbackTestnet(a.bootstrap ?? null),
       logger,
       onChange: () => {
         this.emitStatus();
       },
       ...(this.o.bootstrapWaitMs === undefined ? {} : { bootstrapWaitMs: this.o.bootstrapWaitMs }),
     });
-    // No local addresses to any peer, but on a loopback test network (`../net/no-local-addresses.ts`).
-    const hideLocal = this.o.hideLocalAddresses ?? !isLoopbackTestnet(a.bootstrap ?? null);
-    const nfxView = (node: NfxDht): NfxDht => (hideLocal ? withoutLocalAddresses(node) : node);
+    // No local addresses to any peer, unless the node's socket is really bound to 127.0.0.1, read
+    // at each dial and when each listener starts (`./net/no-local-addresses.ts`). The switch can
+    // only force hiding on.
+    const force = this.o.hideLocalAddresses === true;
+    const nfxView = (node: DHT): NfxDht => localAddressesByBind(node, { force });
+    const hidesNow = (): boolean => {
+      const node = dht.dht;
+      return hidesLocalAddresses({ boundHost: node === null ? null : boundHost(node), force });
+    };
+    // Never derived from storage: a seeder sees a new watcher key every run (`./keys.ts`).
+    const watcherKeys = new WatcherKeys();
     const pool = new NfxPeerPool({
       dht: async () => nfxView(await dht.ready()),
-      keyPair: (namespace) => keys.keyPair(watcherKeyName(namespace)),
+      keyPair: (namespace) => watcherKeys.keyPair(namespace),
       crypto: sodiumCrypto,
       logger,
       ...(this.o.dialTimeoutMs === undefined ? {} : { dialTimeoutMs: this.o.dialTimeoutMs }),
@@ -642,6 +666,8 @@ export class WorkerHost implements WorkerRpcHandler {
       keys,
       store,
       dht,
+      hidesLocalAddresses: hidesNow,
+      watcherKeys,
       pool,
       watching,
       seeds,
@@ -692,6 +718,7 @@ export class WorkerHost implements WorkerRpcHandler {
       await step('the seeds', () => r.seeds.close());
       r.pool.close();
       await step('the DHT node', () => r.dht.destroy());
+      r.watcherKeys.close();
       await step('the signer', async () => r.signer?.close());
       await step('the beacon keys', () => r.seederKeys.close());
       await step('the policy', () => r.policy.flush());

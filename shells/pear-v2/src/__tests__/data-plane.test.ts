@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { WorkerRuntime } from '@nutflix-runtime/worker/runtime';
 import { describe, expect, it } from 'vitest';
 
-import { dataPlaneOnly, watchOnly } from '../bare/data-plane.ts';
+import { dataPlaneOnly, watchOnly, watchOnlyRefusal } from '../bare/data-plane.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const shell = join(here, '..', '..');
@@ -51,9 +51,35 @@ describe('seeding is off at start', () => {
     expect(watchOnly(s)).toBe(false);
   });
 
+  it('says what is wrong, and for stored videos what the user can remove', () => {
+    const dir = '/home/u/.config/pear/app-storage/by-dkey/x/worker';
+    expect(watchOnlyRefusal({ watched: false, videos: [], listening: [] }, dir)).toBeNull();
+    expect(watchOnlyRefusal({ watched: true, videos: [], listening: [] }, dir)).toMatch(
+      /did not turn "seed what you watch" off/,
+    );
+    expect(watchOnlyRefusal({ watched: false, videos: [], listening: [{}] }, dir)).toMatch(
+      /listening for peers/,
+    );
+    const stored = watchOnlyRefusal(
+      { watched: false, videos: [{ video: 'a' }, { video: 'b' }], listening: [] },
+      dir,
+    );
+    expect(stored).toMatch(
+      /^this app's storage holds 2 stored videos, and this build is watch only/,
+    );
+    expect(stored).toContain(`delete the folder ${dir}/nfx`);
+    expect(stored).not.toMatch(/would not turn seeding off/);
+    expect(watchOnlyRefusal({ watched: false, videos: [{}], listening: [] }, dir)).toMatch(
+      /holds 1 stored video,/,
+    );
+    expect(watchOnlyRefusal(null, dir)).toMatch(/no seeding status/);
+    expect(watchOnlyRefusal({ watched: false, listening: [] }, dir)).toMatch(/no list of stored/);
+  });
+
   it('main asks for it, and holds no sealed key', () => {
     const src = readFileSync(join(here, '..', 'bare', 'main.ts'), 'utf8');
     expect(src).toContain("gate.request('seeding.set', { watched: false })");
+    expect(src).toContain("watchOnlyRefusal(await gate.request('seeding.status', {}), storage)");
     expect(src).toContain('localKey: false');
     expect(src).toContain('watchOnly: true');
     expect(src).toContain("linkKind(Pear.config.link) === 'unversioned'");

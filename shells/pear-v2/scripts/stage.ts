@@ -11,8 +11,14 @@
  *
  *   node shells/pear-v2/scripts/stage.ts --test-line <key>:<fork>:<length> [--out DIR] [--with-smoke]
  *
- * With no `--test-line` it builds for `RELEASE_LINE`, and refuses while that is `null`. A test
- * line can never be Holepunch's key. Nothing here publishes anything.
+ * `index.js`, `page/` (`app.js`, `legacy.js`) and `worker/` come from this checkout's root
+ * `node_modules` and its `tsc` output, as they are on disk: the fast path for a test build (CI runs
+ * `npm ci` and `npm run build` just before). **A release never takes it.** A release is staged by
+ * `scripts/release.ts`, which imports only `node:*`, exports the commit into a private directory,
+ * installs and builds it there from the lockfile, and runs that copy's `stage.ts`. Here, a release
+ * (no `--test-line`) is refused outside such a copy, and while an owner's step is open
+ * (`releaseRefusals`: no release line yet, or the Electron UI drive still Holepunch's). A test line
+ * can never be Holepunch's key. Nothing here publishes anything.
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -24,6 +30,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -38,7 +45,13 @@ import { buildRenderer } from '../../../packages/renderer/scripts/build.ts';
 import { policyOf } from '../../../packages/renderer/scripts/policy.ts';
 import { RUNTIME_OFFER } from '../../../packages/renderer/src/shell/offer.ts';
 import { contentType } from '../src/bare/page-server.ts';
-import { PEAR_V2, RELEASE_LINE, isReleaseLine, type ReleaseLine } from '../src/shared/pins.ts';
+import {
+  PEAR_V2,
+  RELEASE_LINE,
+  UI_DRIVE,
+  isReleaseLine,
+  type ReleaseLine,
+} from '../src/shared/pins.ts';
 import {
   SYSTEM_ONLY_PACKAGES,
   checkStagedHtml,
@@ -48,7 +61,9 @@ import {
   moduleClosure,
   type LockPackages,
   parseTestLine,
+  releaseRefusals,
   sri,
+  uiDriveMismatches,
 } from './stage-checks.ts';
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,6 +73,26 @@ const HOST = 'linux-x64';
 
 function fail(msg: string): never {
   throw new Error(`stage: ${msg}`);
+}
+
+/** A release's open owner's steps, all at once. */
+function assertReleasable(): void {
+  const open = releaseRefusals({ line: RELEASE_LINE, uiDrive: UI_DRIVE });
+  if (open.length > 0) fail(`a release cannot be staged yet:\n  ${open.join('\n  ')}`);
+}
+
+/** Set by `release.ts` for the copy's own `stage.ts`: the copy's root. The same name is there. */
+const CLEAN_COPY_ENV = 'NUTFLIX_STAGE_CLEAN_COPY';
+
+/** This `stage.ts` runs in a copy `release.ts` made: named by it, and no git checkout. */
+function inCleanCopy(): boolean {
+  const named = process.env[CLEAN_COPY_ENV];
+  if (named === undefined || named === '' || existsSync(join(REPO, '.git'))) return false;
+  try {
+    return realpathSync(named) === realpathSync(REPO);
+  } catch {
+    return false;
+  }
 }
 
 /** Every file under `dir`, relative, with `/`. */
@@ -253,9 +288,12 @@ export async function stage(o: {
   /** Also writes `smoke.js`, CI's check on a real Bare. Test builds only. */
   readonly smoke?: boolean;
 }): Promise<StageResult> {
+  if (o.testLine === null) {
+    assertReleasable();
+    if (!inCleanCopy()) fail('a release is staged only from a clean copy: run scripts/release.ts');
+  }
   const line = o.testLine ?? RELEASE_LINE;
-  if (line === null)
-    fail('no SovTech release line of Pear v2.6.5 exists yet (RELEASE_LINE): owner step');
+  if (line === null) fail('no release line');
   if (!isReleaseLine(line)) fail('the platform line is malformed');
   if (o.smoke === true && o.testLine === null) fail('--with-smoke is for test builds only');
   if (o.testLine !== null && o.testLine.key === PEAR_V2.upstream.key)
@@ -342,6 +380,14 @@ export async function stage(o: {
   const entries = ['index.js', ...(o.smoke === true ? ['smoke.js'] : [])];
   const workerPackages = copyWorker(o.out, entries);
   copyModules(o.out);
+  const ui = uiDriveMismatches({
+    uiDrive: UI_DRIVE,
+    pearElectron: JSON.parse(
+      readFileSync(join(o.out, 'node_modules', 'pear-electron', 'package.json'), 'utf8'),
+    ),
+    app: JSON.parse(readFileSync(join(PKG, 'app', 'package.json'), 'utf8')),
+  });
+  if (ui.length > 0) fail(`the Electron UI drive is not the pinned one:\n  ${ui.join('\n  ')}`);
   assertInstalled(o.out, [
     ...workerPackages,
     ...entries.flatMap((e) => importsOf(readFileSync(join(o.out, e), 'utf8')).packages),
@@ -368,19 +414,21 @@ function arg(name: string): string | undefined {
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const rawLine = arg('--test-line');
   const out = resolve(arg('--out') ?? join(PKG, 'out', 'app'));
-  stage({
-    out,
-    testLine: rawLine === undefined ? null : parseTestLine(rawLine),
-    smoke: process.argv.includes('--with-smoke'),
-  }).then(
-    (r) => {
-      process.stdout.write(
-        `staged ${relative(process.cwd(), r.out)}: ${String(r.pageFiles.length)} page files, tree sha256 ${r.tree}\n`,
-      );
-    },
-    (e: unknown) => {
-      process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
-      process.exitCode = 1;
-    },
-  );
+  const smoke = process.argv.includes('--with-smoke');
+  const done = (e: unknown): void => {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+    process.exitCode = 1;
+  };
+  try {
+    stage({ out, testLine: rawLine === undefined ? null : parseTestLine(rawLine), smoke }).then(
+      (r) => {
+        process.stdout.write(
+          `staged ${relative(process.cwd(), r.out)}: ${String(r.pageFiles.length)} page files, tree sha256 ${r.tree}\n`,
+        );
+      },
+      done,
+    );
+  } catch (e) {
+    done(e);
+  }
 }
