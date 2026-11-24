@@ -23,7 +23,12 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { releaseRoot } from '../../packaging/update-root.ts';
+import { APP, STAGED } from '../../packaging/identity.ts';
+import { REPO_ROOT } from '../../packaging/paths.ts';
+import { assertNoUpgradeLink, releaseRoot } from '../../packaging/update-root.ts';
+import { applySinkhole, assertSinkholed, publicHosts } from '../pear-ci/sinkhole.ts';
+import { launch, type LaunchResult } from '../smoke.ts';
+import { isMachoFile } from './binary.ts';
 import { deploymentPackageJson } from '../pear-ci/deployment.ts';
 import { newTestCert, removeTestCert, signMsix } from '../pear-ci/windows.ts';
 import {
@@ -36,7 +41,7 @@ import {
 } from './assemble.ts';
 import { expectRefusal } from './guards.ts';
 import { artifactBytes, digestOf } from './digest.ts';
-import { assertProductionRoot, packageFacts } from './inspect.ts';
+import { assertProductionRoot, packageFacts, readPackaged } from './inspect.ts';
 import { compareSigned, recordSigned } from './signing.ts';
 import { MAC_ENTITLEMENTS, productionSigningPolicy, type SigningPolicy } from './signing-policy.ts';
 import { RELEASE_TARGETS, type ReleaseTarget } from './targets.ts';
@@ -113,24 +118,56 @@ function filesDeepestFirst(dir: string, rel = ''): string[] {
 }
 
 /**
- * Signs `app` the way the runbook does, ad hoc: everything with the hardened runtime, then each
- * binary `signing-policy.ts` entitles with `entitlements.mac.plist`, inside out, then the app.
- * `last` is the last step's options, so a negative can make one bad signature.
+ * Signs `app` the way the runbook does, ad hoc, inside out:
+ *   1. every Mach-O under `Contents/Resources` on its own (the node modules' native addons, and the
+ *      Bare runtime), with the hardened runtime, and the entitlements the policy gives it;
+ *   2. the nested code in bundle locations (frameworks, helpers, their tools), `--deep`;
+ *   3. each helper app the policy entitles, again, with its entitlements;
+ *   4. the app, with its entitlements.
+ * `last` is the last step's options, so a negative can make one bad signature; `entitlements` is
+ * the plist for every entitled binary.
  */
-function signLikeTheRunbook(app: string, last: readonly string[] = ['--options', 'runtime']): void {
+function signLikeTheRunbook(
+  app: string,
+  last: readonly string[] = ['--options', 'runtime'],
+  entitlements: string = ENTITLEMENTS,
+): void {
   const sign = (opts: readonly string[], path: string): void => {
     run('codesign', ['--force', ...opts, '--sign', '-', path]);
   };
+  const entitled = (rel: string): boolean => MAC_ENTITLEMENTS.some((r) => r.path.test(rel));
+  for (const f of filesDeepestFirst(join(app, 'Contents', 'Resources'), 'Contents/Resources'))
+    if (isMachoFile(join(app, ...f.split('/'))))
+      sign(
+        ['--options', 'runtime', ...(entitled(f) ? ['--entitlements', entitlements] : [])],
+        join(app, ...f.split('/')),
+      );
   sign(['--deep', '--options', 'runtime'], app);
-  const entitled = filesDeepestFirst(app).filter(
-    (f) => f !== 'Contents/MacOS/Nutflix' && MAC_ENTITLEMENTS.some((r) => r.path.test(f)),
-  );
-  // A helper app is signed as a bundle (its executable with it); a bare binary on its own.
-  for (const f of entitled) {
+  for (const f of filesDeepestFirst(app)) {
     const helper = /^(Contents\/Frameworks\/[^/]+\.app)\/Contents\/MacOS\/[^/]+$/.exec(f)?.[1];
-    sign(['--options', 'runtime', '--entitlements', ENTITLEMENTS], join(app, helper ?? f));
+    if (helper !== undefined && entitled(f))
+      sign(['--options', 'runtime', '--entitlements', entitlements], join(app, helper));
   }
-  sign([...last, '--entitlements', ENTITLEMENTS], app);
+  sign([...last, '--entitlements', entitlements], app);
+}
+
+/** The Mach-Os of a bundle: how many, and how many are signed with the hardened runtime. */
+function machoCount(app: string): { all: number; outsideCode: number } {
+  const files = filesDeepestFirst(app).filter((f) => isMachoFile(join(app, ...f.split('/'))));
+  return {
+    all: files.length,
+    outsideCode: files.filter((f) => f.startsWith('Contents/Resources/')).length,
+  };
+}
+
+/**
+ * Launches a signed bundle until its ready line, as the shell job launches a build: only a build
+ * with no upgrade link (the guard reads the packaged bytes), and only with the app's public relay
+ * names pointing at loopback.
+ */
+async function launchSigned(app: string): Promise<LaunchResult> {
+  assertNoUpgradeLink(readPackaged(app, STAGED.updateWorker));
+  return launch(join(app, 'Contents', 'MacOS', APP.productName), [], 'ready', 120);
 }
 
 async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Promise<string[]> {
@@ -160,6 +197,42 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
   const after = await digestOf(signed);
   if (after === digest) throw new Error('re-signing changed nothing: this proves nothing');
   await compareSigned(t, app, signed, production);
+  const machos = machoCount(signed);
+
+  // It runs: the signed bundle reaches its ready line.
+  const hosts = publicHosts(REPO_ROOT);
+  applySinkhole(process.platform, hosts);
+  await assertSinkholed(hosts);
+  const launched = await launchSigned(signed);
+  if (!launched.ok) {
+    // What the system said, and whether library validation is the reason: the same bundle with
+    // `disable-library-validation` added, launched once, for the record only. The proof fails.
+    const say = (l: string): void => {
+      process.stdout.write(`${l}\n`);
+    };
+    say(`the signed bundle did not reach ready: ${launched.reason}`);
+    for (const l of launched.tail
+      .filter((x) =>
+        /code ?sign|Library Validation|dyld|Team ID|AMFI|killed|Code Signature/i.test(x),
+      )
+      .slice(-20))
+      say(`  ${l}`);
+    const lv = join(work, 'disable-library-validation.plist');
+    writeFileSync(
+      lv,
+      readFileSync(ENTITLEMENTS, 'utf8').replace(
+        '</dict>',
+        '  <key>com.apple.security.cs.disable-library-validation</key>\n  <true/>\n</dict>',
+      ),
+    );
+    const probe = copy('library-validation-probe');
+    signLikeTheRunbook(probe, ['--options', 'runtime'], lv);
+    const second = await launchSigned(probe);
+    say(
+      `the same bundle with disable-library-validation: ${second.ok ? 'reached ready' : `did not reach ready either (${second.reason})`}`,
+    );
+    throw new Error(`the signed bundle does not run: ${launched.reason}`);
+  }
 
   // What a signature may say: each of these is CI's code, re-signed, and refused.
   const extra = join(work, 'get-task-allow.plist');
@@ -194,9 +267,11 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
     () => compareSigned(t, app, soft, production),
     /Contents\/MacOS\/Nutflix is not signed with the hardened runtime/,
   );
+  // An ad-hoc signature (no team) under a policy that pins one. A signature naming another team
+  // is refused in the unit tests only: this job has no identity to make one with.
   const team: SigningPolicy = { label: 'proof', appleTeamId: 'ABCDE12345', windowsSigner: null };
   await expectRefusal(
-    'a bundle not signed by the pinned Team ID',
+    'an ad-hoc bundle under a policy pinning a Team ID',
     () => compareSigned(t, app, signed, team),
     /is signed by no team, not Team ID ABCDE12345/,
   );
@@ -242,8 +317,9 @@ async function proveBundle(t: ReleaseTarget, artifact: string, work: string): Pr
     throw new Error('record-signed did not keep the CI digest and record the signed one');
   if (row.signed?.digest !== after) throw new Error('record-signed did not record the signature');
   return [
-    `a bundle signed ad hoc as the runbook signs it (CI ${digest.slice(0, 12)}…, signed ${after.slice(0, 12)}…) passes the production policy`,
-    'refused: an entitlement added, the hardened runtime removed, and (with a Team ID pinned) a signature that is not that team’s',
+    `a bundle signed ad hoc as the runbook signs it, inside out (all ${String(machos.all)} Mach-Os, ${String(machos.outsideCode)} of them under Contents/Resources), passes the production policy: what each signature says, and that each is valid for its code and what it seals (CI ${digest.slice(0, 12)}…, signed ${after.slice(0, 12)}…)`,
+    `the signed bundle launches and reaches its ready line (${launched.reason}; events: ${launched.events.join(', ') || 'none'}; at teardown: ${launched.teardown.join(', ') || 'none'})`,
+    'refused: an entitlement added (get-task-allow), the hardened runtime removed, and an ad-hoc signature under a policy pinning Team ID ABCDE12345 (a signature naming another team is refused in the unit tests only)',
     'refused: a changed script, changed code and an added file',
     'record-signed keeps CI’s digest and records the signed one',
   ];
@@ -289,10 +365,11 @@ async function proveMsix(t: ReleaseTarget, artifact: string, work: string): Prom
   const x = new X509Certificate(readFileSync(cerPath));
   const pinned = { sha256: x.fingerprint256, subject: x.subject, issuer: x.issuer };
   const proof: SigningPolicy = { label: 'proof', appleTeamId: null, windowsSigner: pinned };
+  // Not a second real certificate: this job's own, with its pinned fingerprint changed.
   const otherSha = `${pinned.sha256.startsWith('00') ? '11' : '00'}${pinned.sha256.slice(2)}`;
   const other: SigningPolicy = { ...proof, windowsSigner: { ...pinned, sha256: otherSha } };
   await expectRefusal(
-    'a package signed by another certificate than the one pinned',
+    'a package whose certificate is not the pinned fingerprint',
     () => compareSigned(t, unsigned, signed, other),
     /not the pinned certificate/,
   );
@@ -310,7 +387,7 @@ async function proveMsix(t: ReleaseTarget, artifact: string, work: string): Prom
     throw new Error('record-signed did not keep the CI digest and record the signed one');
   return [
     `an .msix signed with a certificate made for this job (CI ${digest.slice(0, 12)}…, signed ${after.slice(0, 12)}…): its content types differ only by the signature's entries, and any catalog names only its binaries`,
-    'refused: the same package under the production policy (no certificate pinned), and under a policy pinning another certificate',
+    'refused: the same package under the production policy (no certificate pinned), and under a policy pinning this job’s certificate with its fingerprint changed (no second real certificate)',
     'an unsigned package offered as signed is refused',
     'record-signed keeps CI’s digest and records the signed one',
   ];

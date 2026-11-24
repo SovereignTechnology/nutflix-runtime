@@ -212,7 +212,9 @@ export async function proveGateMatrix(m: GateMatrix): Promise<void> {
       waitFor: 'update-shown',
     });
     const last = r.updates[r.updates.length - 1];
-    c.say(`updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}`);
+    c.say(
+      `updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}; at teardown: ${r.teardown.join(', ') || 'none'}`,
+    );
     if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
     if (last?.['state'] !== 'held' || last['reason'] !== wantReason)
       throw new Error(`wanted held/${wantReason}, got ${JSON.stringify(last)}`);
@@ -261,7 +263,9 @@ export async function proveGateMatrix(m: GateMatrix): Promise<void> {
         waitFor: 'update-shown',
       });
       const last = r.updates[r.updates.length - 1];
-      c.say(`updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}`);
+      c.say(
+        `updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}; at teardown: ${r.teardown.join(', ') || 'none'}`,
+      );
       if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
       if (last?.['state'] !== 'applied')
         throw new Error(`wanted applied, got ${JSON.stringify(last)}`);

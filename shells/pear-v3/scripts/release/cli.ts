@@ -100,7 +100,7 @@ import {
 import { assertCommit, ghApi, parseRunId, type GitHubApi } from './provenance.ts';
 import { checkRequestInOneHome, compareDrive, type PearInOneHome } from './signer.ts';
 import { recordSigned } from './signing.ts';
-import { RELEASE_TARGETS } from './targets.ts';
+import { RELEASE_TARGETS, deploymentEntry } from './targets.ts';
 
 export interface PearOutcome {
   readonly code: number;
@@ -124,6 +124,11 @@ export interface Io {
   runPublic(bin: string, args: readonly string[]): Promise<PearOutcome>;
   /** The same, as a user whose home is `home`: a Pear sidecar and local cores of its own. */
   runIsolated(bin: string, home: string, args: readonly string[]): Promise<PearOutcome>;
+  /**
+   * `codesign --verify --strict --deep` of a bundle: Apple's own check, on macOS. `null` where
+   * there is no `codesign` (any other OS).
+   */
+  codesignVerify(bundle: string): { code: number; out: string } | null;
   /** `pear build`, local and offline. */
   runBuild(bin: string, out: string, args: readonly string[]): Promise<void>;
   nowS(): number;
@@ -325,6 +330,7 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
       io.print(`  ${renderCommand(io.pearPath(), args)}`);
     io.print(`  pear provision --dry-run ${verlink} …: that version's db and blobs cores`);
     io.print("  then the request and the fork again, and hash the five entries against CI's");
+    io.print('  and, on a Mac, codesign --verify --strict --deep each signed macOS bundle');
     io.print(`To run it: add --execute, and type this link back: ${source}`);
     return 0;
   }
@@ -377,6 +383,22 @@ async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
     io.print(
       `ok  ${r.target}  ${r.how === 'exact' ? "CI's bytes" : "CI's package, signed"}  ${r.digest}`,
     );
+  // 4. Apple's own check of a signed bundle, where there is one to ask.
+  for (const t of RELEASE_TARGETS.filter((x) => x.platform === 'darwin' && signed.has(x.name))) {
+    const bundle = join(work, 'drive', ...deploymentEntry(t).split('/'));
+    const r = io.codesignVerify(bundle);
+    if (r === null) {
+      io.print(
+        `NOT CHECKED BY APPLE  ${t.name}: there is no codesign on this machine. Its page hashes, special slots and what its signature says were checked here; the resource seal's contents, nested code and any identity's chain to Apple were not. At least one signer must run this on a Mac.`,
+      );
+      continue;
+    }
+    if (r.code !== 0)
+      return refuse(
+        `codesign refuses ${t.name}'s signature (exit ${String(r.code)}): do not sign. ${r.out.slice(0, 400)}`,
+      );
+    io.print(`ok  ${t.name}  codesign --verify --strict --deep`);
+  }
   io.print(
     `This request releases exactly what CI built at ${commit}, version ${built.version}, to ${production}.`,
   );
@@ -662,6 +684,13 @@ export const realIo: Io = {
   runIsolated: (bin, home, args) => {
     mkdirSync(home, { recursive: true });
     return runTee(bin, args, isolatedEnv(home));
+  },
+  codesignVerify: (bundle) => {
+    if (process.platform !== 'darwin') return null;
+    const r = spawnSync('/usr/bin/codesign', ['--verify', '--strict', '--deep', bundle], {
+      encoding: 'utf8',
+    });
+    return { code: r.status ?? 1, out: `${r.stdout}${r.stderr}` };
   },
   runBuild: async (bin, out, args) => {
     // `pear build` starts no sidecar and joins no DHT. Its own home, and a loopback bootstrap, so

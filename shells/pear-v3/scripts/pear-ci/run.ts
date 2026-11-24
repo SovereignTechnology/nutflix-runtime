@@ -906,7 +906,7 @@ async function launchInstalled(
       : {}),
   });
   say(
-    `${result.ok ? 'PASS' : 'FAIL'} ${result.reason} (${String(result.ms)} ms); events ${result.events.join(', ')}`,
+    `${result.ok ? 'PASS' : 'FAIL'} ${result.reason} (${String(result.ms)} ms); events ${result.events.join(', ')}; at teardown ${result.teardown.join(', ') || 'none'}`,
   );
   if (platform === 'win32') {
     if (result.ok && processPackage?.startsWith(`${MSIX.identity}_`) !== true)

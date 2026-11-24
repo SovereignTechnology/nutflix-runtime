@@ -13,10 +13,17 @@
  *              which must pass the unchanged guard and start with its updater off
  *   tripwire   read again: zero packets
  *
- *   node scripts/release/prove.ts --target linux-x64 --work <dir>
+ *   node scripts/release/prove.ts --target linux-x64 --token-file <0600 file> --work <dir>
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -84,12 +91,23 @@ const say = (line: string): void => {
 class Handled extends Error {}
 
 /**
- * The job's token reaches `gh` alone. The workflow passes it under a name nothing else reads, and it
- * leaves this process's environment before anything starts: no Pear sidecar, build, `script` or
- * launched app inherits it, and none can write it into the uploaded logs.
+ * The job's token reaches `gh` alone. The workflow writes it to a file only this user can read, in
+ * an earlier step, so it is in no environment here: not this step's shell's, nor `xvfb-run`'s, nor
+ * this process's. It is read and the file deleted before anything starts, and any token a runner
+ * put in the environment is dropped too, so no Pear sidecar, build, `script` or launched app has
+ * one, and none can write one into the uploaded logs.
  */
-const TOKEN_NAMES = ['RELEASE_PROOF_GH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'] as const;
-const githubToken = process.env['RELEASE_PROOF_GH_TOKEN'];
+const TOKEN_NAMES = ['GH_TOKEN', 'GITHUB_TOKEN'] as const;
+const tokenFile = ((): string | undefined => {
+  const i = process.argv.indexOf('--token-file');
+  return i === -1 ? undefined : process.argv[i + 1];
+})();
+const githubToken = ((): string | undefined => {
+  if (tokenFile === undefined) return undefined;
+  const t = readFileSync(tokenFile, 'utf8').trim();
+  rmSync(tokenFile, { force: true });
+  return t;
+})();
 for (const k of TOKEN_NAMES) Reflect.deleteProperty(process.env, k);
 const github = makeGhApi(githubToken);
 
@@ -186,7 +204,8 @@ export async function prove(o: { target: TargetName; work: string }): Promise<nu
         'provenance',
         `a green push to main passes; this ${String(process.env['GITHUB_EVENT_NAME'])} run and a wrong commit are refused`,
       );
-      // The token is in no child's environment (checked by name; nothing is printed).
+      // The token is in no child's environment (checked by name; nothing is printed), and its file
+      // is gone.
       const child = spawnSync(
         process.execPath,
         [
@@ -195,8 +214,13 @@ export async function prove(o: { target: TargetName; work: string }): Promise<nu
         ],
         { stdio: 'ignore' },
       );
-      if (child.status !== 0) throw new Error('a child process still has the GitHub token');
-      row('token', 'only `gh` gets the GitHub token: a child process started here has none');
+      if (child.status !== 0) throw new Error('a child process still has a GitHub token');
+      if (tokenFile === undefined || existsSync(tokenFile))
+        throw new Error('the token did not come from its file, or the file is still there');
+      row(
+        'token',
+        'only `gh` gets the GitHub token: it came from a 0600 file, now deleted, and a child process started here has none',
+      );
 
       // This run's five packages, each checked against GitHub's digest of its artifact.
       const self = (await github.get(`repos/${RELEASE_REPO}/actions/runs/${String(runId)}`)) as {

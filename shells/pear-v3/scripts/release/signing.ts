@@ -5,9 +5,10 @@
  *
  *   - A macOS bundle: every file, symlink and executable bit equal, except a bundle's or a
  *     framework's own `_CodeSignature/`, the stapled `Contents/CodeResources`, and Mach-O binaries,
- *     whose code must be equal once their signature is taken out (`binary.ts`). Each re-signed
- *     binary's signature must then say what `signing-policy.ts` pins: who, which flags, which
- *     entitlements.
+ *     whose code must be equal once their signature is taken out (`binary.ts`). Every Mach-O in
+ *     the signed bundle, re-signed or not, must then carry a signature that says what
+ *     `signing-policy.ts` pins (who, which flags, which entitlements) and that is valid: its code
+ *     directories hash the code page by page, and each special slot hashes what it names.
  *   - An `.msix`: every part equal, by sha256, except the signature part, and the content types,
  *     which may differ only by the entries that declare it. The signer must be the pinned
  *     certificate. A code-integrity catalog that signing adds must be a trust list signed by the
@@ -22,7 +23,13 @@ import { join } from 'node:path';
 
 import { treeManifest } from '../pear-ci/deployment.ts';
 import { readRelease, writeReleaseFile, type ReleaseRow } from './assemble.ts';
-import { machoCodeDigest, machoSignatures, peAuthenticodeDigest } from './binary.ts';
+import {
+  assertSignatureValid,
+  isMachoFile,
+  machoCodeDigest,
+  machoSignatures,
+  peAuthenticodeDigest,
+} from './binary.ts';
 import { artifactBytes, digestOf } from './digest.ts';
 import { refuse } from './guards.ts';
 import { assertPackageArch, assertProductionRoot, packageFacts } from './inspect.ts';
@@ -72,6 +79,27 @@ export function isSignatureType(entry: string, catalogAdded = false): boolean {
   return false;
 }
 
+/**
+ * The files a Mach-O at `path` may seal besides its code: its bundle's Info.plist and resource seal,
+ * when it is that bundle's main executable (an app's `Contents/MacOS/*`, or a framework version's
+ * own binary). Anything else seals neither.
+ */
+export function sealedFilesOf(path: string): { infoPlist: string; resources: string } | null {
+  const app = /^((?:.+\.app\/)?Contents)\/MacOS\/[^/]+$/.exec(path);
+  if (app !== null)
+    return {
+      infoPlist: `${app[1] ?? ''}/Info.plist`,
+      resources: `${app[1] ?? ''}/_CodeSignature/CodeResources`,
+    };
+  const framework = /^(.+\.framework\/Versions\/[^/]+)\/[^/]+$/.exec(path);
+  if (framework !== null)
+    return {
+      infoPlist: `${framework[1] ?? ''}/Resources/Info.plist`,
+      resources: `${framework[1] ?? ''}/_CodeSignature/CodeResources`,
+    };
+  return null;
+}
+
 async function compareBundle(
   unsigned: string,
   signed: string,
@@ -93,19 +121,37 @@ async function compareBundle(
     }
     if (x.exec !== y.exec) refuse(`signing changed the executable bit of ${path}`);
     if (x.sha256 === y.sha256) continue;
-    const signedBytes = readFileSync(join(signed, ...path.split('/')));
     const before = machoCodeDigest(readFileSync(join(unsigned, ...path.split('/'))));
-    const after = machoCodeDigest(signedBytes);
+    const after = machoCodeDigest(readFileSync(join(signed, ...path.split('/'))));
     if (before === null || after === null || before !== after)
       refuse(`signing changed more than the signature of ${path}`);
-    // The code is CI's. What the new signature says is pinned.
-    const signatures = machoSignatures(signedBytes);
-    if (signatures === null) return refuse(`the signature of ${path} cannot be read`);
-    for (const slice of signatures)
-      assertMacSignature(path, slice.fileType, slice.signature, policy);
   }
   for (const path of b.keys())
     if (!a.has(path) && !isBundleSignaturePath(path)) refuse(`signing added ${path}`);
+
+  // Every Mach-O in the signed bundle, re-signed or left as CI built it: what its signature says
+  // is pinned, and the signature must be valid for its code and for what it seals.
+  const read = (rel: string): Buffer | null => {
+    const e = b.get(rel);
+    return e?.kind === 'file' ? readFileSync(join(signed, ...rel.split('/'))) : null;
+  };
+  for (const [path, e] of b) {
+    if (e.kind !== 'file' || !isMachoFile(join(signed, ...path.split('/')))) continue;
+    const bytes = readFileSync(join(signed, ...path.split('/')));
+    const signatures = machoSignatures(bytes);
+    if (signatures === null) return refuse(`the signature of ${path} cannot be read`);
+    for (const slice of signatures)
+      assertMacSignature(path, slice.fileType, slice.signature, policy);
+    const sealed = sealedFilesOf(path);
+    assertSignatureValid(
+      bytes,
+      {
+        infoPlist: sealed === null ? null : read(sealed.infoPlist),
+        resources: sealed === null ? null : read(sealed.resources),
+      },
+      path,
+    );
+  }
 }
 
 interface MsixPart {

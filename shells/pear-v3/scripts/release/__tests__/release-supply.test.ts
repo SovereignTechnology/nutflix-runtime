@@ -45,6 +45,7 @@ import {
 import {
   CS_ADHOC,
   CS_RUNTIME,
+  assertSignatureValid,
   elfArch,
   machoArches,
   machoCodeDigest,
@@ -341,17 +342,35 @@ function macho(
 
 const JIT = { 'com.apple.security.cs.allow-jit': true };
 
-/** A code signature as `codesign` lays it out: a superblob of directories, entitlements, CMS. */
-function sigBlob(
-  o: {
-    flags?: number;
-    team?: string | null;
-    entitlements?: Readonly<Record<string, boolean>> | null;
-    der?: Readonly<Record<string, boolean>> | null;
-    identity?: boolean;
-    directories?: number;
-  } = {},
-): Buffer {
+interface SigSpec {
+  flags?: number;
+  team?: string | null;
+  entitlements?: Readonly<Record<string, boolean>> | null;
+  der?: Readonly<Record<string, boolean>> | null;
+  identity?: boolean;
+  directories?: number;
+}
+
+/** What a code directory hashes, besides the code: the files a bundle's executable seals. */
+interface Sealed {
+  infoPlist?: Buffer;
+  resources?: Buffer;
+}
+
+/** The fixture's code: 0x240 bytes before the signature, in pages of 256. */
+const CODE_LIMIT = 0x240;
+const PAGE_SHIFT = 8;
+const N_CODE = Math.ceil(CODE_LIMIT / 2 ** PAGE_SHIFT);
+const N_SPECIAL = 7;
+const sha256 = (b: Buffer): Buffer => createHash('sha256').update(b).digest();
+
+/**
+ * A code signature as `codesign` lays it out: a superblob of code directories (slot 0, then
+ * alternates), requirements (2), entitlements (5) and their DER form (7), and the CMS (0x10000).
+ * Each directory hashes `code` page by page, and fills special slots 1 to 7 with the hashes of what
+ * they name. With no `code`, the code hashes are zero: a draft, the right size.
+ */
+function sigBlob(o: SigSpec = {}, code?: Buffer, sealed: Sealed = {}): Buffer {
   const blob = (magic: number, body: Buffer): Buffer => {
     const h = Buffer.alloc(8);
     h.writeUInt32BE(magic, 0);
@@ -359,37 +378,84 @@ function sigBlob(
     return Buffer.concat([h, body]);
   };
   const team = o.team === undefined ? null : o.team;
-  const directory = (): Buffer => {
-    const fixed = Buffer.alloc(52 - 8);
-    fixed.writeUInt32BE(0x20400, 0);
-    fixed.writeUInt32BE(o.flags ?? CS_ADHOC | CS_RUNTIME, 4);
-    const ident = Buffer.from('nutflix\0');
-    const teamBytes = team === null ? Buffer.alloc(0) : Buffer.from(`${team}\0`);
-    fixed.writeUInt32BE(52, 12);
-    fixed.writeUInt32BE(team === null ? 0 : 52 + ident.length, 40);
-    return blob(0xfade0c02, Buffer.concat([fixed, ident, teamBytes]));
-  };
   const ents = o.entitlements === undefined ? JIT : o.entitlements;
   const derEnts = o.der === undefined ? ents : o.der;
-  const parts: Buffer[] = [];
-  for (let i = 0; i < (o.directories ?? 1); i++) parts.push(directory());
-  if (ents !== null) parts.push(blob(0xfade7171, Buffer.from(entitlementsXml(ents))));
-  if (derEnts !== null) parts.push(blob(0xfade7172, entitlementsDer(derEnts)));
-  parts.push(blob(0xfade0b01, o.identity === true ? Buffer.alloc(40, 1) : Buffer.alloc(0)));
+  const requirements = blob(0xfade0c01, Buffer.alloc(4));
+  const xml = ents === null ? null : blob(0xfade7171, Buffer.from(entitlementsXml(ents)));
+  const der = derEnts === null ? null : blob(0xfade7172, entitlementsDer(derEnts));
+  const special = new Map<number, Buffer | null>([
+    [1, sealed.infoPlist ?? null],
+    [2, requirements],
+    [3, sealed.resources ?? null],
+    [5, xml],
+    [7, der],
+  ]);
+  const directory = (): Buffer => {
+    const ident = Buffer.from('nutflix\0');
+    const teamBytes = team === null ? Buffer.alloc(0) : Buffer.from(`${team}\0`);
+    const hashOffset = 52 + ident.length + teamBytes.length + N_SPECIAL * 32;
+    // Version 0x20200: the fields up to the Team ID, the 52-byte header this lays out.
+    const fixed = Buffer.alloc(52 - 8);
+    fixed.writeUInt32BE(0x20200, 0);
+    fixed.writeUInt32BE(o.flags ?? CS_ADHOC | CS_RUNTIME, 4);
+    fixed.writeUInt32BE(hashOffset, 8);
+    fixed.writeUInt32BE(52, 12);
+    fixed.writeUInt32BE(N_SPECIAL, 16);
+    fixed.writeUInt32BE(N_CODE, 20);
+    fixed.writeUInt32BE(CODE_LIMIT, 24);
+    fixed[28] = 32;
+    fixed[29] = 2;
+    fixed[31] = PAGE_SHIFT;
+    fixed.writeUInt32BE(team === null ? 0 : 52 + ident.length, 40);
+    const slots = Buffer.alloc(N_SPECIAL * 32);
+    for (const [n, named] of special)
+      if (named !== null) sha256(named).copy(slots, (N_SPECIAL - n) * 32);
+    const pages = Buffer.alloc(N_CODE * 32);
+    if (code !== undefined)
+      for (let i = 0; i < N_CODE; i++)
+        sha256(
+          code.subarray(i * 2 ** PAGE_SHIFT, Math.min((i + 1) * 2 ** PAGE_SHIFT, CODE_LIMIT)),
+        ).copy(pages, i * 32);
+    return blob(0xfade0c02, Buffer.concat([fixed, ident, teamBytes, slots, pages]));
+  };
+  const parts: [number, Buffer][] = [];
+  for (let i = 0; i < (o.directories ?? 1); i++)
+    parts.push([i === 0 ? 0 : 0x1000 + i - 1, directory()]);
+  parts.push([2, requirements]);
+  if (xml !== null) parts.push([5, xml]);
+  if (der !== null) parts.push([7, der]);
+  parts.push([
+    0x10000,
+    blob(0xfade0b01, o.identity === true ? Buffer.alloc(40, 1) : Buffer.alloc(0)),
+  ]);
   const head = Buffer.alloc(12 + parts.length * 8);
   head.writeUInt32BE(0xfade0cc0, 0);
-  head.writeUInt32BE(head.length + parts.reduce((n, p) => n + p.length, 0), 4);
+  head.writeUInt32BE(head.length + parts.reduce((n, [, p]) => n + p.length, 0), 4);
   head.writeUInt32BE(parts.length, 8);
   let off = head.length;
-  parts.forEach((p, i) => {
-    head.writeUInt32BE(i, 12 + i * 8);
+  parts.forEach(([type, p], i) => {
+    head.writeUInt32BE(type, 12 + i * 8);
     head.writeUInt32BE(off, 16 + i * 8);
     off += p.length;
   });
-  return Buffer.concat([head, ...parts]);
+  return Buffer.concat([head, ...parts.map(([, p]) => p)]);
 }
 
-/** What the runbook's ad-hoc signature of the main executable says. */
+/** A Mach-O signed as `codesign` signs it: a valid signature saying what `o` says. */
+function signedMacho(
+  o: SigSpec & { code?: number; cpu?: number } = {},
+  sealed: Sealed = {},
+): Buffer {
+  const file = macho({
+    sig: sigBlob(o),
+    ...(o.code === undefined ? {} : { code: o.code }),
+    ...(o.cpu === undefined ? {} : { cpu: o.cpu }),
+  });
+  sigBlob(o, file.subarray(0, CODE_LIMIT), sealed).copy(file, CODE_LIMIT);
+  return file;
+}
+
+/** What the runbook's ad-hoc signature of the main executable says (its bytes; not valid). */
 const goodSig = (): Buffer => sigBlob();
 
 function elfHeader(machine: number): Buffer {
@@ -499,9 +565,9 @@ describe('reading a binary', () => {
 
     it('refuses a second copy of the entitlements', () => {
       const one = sigBlob();
-      // Point the DER entitlements' index entry at the XML blob: two XML copies.
+      // Parts: directory, requirements, XML, DER, CMS. Point the DER entry at the XML blob.
       const twice = Buffer.from(one);
-      twice.writeUInt32BE(twice.readUInt32BE(16 + 8), 16 + 16);
+      twice.writeUInt32BE(twice.readUInt32BE(16 + 2 * 8), 16 + 3 * 8);
       refused(() => read(twice), /holds a part twice/);
     });
 
@@ -526,6 +592,80 @@ describe('reading a binary', () => {
       expect(parseEntitlementsXml(file)).toEqual(pinned);
       expect(pinned.size).toBeGreaterThan(0);
       expect(expectedEntitlements('Contents/Resources/app/node_modules/x/y.node').size).toBe(0);
+    });
+  });
+
+  describe('whether a signature is valid', () => {
+    const SEAL = Buffer.from('the resource seal');
+    const none = { infoPlist: null, resources: null };
+    /** The first code directory's offset in the file, and its hash offset. */
+    const cd = (f: Buffer): { at: number; hashes: number } => {
+      const at = CODE_LIMIT + f.readUInt32BE(CODE_LIMIT + 16);
+      return { at, hashes: at + f.readUInt32BE(at + 16) };
+    };
+
+    it('takes one whose pages and special slots hash what they name', () => {
+      expect(() => {
+        assertSignatureValid(signedMacho(), none, 'x');
+      }).not.toThrow();
+      expect(() => {
+        assertSignatureValid(
+          signedMacho({ directories: 2 }, { resources: SEAL }),
+          { infoPlist: null, resources: SEAL },
+          'x',
+        );
+      }).not.toThrow();
+    });
+
+    it('refuses a page whose hash is not the code’s', () => {
+      const f = signedMacho();
+      const { hashes } = cd(f);
+      f[hashes + 32] = (f[hashes + 32] ?? 0) ^ 1;
+      refused(() => {
+        assertSignatureValid(f, none, 'x');
+      }, /x: page 1 of the code is not the one its signature hashes/);
+    });
+
+    it('refuses a special slot that is not the hash of what it names', () => {
+      refused(() => {
+        assertSignatureValid(
+          signedMacho({}, { resources: SEAL }),
+          { infoPlist: null, resources: Buffer.from('another seal') },
+          'x',
+        );
+      }, /special slot 3 is not the hash of what it names/);
+      refused(() => {
+        assertSignatureValid(signedMacho({}, { infoPlist: Buffer.from('<plist/>') }), none, 'x');
+      }, /special slot 1 names something that is not there/);
+      const f = signedMacho();
+      const { hashes } = cd(f);
+      f[hashes - 5 * 32] = (f[hashes - 5 * 32] ?? 0) ^ 1;
+      refused(() => {
+        assertSignatureValid(f, none, 'x');
+      }, /special slot 5 is not the hash of what it names/);
+    });
+
+    it('refuses entitlements their directory does not bind', () => {
+      const f = signedMacho();
+      const { hashes } = cd(f);
+      f.fill(0, hashes - 5 * 32, hashes - 4 * 32);
+      refused(() => {
+        assertSignatureValid(f, none, 'x');
+      }, /slot 5 of the code signature is not bound/);
+    });
+
+    it('refuses a directory that does not cover the code up to the signature', () => {
+      const f = signedMacho();
+      f.writeUInt32BE(CODE_LIMIT - 16, cd(f).at + 32);
+      refused(() => {
+        assertSignatureValid(f, none, 'x');
+      }, /does not cover the code/);
+    });
+
+    it('refuses an unsigned binary', () => {
+      refused(() => {
+        assertSignatureValid(macho({ sigSize: null }), none, 'x');
+      }, /x is not signed/);
     });
   });
 
@@ -1012,12 +1152,12 @@ describe('five packages from one run', () => {
  * A bundle with a Mach-O, a script and (where symlinks can be made) a symlink. `sig` is the main
  * executable's signature: a real one, a placeholder of that many bytes, or none.
  */
-function bundle(dir: string, sig: Buffer | number | null = 32): void {
+function bundle(dir: string, sig: SigSpec | number | null = 32, sealed: Sealed = {}): void {
   mkdirSync(join(dir, 'Contents', 'MacOS'), { recursive: true });
   mkdirSync(join(dir, 'Contents', 'Resources'), { recursive: true });
   writeFileSync(
     join(dir, 'Contents', 'MacOS', APP.productName),
-    Buffer.isBuffer(sig) ? macho({ sig }) : macho({ sigSize: sig }),
+    sig === null || typeof sig === 'number' ? macho({ sigSize: sig }) : signedMacho(sig, sealed),
   );
   chmodSync(join(dir, 'Contents', 'MacOS', APP.productName), 0o755);
   writeFileSync(join(dir, 'Contents', 'Resources', 'main.js'), 'script');
@@ -1031,7 +1171,7 @@ function readableApp(path: string, kind: 'unsigned' | 'signed'): void {
   mkdirSync(join(res, 'main'), { recursive: true });
   mkdirSync(join(path, 'Contents', 'MacOS'), { recursive: true });
   const exe = join(path, 'Contents', 'MacOS', APP.productName);
-  writeFileSync(exe, kind === 'signed' ? macho({ sig: goodSig() }) : macho({ sigSize: 32 }));
+  writeFileSync(exe, kind === 'signed' ? signedMacho() : macho({ sigSize: 32 }));
   chmodSync(exe, 0o755);
   const root = releaseRoot();
   writeFileSync(join(res, 'package.json'), JSON.stringify({ version: '1.2.3', commit: COMMIT }));
@@ -1046,14 +1186,15 @@ describe('a signed package', () => {
   const win = target('win32-x64');
 
   describe('a macOS bundle', () => {
-    const pair = (sig: Buffer = goodSig()): { unsigned: string; signed: string } => {
+    const SEAL = Buffer.from('seal');
+    const pair = (sig: SigSpec = {}): { unsigned: string; signed: string } => {
       const d = tmp();
       const unsigned = join(d, 'u', mac.file);
       const signed = join(d, 's', mac.file);
       bundle(unsigned, null);
-      bundle(signed, sig);
+      bundle(signed, sig, { resources: SEAL });
       mkdirSync(join(signed, 'Contents', '_CodeSignature'));
-      writeFileSync(join(signed, 'Contents', '_CodeSignature', 'CodeResources'), 'seal');
+      writeFileSync(join(signed, 'Contents', '_CodeSignature', 'CodeResources'), SEAL);
       writeFileSync(join(signed, 'Contents', 'CodeResources'), 'ticket');
       return { unsigned, signed };
     };
@@ -1098,9 +1239,9 @@ describe('a signed package', () => {
       });
 
       it('refuses a bundle re-signed with an entitlement added', async () => {
-        const { unsigned, signed } = pair(
-          sigBlob({ entitlements: { ...JIT, 'com.apple.security.get-task-allow': true } }),
-        );
+        const { unsigned, signed } = pair({
+          entitlements: { ...JIT, 'com.apple.security.get-task-allow': true },
+        });
         await refusedAsync(
           compareSigned(mac, unsigned, signed),
           /Contents\/MacOS\/Nutflix has the entitlements .*get-task-allow=true, not com\.apple\.security\.cs\.allow-jit=true$/,
@@ -1108,12 +1249,12 @@ describe('a signed package', () => {
       });
 
       it('refuses one with its entitlements taken away', async () => {
-        const { unsigned, signed } = pair(sigBlob({ entitlements: null }));
+        const { unsigned, signed } = pair({ entitlements: null });
         await refusedAsync(compareSigned(mac, unsigned, signed), /has the entitlements none/);
       });
 
       it('refuses one with the hardened runtime removed', async () => {
-        const { unsigned, signed } = pair(sigBlob({ flags: CS_ADHOC }));
+        const { unsigned, signed } = pair({ flags: CS_ADHOC });
         await refusedAsync(
           compareSigned(mac, unsigned, signed),
           /Contents\/MacOS\/Nutflix is not signed with the hardened runtime/,
@@ -1121,9 +1262,11 @@ describe('a signed package', () => {
       });
 
       it('refuses any identity while no Team ID is pinned', async () => {
-        const { unsigned, signed } = pair(
-          sigBlob({ flags: CS_RUNTIME, team: 'OTHER12345', identity: true }),
-        );
+        const { unsigned, signed } = pair({
+          flags: CS_RUNTIME,
+          team: 'OTHER12345',
+          identity: true,
+        });
         await refusedAsync(
           compareSigned(mac, unsigned, signed),
           /signed by OTHER12345: with no Apple Team ID pinned, only an ad-hoc signature/,
@@ -1131,9 +1274,9 @@ describe('a signed package', () => {
       });
 
       it('with a Team ID pinned, takes that team and refuses another, or ad hoc', async () => {
-        const ours = pair(sigBlob({ flags: CS_RUNTIME, team: 'ABCDE12345', identity: true }));
+        const ours = pair({ flags: CS_RUNTIME, team: 'ABCDE12345', identity: true });
         await expect(compareSigned(mac, ours.unsigned, ours.signed, team)).resolves.toBeUndefined();
-        const other = pair(sigBlob({ flags: CS_RUNTIME, team: 'OTHER12345', identity: true }));
+        const other = pair({ flags: CS_RUNTIME, team: 'OTHER12345', identity: true });
         await refusedAsync(
           compareSigned(mac, other.unsigned, other.signed, team),
           /signed by OTHER12345, not Team ID ABCDE12345/,
@@ -1151,6 +1294,42 @@ describe('a signed package', () => {
         writeFileSync(join(unsigned, 'Contents', 'MacOS', APP.productName), macho({ sigSize: 32 }));
         await refusedAsync(compareSigned(mac, unsigned, signed), /is not signed/);
       });
+    });
+
+    it('refuses a resource seal its signature does not hash, and a signature that is not valid', async () => {
+      const { unsigned, signed } = pair();
+      writeFileSync(join(signed, 'Contents', '_CodeSignature', 'CodeResources'), 'another seal');
+      await refusedAsync(
+        compareSigned(mac, unsigned, signed),
+        /Contents\/MacOS\/Nutflix: special slot 3 is not the hash of what it names/,
+      );
+      const bad = pair();
+      const exe = join(bad.signed, 'Contents', 'MacOS', APP.productName);
+      const f = readFileSync(exe);
+      const at = CODE_LIMIT + f.readUInt32BE(CODE_LIMIT + 16);
+      const hashes = at + f.readUInt32BE(at + 16);
+      f[hashes] = (f[hashes] ?? 0) ^ 1;
+      writeFileSync(exe, f);
+      await refusedAsync(
+        compareSigned(mac, bad.unsigned, bad.signed),
+        /Contents\/MacOS\/Nutflix: page 0 of the code is not the one its signature hashes/,
+      );
+    });
+
+    it('holds a Mach-O left as CI built it to the policy too', async () => {
+      const { unsigned, signed } = pair();
+      // The same addon in both: CI's linker signature, no hardened runtime, on an executable.
+      for (const d of [unsigned, signed]) {
+        mkdirSync(join(d, 'Contents', 'Resources', 'addon'), { recursive: true });
+        writeFileSync(
+          join(d, 'Contents', 'Resources', 'addon', 'tool'),
+          signedMacho({ flags: CS_ADHOC, entitlements: null }),
+        );
+      }
+      await refusedAsync(
+        compareSigned(mac, unsigned, signed),
+        /Contents\/Resources\/addon\/tool is not signed with the hardened runtime/,
+      );
     });
 
     it('exempts only a bundle’s or a framework’s own _CodeSignature', async () => {
@@ -1191,7 +1370,7 @@ describe('a signed package', () => {
       const { unsigned, signed } = pair();
       writeFileSync(
         join(signed, 'Contents', 'MacOS', APP.productName),
-        macho({ sig: goodSig(), code: 0x12 }),
+        signedMacho({ code: 0x12 }),
       );
       await refusedAsync(compareSigned(mac, unsigned, signed), /more than the signature/);
     });
@@ -1576,7 +1755,7 @@ describe('what a signer checks', () => {
     mkdirSync(root);
     writeFileSync(join(root, 'package.json'), deploymentPackageJson({ version: '1.2.3' }));
     const entry = join(root, ...deploymentEntry(mac).split('/'));
-    bundle(entry, goodSig());
+    bundle(entry, {});
     const ci = [{ target: mac, app, digest }];
     await refusedAsync(compareDrive(root, '1.2.3', ci), /is not what CI built/);
     const rows = await compareDrive(root, '1.2.3', ci, new Set([mac.name]));

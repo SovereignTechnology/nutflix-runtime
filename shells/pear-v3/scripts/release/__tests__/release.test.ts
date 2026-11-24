@@ -157,6 +157,7 @@ function fakeIo(
       return Promise.resolve({ code: over.code ?? 0, out: '' });
     },
     runIsolated: (bin, _home, args) => io.runPublic(bin, args),
+    codesignVerify: () => null,
     runBuild: (_bin, _out, args) => {
       io.built.push(args);
       return Promise.resolve();

@@ -495,12 +495,18 @@ jobs:
             "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/runtime-x86_64"
       - name: allow Chromium's user-namespace sandbox on this runner
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: the release, end to end, on a private DHT with throwaway keys (Xvfb)
+      # The job's read-only token, in a file only this user can read: it is in no later process's
+      # environment. prove.ts reads it, deletes the file, and hands the token to `gh` alone.
+      - name: the API token, for gh alone
         env:
-          # Read once by prove.ts and handed to `gh` alone (prove.ts: TOKEN_NAMES).
-          RELEASE_PROOF_GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/release-proof-gh-token"
+      - name: the release, end to end, on a private DHT with throwaway keys (Xvfb)
         run: |
           xvfb-run -a node shells/pear-v3/scripts/release/prove.ts --target linux-x64 \
+            --token-file "$RUNNER_TEMP/release-proof-gh-token" \
             --work "$RUNNER_TEMP/release-proof"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

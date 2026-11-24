@@ -67,6 +67,15 @@ function slices(file: Buffer): Slice[] | null {
   return out;
 }
 
+/** Whether `file` starts like a 64-bit Mach-O, thin or universal (read from its first bytes). */
+export function isMachoFile(file: string): boolean {
+  const h = head(file, 8);
+  if (h.length < 8) return false;
+  if (h.readUInt32LE(0) === MH_MAGIC_64) return true;
+  // A Java class file starts with the same four bytes, and then a version far above 8.
+  return h.readUInt32BE(0) === FAT_MAGIC && h.readUInt32BE(4) > 0 && h.readUInt32BE(4) <= 8;
+}
+
 /** The CPUs of a Mach-O, or `null` if it is not one. */
 export function machoArches(file: string): Arch[] | null {
   const h = head(file, 8 + 8 * 20);
@@ -351,6 +360,203 @@ export function machoSignatures(file: Buffer): SliceSignature[] | null {
     out.push({ cpu: s.cpu, fileType: l.fileType, signature: readSignature(s.bytes, l) });
   }
   return out;
+}
+
+// ---- whether a signature is valid ---------------------------------------------------------------
+
+/** What a bundle's main executable seals besides its code: the bundle's Info.plist and resource seal. */
+export interface SealedFiles {
+  readonly infoPlist: Buffer | null;
+  readonly resources: Buffer | null;
+}
+
+/** Superblob slot types (`cs_blobs.h`). */
+const SLOT_CODEDIRECTORY = 0;
+const SLOT_INFO = 1;
+const SLOT_REQUIREMENTS = 2;
+const SLOT_RESOURCES = 3;
+const SLOT_APPLICATION = 4;
+const SLOT_ENTITLEMENTS = 5;
+const SLOT_REP_SPECIFIC = 6;
+const SLOT_DER_ENTITLEMENTS = 7;
+/** Launch and library constraints: blobs in the superblob, hashed like the entitlements. */
+const SLOT_LAST_BLOB = 11;
+const SLOT_ALTERNATE_DIRECTORIES = 0x1000;
+const SLOT_SIGNATURE = 0x10000;
+const REQUIREMENTS = 0xfade0c01;
+/** A launch or library constraint (slots 8 to 11). */
+const CONSTRAINT = 0xfade8181;
+
+const HASH_TYPES: Readonly<Record<number, { algorithm: string; size: number }>> = {
+  1: { algorithm: 'sha1', size: 20 },
+  2: { algorithm: 'sha256', size: 32 },
+  3: { algorithm: 'sha256', size: 20 }, // SHA-256, truncated
+  4: { algorithm: 'sha384', size: 48 },
+};
+
+const digestOf = (algorithm: string, size: number, bytes: Buffer): Buffer =>
+  createHash(algorithm).update(bytes).digest().subarray(0, size);
+
+/**
+ * A slice's own Info.plist, linked into `__TEXT,__info_plist`: what `codesign` binds in special slot
+ * 1 for a binary that is not a bundle's main executable. `null` if it has none.
+ */
+function embeddedInfoPlist(s: Buffer): Buffer | null {
+  const ncmds = s.readUInt32LE(16);
+  let at = HEADER_64;
+  for (let i = 0; i < ncmds && at + 8 <= s.length; i++) {
+    const cmd = s.readUInt32LE(at);
+    const size = s.readUInt32LE(at + 4);
+    if (size < 8) return null;
+    if (
+      cmd === LC_SEGMENT_64 &&
+      s.toString('latin1', at + 8, at + 24).replace(/\0+$/, '') === '__TEXT'
+    ) {
+      const nsects = s.readUInt32LE(at + 64);
+      for (let j = 0; j < nsects; j++) {
+        const sec = at + 72 + j * 80;
+        if (sec + 80 > at + size) return null;
+        if (s.toString('latin1', sec, sec + 16).replace(/\0+$/, '') !== '__info_plist') continue;
+        const length = Number(s.readBigUInt64LE(sec + 40));
+        const offset = s.readUInt32LE(sec + 48);
+        if (offset + length > s.length) return null;
+        return s.subarray(offset, offset + length);
+      }
+    }
+    at += size;
+  }
+  return null;
+}
+
+/**
+ * Throws unless every code directory of every slice is valid: the hash of each page of code is the
+ * one it records, and each special slot it fills holds the hash of what that slot names (the
+ * bundle's Info.plist, or else the binary's own embedded one, and its resource seal, the
+ * requirements, the entitlements in both forms, and any launch constraints). A slot that names nothing must be empty. This is what the kernel checks when
+ * the code runs; it does not verify a CMS signature (an identity's chain to Apple).
+ */
+export function assertSignatureValid(file: Buffer, sealed: SealedFiles, what: string): void {
+  const all = slices(file);
+  if (all === null) return refuse(`${what} is not a Mach-O this tool can read`);
+  for (const slice of all) {
+    const s = slice.bytes;
+    const l = layout(s);
+    if (l === null) return refuse(`${what} is not a Mach-O this tool can read`);
+    if (l.signature === null) return refuse(`${what} is not signed`);
+    const base = l.signature.dataoff;
+    const end = base + l.signature.datasize;
+    const be = (o: number): number => {
+      if (o + 4 > end) return refuse(`${what}: a code signature runs past its end`);
+      return s.readUInt32BE(o);
+    };
+    if (be(base) !== SUPERBLOB) return refuse(`${what}: a code signature without its superblob`);
+    const count = be(base + 8);
+    if (count > 64) return refuse(`${what}: a code signature with too many parts`);
+    const blobs = new Map<number, Buffer>();
+    const directories: Buffer[] = [];
+    for (let i = 0; i < count; i++) {
+      const type = be(base + 12 + i * 8);
+      const offset = base + be(base + 12 + i * 8 + 4);
+      const length = be(offset + 4);
+      if (length < 8 || offset + length > end)
+        return refuse(`${what}: a code signature part runs past its end`);
+      const blob = s.subarray(offset, offset + length);
+      if (blobs.has(type)) return refuse(`${what}: a code signature names one slot twice`);
+      blobs.set(type, blob);
+      if (
+        type === SLOT_CODEDIRECTORY ||
+        (type >= SLOT_ALTERNATE_DIRECTORIES && type < SLOT_ALTERNATE_DIRECTORIES + 5)
+      ) {
+        if (blob.readUInt32BE(0) !== CODEDIRECTORY)
+          return refuse(`${what}: a code directory slot holds something else`);
+        directories.push(blob);
+      }
+    }
+    if (directories.length === 0)
+      return refuse(`${what}: a code signature without a code directory`);
+    const expectMagic: Readonly<Record<number, number>> = {
+      [SLOT_REQUIREMENTS]: REQUIREMENTS,
+      [SLOT_ENTITLEMENTS]: ENTITLEMENTS_XML,
+      [SLOT_DER_ENTITLEMENTS]: ENTITLEMENTS_DER,
+      [SLOT_SIGNATURE]: CMS_WRAPPER,
+      8: CONSTRAINT,
+      9: CONSTRAINT,
+      10: CONSTRAINT,
+      11: CONSTRAINT,
+    };
+    for (const [type, magic] of Object.entries(expectMagic)) {
+      const blob = blobs.get(Number(type));
+      if (blob === undefined) continue;
+      if (blob.readUInt32BE(0) !== magic)
+        return refuse(`${what}: slot ${type} of the code signature holds something else`);
+    }
+    for (const cd of directories) {
+      if (cd.length < 44) return refuse(`${what}: a code directory too short to be one`);
+      const version = cd.readUInt32BE(8);
+      const hashOffset = cd.readUInt32BE(16);
+      const nSpecial = cd.readUInt32BE(24);
+      const nCode = cd.readUInt32BE(28);
+      const codeLimit = cd.readUInt32BE(32);
+      const hashSize = cd[36] ?? 0;
+      const type = HASH_TYPES[cd[37] ?? 0];
+      const pageShift = cd[39] ?? 0;
+      if (type?.size !== hashSize) return refuse(`${what}: a code directory with an unknown hash`);
+      if (version >= 0x20100 && cd.length >= 48 && cd.readUInt32BE(44) !== 0)
+        return refuse(
+          `${what}: a code directory with scatter lists, which this tool does not read`,
+        );
+      if (version >= 0x20300 && cd.length >= 64 && cd.readBigUInt64BE(56) !== 0n)
+        return refuse(`${what}: a code directory over 4 GiB, which this tool does not read`);
+      if (nSpecial > SLOT_LAST_BLOB || hashOffset < 44 + nSpecial * hashSize)
+        return refuse(`${what}: a code directory with special slots this tool does not know`);
+      if (hashOffset + nCode * hashSize > cd.length)
+        return refuse(`${what}: a code directory's hashes run past its end`);
+      // The code is everything before the signature, page by page.
+      if (codeLimit !== base)
+        return refuse(`${what}: a code directory that does not cover the code`);
+      const page = pageShift === 0 ? codeLimit : 2 ** pageShift;
+      if (nCode !== Math.ceil(codeLimit / page))
+        return refuse(`${what}: a code directory with the wrong number of pages`);
+      for (let i = 0; i < nCode; i++) {
+        const got = digestOf(
+          type.algorithm,
+          hashSize,
+          s.subarray(i * page, Math.min((i + 1) * page, codeLimit)),
+        );
+        const want = cd.subarray(hashOffset + i * hashSize, hashOffset + (i + 1) * hashSize);
+        if (!got.equals(want))
+          return refuse(
+            `${what}: page ${String(i)} of the code is not the one its signature hashes`,
+          );
+      }
+      // Special slots, numbered down from the code hashes.
+      for (let slot = 1; slot <= SLOT_LAST_BLOB; slot++) {
+        const want =
+          slot <= nSpecial
+            ? cd.subarray(hashOffset - slot * hashSize, hashOffset - (slot - 1) * hashSize)
+            : null;
+        const filled = want?.some((b) => b !== 0) === true;
+        const named =
+          slot === SLOT_INFO
+            ? (sealed.infoPlist ?? embeddedInfoPlist(s))
+            : slot === SLOT_RESOURCES
+              ? sealed.resources
+              : slot === SLOT_APPLICATION || slot === SLOT_REP_SPECIFIC
+                ? null
+                : (blobs.get(slot) ?? null);
+        if (!filled) {
+          // A blob in the signature that its directory does not bind would be read unchecked.
+          if (named !== null && slot !== SLOT_INFO && slot !== SLOT_RESOURCES)
+            return refuse(`${what}: slot ${String(slot)} of the code signature is not bound`);
+          continue;
+        }
+        if (named === null)
+          return refuse(`${what}: special slot ${String(slot)} names something that is not there`);
+        if (!digestOf(type.algorithm, hashSize, named).equals(want))
+          return refuse(`${what}: special slot ${String(slot)} is not the hash of what it names`);
+      }
+    }
+  }
 }
 
 // ---- a Windows binary's Authenticode digest -----------------------------------------------------

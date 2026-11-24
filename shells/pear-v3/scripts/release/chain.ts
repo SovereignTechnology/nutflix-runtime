@@ -649,7 +649,7 @@ export async function proveReleaseChain(
         );
         row(
           `signer ${name}`,
-          'refused a swapped entry, a request for another version, and the cores of another version',
+          "refused a swapped entry, a request for another version, and the previous release's recorded core report (length and tree hash) against this request; no live fork or growth during a check is exercised",
         );
       }
       row(
