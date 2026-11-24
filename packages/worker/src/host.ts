@@ -25,7 +25,7 @@
 import type { signer as coreSigner } from '@sovit/core';
 import { nfx } from '@sovit/core';
 import { npubEncode } from 'nostr-tools/nip19';
-import type { Logger } from '@sovit/seeder';
+import type { Logger, NfxDht } from '@sovit/seeder';
 import { DiskCap, NfxStore } from '@sovit/seeder';
 
 import { randomHex, sodiumCrypto, sodiumSha256 } from './crypto.js';
@@ -34,6 +34,7 @@ import type { Keyring } from './keys.js';
 import { openCorestoreKeyring } from './keys.js';
 import { createWorkerLogger } from './log.js';
 import { DhtNode } from './net/dht-node.js';
+import { isLoopbackTestnet, withoutLocalAddresses } from './net/no-local-addresses.js';
 import { signBeacons, type BeaconTarget } from './nfx/beacons.js';
 import { NfxPeerPool } from './nfx/hyperdht-fetcher.js';
 import { OFFERED_DIR, SegmentOffers } from './nfx/offers.js';
@@ -81,6 +82,11 @@ export interface WorkerHostOptions {
   readonly dialTimeoutMs?: number;
   readonly readWaitMs?: number;
   readonly originWaitMs?: number;
+  /**
+   * TESTS ONLY: hide local addresses (`../net/no-local-addresses.ts`) even on a loopback test
+   * network, which keeps hyperdht's defaults otherwise.
+   */
+  readonly hideLocalAddresses?: boolean;
   /** TESTS ONLY: the local signer's KDF cost, a bunker's wait, x264's preset. */
   readonly signerCost?: coreSigner.KdfCost;
   readonly bunkerWaitMs?: number;
@@ -511,8 +517,11 @@ export class WorkerHost implements WorkerRpcHandler {
       },
       ...(this.o.bootstrapWaitMs === undefined ? {} : { bootstrapWaitMs: this.o.bootstrapWaitMs }),
     });
+    // No local addresses to any peer, but on a loopback test network (`../net/no-local-addresses.ts`).
+    const hideLocal = this.o.hideLocalAddresses ?? !isLoopbackTestnet(a.bootstrap ?? null);
+    const nfxView = (node: NfxDht): NfxDht => (hideLocal ? withoutLocalAddresses(node) : node);
     const pool = new NfxPeerPool({
-      dht: () => dht.ready(),
+      dht: async () => nfxView(await dht.ready()),
       keyPair: (namespace) => keys.keyPair(watcherKeyName(namespace)),
       crypto: sodiumCrypto,
       logger,
@@ -567,7 +576,10 @@ export class WorkerHost implements WorkerRpcHandler {
     const seeds = new NfxSeeds({
       store,
       pool,
-      dht: () => dht.forListener(),
+      dht: () => {
+        const node = dht.forListener();
+        return node === null ? null : nfxView(node);
+      },
       keyPair: (name) => keys.keyPair(name),
       logger,
       emit: (ev) => {

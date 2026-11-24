@@ -256,8 +256,6 @@ declare module 'hyperdht' {
     readonly host?: string;
     readonly port?: number;
     readonly ephemeral?: boolean;
-    /** Default `true`. `false`: reachable at its address, so a dialer connects to it directly. */
-    readonly firewalled?: boolean;
   }
 
   export interface ServerOptions {

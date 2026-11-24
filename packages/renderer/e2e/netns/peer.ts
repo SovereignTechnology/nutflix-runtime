@@ -122,9 +122,7 @@ async function main(cfg: PeerConfig): Promise<void> {
   };
 
   const testnet = await createTestnet(3);
-  // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
-  // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
-  const seederDht = new DHT({ bootstrap: testnet.bootstrap, firewalled: false });
+  const seederDht = new DHT({ bootstrap: testnet.bootstrap });
   await seederDht.fullyBootstrapped();
   const keyPair = DHT.keyPair();
   const listener = await listenNfx(seederDht, { keyPair, source });

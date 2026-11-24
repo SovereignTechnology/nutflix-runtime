@@ -31,8 +31,6 @@ import type {
 } from '@sovit/seeder';
 import { dialNfx, toHex } from '@sovit/seeder';
 
-import { withoutLocalAddresses } from '../net/no-local-addresses.js';
-
 import type { NfxFetcher } from './watch.js';
 import { NfxFetchError } from './watch.js';
 
@@ -168,7 +166,7 @@ export class NfxPeerPool {
     if (this.closed) return null;
     try {
       const [dht, keyPair] = await Promise.all([this.o.dht(), this.o.keyPair(namespace)]);
-      const r = await dialNfx(withoutLocalAddresses(dht), peer, {
+      const r = await dialNfx(dht, peer, {
         keyPair,
         crypto: this.o.crypto,
         timeoutMs: this.o.dialTimeoutMs ?? NFX_DIAL_TIMEOUT_MS,

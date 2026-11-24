@@ -95,7 +95,8 @@ with `localConnection: false` and listens with `shareLocalAddress: false`
 would carry every local IPv4 address of this machine to the other side. A seeder still learns your
 public address, as any peer does. The cost: a seeder on your own LAN, behind a router without NAT
 loopback, may not be reachable. nutflix-pear's desktop app still shares local addresses; that is
-not changed here.
+not changed here. The one exception is a test network on this machine (every bootstrap node
+`127.0.0.1`: the tests and the proof), where the local address is how two processes meet.
 
 So this shape starts with WebRTC off and plays over HyperDHT alone, and Settings says why. You can
 turn it on there, and that choice is kept across restarts. If the window has no working storage,
@@ -210,9 +211,7 @@ on the public DHT. So **GitHub never runs `pear`.**
   as its title and no ICE gathering, no seeding or account controls, every signer, Studio,
   seeding and `app.*` method refused, checked links, no RPC on any socket, no listener after a
   play, no signing key or signer directory on disk, a clean exit, settings kept across a restart,
-  no worker from an unversioned link, and a refusal on the wrong platform. Its seeder is a node
-  that is not firewalled, as a public seeder is: with local addresses never shared, a firewalled
-  seeder on the same host could not be reached.
+  no worker from an unversioned link, and a refusal on the wrong platform.
 
 Not proved: a real SovTech release line, a real signed notice, the Electron UI drive's bytes, a
 WebRTC mesh playback here, connecting to a seeder behind a NAT, any target but Linux x64, and any

@@ -93,9 +93,7 @@ async function start(): Promise<World> {
   cleanups.push(() => testnet.destroy());
 
   // The seeder: nutflix-pear's own NFX-12 listener, on its own node of the testnet.
-  // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
-  // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
-  const seederDht = new DHT({ bootstrap: testnet.bootstrap, firewalled: false });
+  const seederDht = new DHT({ bootstrap: testnet.bootstrap });
   cleanups.push(() => seederDht.destroy());
   await seederDht.fullyBootstrapped();
   const keyPair = DHT.keyPair();

@@ -129,7 +129,10 @@ v2.6.5; the removal was announced for the end of June 2026). In v3:
   ADR 0023 rule 5, which keeps LAN candidates from WebRTC peers, applied to HyperDHT; without it,
   turning WebRTC off would not keep those addresses from strangers. The cost: a viewer and a seeder
   on the same LAN, behind a router without NAT loopback, may fail to connect, because neither learns
-  the other's LAN address. nutflix-pear's desktop app still shares them; that is not changed here.
+  the other's LAN address, and so may two apps on one machine. A node whose every bootstrap is
+  `127.0.0.1`, a test network of this machine's own processes, keeps hyperdht's defaults: that is
+  how the tests and proofs on one host connect. nutflix-pear's desktop app still shares local
+  addresses; that is not changed here.
 - **Known limit: free space is read once, per job.** Studio reads the real free space
   (`statfs`) and holds a job to a third of it, because the encode, the packaged files and the store's
   copy are on disk at once. Anything else filling the disk during the job can still end it with an

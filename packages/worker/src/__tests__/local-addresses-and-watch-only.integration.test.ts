@@ -2,26 +2,27 @@
  * Two things a viewer's machine must not do, on a local hyperdht testnet against nutflix-pear's own
  * NFX-12 code:
  *
- *   - tell a peer its local addresses: the worker dials with `localConnection: false` and listens
- *     with `shareLocalAddress: false` (`../net/no-local-addresses.ts`), and fetching and serving
- *     still work;
+ *   - tell a peer its local addresses: off the loopback test network, the worker dials with
+ *     `localConnection: false` and listens with `shareLocalAddress: false`
+ *     (`../net/no-local-addresses.ts`); on it, it keeps hyperdht's defaults, so peers on one host
+ *     still meet;
  *   - serve anything when it is watch only (`InitArgs.watchOnly`): no listener opens at `init`
  *     even with a served video on disk, and the methods that would start one are refused.
  */
 import { randomBytes } from 'node:crypto';
 
 import type { NfxDht, NfxFileSource } from '@sovit/seeder';
-import { dialNfx, hyperdhtEndpoint, listenNfx, nodeCrypto } from '@sovit/seeder';
+import { hyperdhtEndpoint, listenNfx } from '@sovit/seeder';
 import DHT from 'hyperdht';
 import createTestnet from 'hyperdht/testnet.js';
 import type { Testnet } from 'hyperdht/testnet.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkerError } from '../errors.js';
-import { withoutLocalAddresses } from '../net/no-local-addresses.js';
+import { isLoopbackTestnet, withoutLocalAddresses } from '../net/no-local-addresses.js';
 import type { NfxHyperdhtEndpointWire, WorkerMethod } from '../protocol.js';
 import { startWorker, tempDir } from './helpers/harness.js';
-import { memorySource, vectorVideo } from './helpers/nfx-video.js';
+import { memorySource, testNfxVideo, vectorVideo } from './helpers/nfx-video.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -49,6 +50,49 @@ describe('withoutLocalAddresses', () => {
     expect(seen.connect).toEqual({ keyPair, localConnection: false });
     expect(seen.server).toEqual({ firewall, shareLocalAddress: false });
   });
+
+  it('a caller cannot turn them back on', () => {
+    const seen: unknown[] = [];
+    const dht = {
+      connect: (_k: Uint8Array, opts?: unknown) => {
+        seen.push(opts);
+        return {} as never;
+      },
+      createServer: (opts: unknown) => {
+        seen.push(opts);
+        return {} as never;
+      },
+    } as unknown as NfxDht;
+    const wrapped = withoutLocalAddresses(dht);
+    wrapped.connect(new Uint8Array(32), { localConnection: true });
+    wrapped.createServer({ shareLocalAddress: true }, () => undefined);
+    expect(seen).toEqual([{ localConnection: false }, { shareLocalAddress: false }]);
+  });
+
+  it.each([
+    [null, false],
+    [[], false],
+    [[{ host: '127.0.0.1', port: 1 }], true],
+    [
+      [
+        { host: '127.0.0.1', port: 1 },
+        { host: '127.0.0.1', port: 2 },
+      ],
+      true,
+    ],
+    [
+      [
+        { host: '127.0.0.1', port: 1 },
+        { host: '88.99.3.86', port: 49737 },
+      ],
+      false,
+    ],
+    [[{ host: '127.0.0.2', port: 1 }], false],
+    [[{ host: 'localhost', port: 1 }], false],
+    [[{ host: '10.0.0.1', port: 1 }], false],
+  ])('treats %j as a loopback test network: %s', (b, want) => {
+    expect(isLoopbackTestnet(b)).toBe(want);
+  });
 });
 
 describe('the worker on a testnet', () => {
@@ -65,9 +109,7 @@ describe('the worker on a testnet', () => {
   });
 
   async function node(): Promise<DHT> {
-    // Not firewalled, as a public seeder is: the worker tells no peer its local addresses
-    // (`net/no-local-addresses.ts`), so on one host it meets only a node it can reach directly.
-    const n = new DHT({ bootstrap: testnet.bootstrap, firewalled: false });
+    const n = new DHT({ bootstrap: testnet.bootstrap });
     cleanups.push(() => n.destroy());
     await n.fullyBootstrapped();
     return n;
@@ -84,7 +126,7 @@ describe('the worker on a testnet', () => {
     return hyperdhtEndpoint(keyPair, SEEDER_NOSTR, namespace);
   }
 
-  it('shares no local address when it dials or serves, and both still work', async () => {
+  it('off the loopback test network it shares no local address, dialing or serving', async () => {
     const calls: { self: unknown; kind: 'connect' | 'server'; opts: unknown }[] = [];
     // The real methods, called through: the spies only record who asked, with what.
     const proto = DHT.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
@@ -103,50 +145,54 @@ describe('the worker on a testnet', () => {
 
     const v = vectorVideo();
     const ns = namespaceOf(v.video);
-    const peer = await pearSeeder(memorySource(v.files, v.video), ns);
     const d = await tempDir('nf-local-');
     cleanups.push(() => d.rm());
-    const w = startWorker();
-    cleanups.push(() => w.close());
-    await w.client.request('init', { v: 1, storage: d.dir, bootstrap: testnet.bootstrap });
+    const init = { v: 1, storage: d.dir, bootstrap: testnet.bootstrap } as const;
 
-    // It dials to fetch, then serves what it stored.
-    await w.client.request('nfx.seed.start', {
+    // On the loopback test network: hyperdht's defaults, and the fetch works.
+    const first = startWorker();
+    cleanups.push(() => first.close());
+    await first.client.request('init', init);
+    await first.client.request('nfx.seed.start', {
       video: v.video,
       root: v.root,
       segs: v.segs,
-      peers: [peer],
+      peers: [await pearSeeder(memorySource(v.files, v.video), ns)],
     });
-    const { hyperdht } = await w.client.request('nfx.endpoint', {
-      seeder: SEEDER_NOSTR,
-      namespace: ns,
-    });
-    if (hyperdht === null) throw new Error('no endpoint while seeding');
-    const viewer = await node();
-    const dialed = await dialNfx(viewer, Buffer.from(hyperdht.peer, 'hex'), {
-      keyPair: DHT.keyPair(),
-      crypto: nodeCrypto,
-    });
-    expect(dialed.ok).toBe(true);
-    if (dialed.ok) dialed.connection.destroy('test over');
+    const firstDht = first.host.internals?.dht.dht;
+    const firstCalls = calls.filter((c) => c.self === firstDht);
+    expect(firstCalls.map((c) => c.kind).sort()).toEqual(['connect', 'server']);
+    for (const c of firstCalls) {
+      expect(c.opts).not.toHaveProperty('localConnection');
+      expect(c.opts).not.toHaveProperty('shareLocalAddress');
+    }
+    await first.close();
 
-    const workerDht = w.host.internals?.dht.dht;
-    expect(workerDht).toBeTruthy();
-    const mine = calls.filter((c) => c.self === workerDht);
-    expect(mine.map((c) => c.kind).sort()).toEqual(['connect', 'server']);
+    // As on any other network: it listens for the stored video, and dials, with both turned off.
+    const second = startWorker({ hideLocalAddresses: true, dialTimeoutMs: 2000 });
+    cleanups.push(() => second.close());
+    await second.client.request('init', init);
+    const other = testNfxVideo();
+    await second.client
+      .request('nfx.seed.start', {
+        video: other.video,
+        root: other.root,
+        segs: other.segs,
+        peers: [await pearSeeder(memorySource(other.files, other.video), namespaceOf(other.video))],
+      })
+      .catch(() => undefined);
+    const secondDht = second.host.internals?.dht.dht;
+    expect(secondDht).toBeTruthy();
+    const mine = calls.filter((c) => c.self === secondDht);
+    expect(mine.some((c) => c.kind === 'server')).toBe(true);
+    expect(mine.some((c) => c.kind === 'connect')).toBe(true);
     for (const c of mine)
       expect(c.opts).toMatchObject(
         c.kind === 'connect' ? { localConnection: false } : { shareLocalAddress: false },
       );
     // The test's own nodes were seen too, with hyperdht's defaults: the spies see every call.
-    const others = calls.filter((c) => c.self !== workerDht);
-    expect(others.some((c) => c.kind === 'server')).toBe(true);
-    expect(others.some((c) => c.kind === 'connect')).toBe(true);
-    for (const c of others) {
-      expect(c.opts).not.toHaveProperty('localConnection');
-      expect(c.opts).not.toHaveProperty('shareLocalAddress');
-    }
-    expect(w.fatal).toEqual([]);
+    expect(calls.some((c) => c.self !== firstDht && c.self !== secondDht)).toBe(true);
+    expect([...first.fatal, ...second.fatal]).toEqual([]);
   });
 
   it('watch only: serves nothing at init with a served video on disk, and refuses to seed', async () => {
