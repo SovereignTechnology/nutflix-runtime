@@ -95,10 +95,14 @@ export function msixSigner(p7x: Buffer): SignerCertificate {
 }
 
 const OID_INDIRECT_DATA = '1.3.6.1.4.1.311.2.1.4';
+/** A catalog's members' algorithm: v1 members are tags with a digest inside; v2 members are digests. */
+const OID_MEMBER_V1 = '1.3.6.1.4.1.311.12.1.2';
+const OID_MEMBER_V2 = '1.3.6.1.4.1.311.12.1.3';
 const DIGESTS: Readonly<Record<string, 'sha1' | 'sha256'>> = {
   '1.3.14.3.2.26': 'sha1',
   '2.16.840.1.101.3.4.2.1': 'sha256',
 };
+const DIGEST_HEX = { sha1: 40, sha256: 64 } as const;
 
 export interface CatalogMember {
   readonly algorithm: 'sha1' | 'sha256';
@@ -106,11 +110,29 @@ export interface CatalogMember {
   readonly digest: string;
 }
 
+/** The digest inside a member's indirect-data attribute (SpcIndirectDataContent). */
+function indirectDigest(der: Buffer, attribute: Tlv): CatalogMember {
+  const [, values] = children(der, attribute);
+  const [value, ...more] = values?.tag === 0x31 ? children(der, values) : [];
+  const [, digestInfo] = value?.tag === 0x30 && more.length === 0 ? children(der, value) : [];
+  const [algorithm, digest] = digestInfo?.tag === 0x30 ? children(der, digestInfo) : [];
+  const [oid] = algorithm?.tag === 0x30 ? children(der, algorithm) : [];
+  const name = oid?.tag === 0x06 ? DIGESTS[oidOf(bytesOf(der, oid))] : undefined;
+  if (name === undefined || digest?.tag !== 0x04)
+    return refuse('a catalog member’s digest is not SHA-1 or SHA-256');
+  const hex = bytesOf(der, digest).toString('hex');
+  if (hex.length !== DIGEST_HEX[name])
+    return refuse('a catalog member’s digest has the wrong length');
+  return { algorithm: name, digest: hex };
+}
+
 /**
  * The digest each member of a catalog names. A CTL is a SEQUENCE of: an optional version, the
  * usage, an optional identifier and sequence number, one or two times, the members' algorithm, the
- * members, and optional extensions. A member is its identifier and a SET of attributes; one of them
- * is the indirect data that holds the digest. A member without exactly one is refused.
+ * members, and optional extensions. A member is its identifier and a SET of attributes. In a v2
+ * catalog (what SignTool writes for a package) the identifier is the digest itself, SHA-1 or
+ * SHA-256 by its length, and an indirect-data attribute, if there is one, must name the same; in a
+ * v1 catalog the identifier is a tag and the indirect data is the digest.
  */
 export function catalogMembers(c: SignedContent): CatalogMember[] {
   if (c.contentType !== OID_CTL || c.content?.tag !== 0x30)
@@ -126,33 +148,41 @@ export function catalogMembers(c: SignedContent): CatalogMember[] {
   if (fields[i]?.tag !== 0x17 && fields[i]?.tag !== 0x18) return refuse('the catalog has no date');
   i++;
   if (fields[i]?.tag === 0x17 || fields[i]?.tag === 0x18) i++;
-  if (fields[i]?.tag !== 0x30) return refuse('the catalog has no member algorithm');
+  const algorithm = fields[i];
+  if (algorithm?.tag !== 0x30) return refuse('the catalog has no member algorithm');
+  const [algorithmOid] = children(der, algorithm);
+  const kind = algorithmOid?.tag === 0x06 ? oidOf(bytesOf(der, algorithmOid)) : '';
+  if (kind !== OID_MEMBER_V1 && kind !== OID_MEMBER_V2)
+    return refuse(`the catalog's members are of an unknown kind (${kind})`);
   i++;
   const subjects = fields[i];
   if (subjects === undefined || subjects.tag === 0xa0) return [];
   if (subjects.tag !== 0x30) return refuse('the catalog’s members are not a list');
   return children(der, subjects).map((m) => {
-    const [, attributes, ...rest] = m.tag === 0x30 ? children(der, m) : [];
-    if (attributes?.tag !== 0x31 || rest.length > 0)
+    const [id, attributes, ...rest] = m.tag === 0x30 ? children(der, m) : [];
+    if (
+      id?.tag !== 0x04 ||
+      (attributes !== undefined && attributes.tag !== 0x31) ||
+      rest.length > 0
+    )
       return refuse('a catalog member is not an identifier and its attributes');
-    const indirect = children(der, attributes).filter((a) => {
+    const indirect = (attributes === undefined ? [] : children(der, attributes)).filter((a) => {
       const [oid] = a.tag === 0x30 ? children(der, a) : [];
       return oid?.tag === 0x06 && oidOf(bytesOf(der, oid)) === OID_INDIRECT_DATA;
     });
     const [attribute, ...twice] = indirect;
-    if (attribute === undefined || twice.length > 0)
-      return refuse('a catalog member does not name exactly one digest');
-    const [, values] = children(der, attribute);
-    const [value, ...more] = values?.tag === 0x31 ? children(der, values) : [];
-    const [, digestInfo] = value?.tag === 0x30 && more.length === 0 ? children(der, value) : [];
-    const [algorithm, digest] = digestInfo?.tag === 0x30 ? children(der, digestInfo) : [];
-    const [oid] = algorithm?.tag === 0x30 ? children(der, algorithm) : [];
-    const name = oid?.tag === 0x06 ? DIGESTS[oidOf(bytesOf(der, oid))] : undefined;
-    if (name === undefined || digest?.tag !== 0x04)
-      return refuse('a catalog member’s digest is not SHA-1 or SHA-256');
-    const hex = bytesOf(der, digest).toString('hex');
-    if (hex.length !== (name === 'sha1' ? 40 : 64))
-      return refuse('a catalog member’s digest has the wrong length');
-    return { algorithm: name, digest: hex };
+    if (twice.length > 0) return refuse('a catalog member names more than one digest');
+    const inside = attribute === undefined ? undefined : indirectDigest(der, attribute);
+    if (kind === OID_MEMBER_V1) {
+      if (inside === undefined) return refuse('a catalog member names no digest');
+      return inside;
+    }
+    const raw = bytesOf(der, id);
+    const name = raw.length === 20 ? 'sha1' : raw.length === 32 ? 'sha256' : undefined;
+    if (name === undefined) return refuse('a catalog member is not a SHA-1 or SHA-256 digest');
+    const member = { algorithm: name, digest: raw.toString('hex') } as const;
+    if (inside !== undefined && (inside.algorithm !== name || inside.digest !== member.digest))
+      return refuse('a catalog member names two different digests');
+    return member;
   });
 }

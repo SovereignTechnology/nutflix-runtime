@@ -1361,11 +1361,28 @@ describe('a signed package', () => {
     });
 
     describe('a code-integrity catalog signing adds', () => {
-      it('may name the package’s binaries, by either digest', async () => {
-        const cat = catalog([digestOfExe('sha256'), digestOfExe('sha1')], cert);
-        await expect(
+      it('may name the package’s binaries, by either digest, as v2 or v1', async () => {
+        for (const v1 of [false, true]) {
+          const cat = catalog([digestOfExe('sha256'), digestOfExe('sha1')], cert, { v1 });
+          await expect(
+            compareSigned(win, file(parts), file(signedParts({ catalog: cat })), pinned),
+          ).resolves.toBeUndefined();
+        }
+      });
+
+      it('refuses a member whose identifier and indirect data disagree', async () => {
+        const other = peAuthenticodeDigest(peFile(0x91), 'sha256') ?? '';
+        const cat = catalog([{ ...digestOfExe('sha256'), inside: other }], cert);
+        await refusedAsync(
           compareSigned(win, file(parts), file(signedParts({ catalog: cat })), pinned),
-        ).resolves.toBeUndefined();
+          /names two different digests/,
+        );
+        // In v1 the indirect data is the digest: one the package does not hold is refused.
+        const v1 = catalog([{ ...digestOfExe('sha256'), inside: other }], cert, { v1: true });
+        await refusedAsync(
+          compareSigned(win, file(parts), file(signedParts({ catalog: v1 })), pinned),
+          /which is no binary in the package/,
+        );
       });
 
       it('refuses one that names a binary the package does not hold', async () => {

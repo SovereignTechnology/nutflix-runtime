@@ -113,34 +113,48 @@ export const p7x = (cert: TestCertificate): Buffer =>
     signedData('1.3.6.1.4.1.311.2.1.4', seq(seq(oid('1.3.6.1.4.1.311.2.1.30')), octets('x')), cert),
   ]);
 
-/** A code-integrity catalog naming these Authenticode digests. */
+/**
+ * A code-integrity catalog naming these Authenticode digests, laid out as SignTool writes one for a
+ * package (v2: each member's identifier is its digest; a SHA-256 member also carries indirect data
+ * naming it, a SHA-1 member does not), or as a v1 catalog (a tag, and the digest inside).
+ */
 export function catalog(
-  members: readonly { readonly algorithm: 'sha1' | 'sha256'; readonly digest: string }[],
+  members: readonly {
+    readonly algorithm: 'sha1' | 'sha256';
+    readonly digest: string;
+    /** Indirect data naming another digest than the identifier. */
+    readonly inside?: string;
+  }[],
   cert: TestCertificate,
+  o: { readonly v1?: boolean } = {},
 ): Buffer {
   const alg = { sha1: '1.3.14.3.2.26', sha256: SHA256 };
-  const list = members.map((m, i) =>
+  const memberInfo = seq(oid('1.3.6.1.4.1.311.12.2.3'), set(der(0xa0)));
+  const indirect = (algorithm: 'sha1' | 'sha256', digest: string): Buffer =>
     seq(
-      octets(`member-${String(i)}`),
+      oid('1.3.6.1.4.1.311.2.1.4'),
       set(
-        seq(oid('1.3.6.1.4.1.311.12.2.1'), set(octets('name'))),
         seq(
-          oid('1.3.6.1.4.1.311.2.1.4'),
-          set(
-            seq(
-              seq(oid('1.3.6.1.4.1.311.2.1.15'), seq()),
-              seq(seq(oid(alg[m.algorithm]), der(0x05)), octets(Buffer.from(m.digest, 'hex'))),
-            ),
-          ),
+          seq(oid('1.3.6.1.4.1.311.2.1.15'), seq()),
+          seq(seq(oid(alg[algorithm]), der(0x05)), octets(Buffer.from(digest, 'hex'))),
         ),
       ),
-    ),
+    );
+  const list = members.map((m, i) =>
+    o.v1 === true
+      ? seq(octets(`member-${String(i)}`), set(indirect(m.algorithm, m.inside ?? m.digest)))
+      : m.algorithm === 'sha1' && m.inside === undefined
+        ? seq(octets(Buffer.from(m.digest, 'hex')), set(memberInfo))
+        : seq(
+            octets(Buffer.from(m.digest, 'hex')),
+            set(memberInfo, indirect(m.algorithm, m.inside ?? m.digest)),
+          ),
   );
   const ctl = seq(
     seq(oid('1.3.6.1.4.1.311.12.1.1')),
     octets('list'),
     utcTime('250101000000Z'),
-    seq(oid('1.3.6.1.4.1.311.12.1.2'), der(0x05)),
+    seq(oid(o.v1 === true ? '1.3.6.1.4.1.311.12.1.2' : '1.3.6.1.4.1.311.12.1.3'), der(0x05)),
     seq(...list),
   );
   return signedData('1.3.6.1.4.1.311.10.1', ctl, cert);
