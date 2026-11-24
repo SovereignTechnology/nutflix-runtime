@@ -98,8 +98,7 @@ jobs:
   platforms:
     name: platform (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    # TEMPORARY (fix/windows-transient-fs): Windows gets the time for the repeat step below.
-    timeout-minutes: ${{ matrix.target == 'win32-x64' && 60 || 30 }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -127,40 +126,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm test
-      # TEMPORARY (fix/windows-transient-fs), removed before merge: an intermittent `internal`
-      # answer in private-drafts on Windows. Three copies at once of the two suites that restart a
-      # worker on its own directory, 50 times; every `internal` answer's logged cause is printed,
-      # and how many tests each run passed.
-      - name: 'TEMPORARY: repeat the restart suites to reproduce (Windows)'
-        if: ${{ !cancelled() && matrix.target == 'win32-x64' }}
-        shell: bash
-        run: |
-          set -uo pipefail
-          files='packages/worker/src/__tests__/private-drafts.integration.test.ts packages/worker/src/__tests__/seed-publish.integration.test.ts'
-          out="$RUNNER_TEMP/repeat"
-          mkdir -p "$out"
-          fails=0
-          for i in $(seq 1 50); do
-            for c in 1 2 3; do
-              npx --no-install vitest run --project worker $files > "$out/$i-$c.log" 2>&1 &
-            done
-            for c in 1 2 3; do
-              if ! wait -n; then fails=$((fails + 1)); fi
-            done
-          done
-          for f in "$out"/*.log; do
-            if grep -qE 'FAIL|the worker answered internal' "$f"; then
-              echo "== $(basename "$f")"
-              grep -E 'FAIL|×|WorkerError|the worker answered internal|timed out' "$f" | head -40
-            fi
-          done
-          echo "== internal answers, by cause"
-          cat "$out"/*.log | grep 'the worker answered internal' | sed -E 's/"ts":"[^"]*",//' | sort | uniq -c || true
-          echo "== what each run passed (runs, summary)"
-          cat "$out"/*.log | sed -E 's/\x1b\[[0-9;]*m//g' | grep -E '^ +(Test Files|Tests) ' | sort | uniq -c ||
-            { echo 'no run printed a test summary'; exit 1; }
-          echo "== failed vitest runs: $fails of 150"
-          [ "$fails" -eq 0 ]
 
   # The renderer in a real browser: headless Chromium plays a VP9 video that the real worker fetches
   # over HyperDHT from nutflix-pear's own seeder code, on a loopback testnet, with a local relay.
