@@ -129,7 +129,8 @@ jobs:
       - run: npm test
       # TEMPORARY (fix/windows-transient-fs), removed before merge: an intermittent `internal`
       # answer in private-drafts on Windows. Three copies at once of the two suites that restart a
-      # worker on its own directory, 30 times; every `internal` answer's logged cause is printed.
+      # worker on its own directory, 50 times; every `internal` answer's logged cause is printed,
+      # and how many tests each run passed.
       - name: 'TEMPORARY: repeat the restart suites to reproduce (Windows)'
         if: ${{ !cancelled() && matrix.target == 'win32-x64' }}
         shell: bash
@@ -139,7 +140,7 @@ jobs:
           out="$RUNNER_TEMP/repeat"
           mkdir -p "$out"
           fails=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 50); do
             for c in 1 2 3; do
               npx --no-install vitest run --project worker $files > "$out/$i-$c.log" 2>&1 &
             done
@@ -155,7 +156,10 @@ jobs:
           done
           echo "== internal answers, by cause"
           cat "$out"/*.log | grep 'the worker answered internal' | sed -E 's/"ts":"[^"]*",//' | sort | uniq -c || true
-          echo "== failed vitest runs: $fails of 90"
+          echo "== what each run passed (runs, summary)"
+          cat "$out"/*.log | sed -E 's/\x1b\[[0-9;]*m//g' | grep -E '^ +(Test Files|Tests) ' | sort | uniq -c ||
+            { echo 'no run printed a test summary'; exit 1; }
+          echo "== failed vitest runs: $fails of 150"
           [ "$fails" -eq 0 ]
 
   # The renderer in a real browser: headless Chromium plays a VP9 video that the real worker fetches
