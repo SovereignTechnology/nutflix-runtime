@@ -64,7 +64,11 @@ import {
   type NfxBeaconWatchTimers,
   type PoolLike,
 } from '@sovit/core/nostr';
-import { MAX_PREFETCH_SECONDS, type ErrorCode } from '@nutflix-runtime/worker';
+import {
+  MAX_PREFETCH_SECONDS,
+  type ErrorCode,
+  type NfxHyperdhtEndpointWire,
+} from '@nutflix-runtime/worker';
 
 import { RuntimeAdapterError, fail, unsupported, type RuntimeErrorCode } from '../errors.js';
 import { isWorkerMediaUrl, isWorkerOriginUrl } from '../links.js';
@@ -119,6 +123,21 @@ export interface RuntimeAdapterOptions {
   readonly beaconWaitMs?: number | undefined;
   /** Per-query relay wait, ms. */
   readonly maxWaitMs?: number | undefined;
+  /**
+   * A play started, with the seeders found: what "seed what I watch" needs. It decides for itself
+   * (the switch is the worker's); this adapter only tells it. Never awaited.
+   */
+  readonly onPlay?:
+    | ((play: {
+        readonly sid: string;
+        readonly video: NfxVideo;
+        readonly peers: readonly NfxHyperdhtEndpointWire[];
+      }) => void)
+    | undefined;
+  /** The WebRTC player verified a file of the play `sid` (see `../seeding/segment-tap.ts`). */
+  readonly onVerified?: ((sha256: string, sid: string) => void) | undefined;
+  /** A WebRTC play closed: nothing more of it is handed to the worker. */
+  readonly onPlayEnded?: ((sid: string) => void) | undefined;
 }
 
 const SIGNED_OUT: SignerStatus = Object.freeze({
@@ -435,7 +454,9 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
         openProgressive,
         onClose: (s) => {
           this.#sessions.delete(s);
+          this.#o.onPlayEnded?.(s.sid);
         },
+        onVerified: this.#o.onVerified,
       });
     } else {
       const p = await openProgressive();
@@ -455,6 +476,11 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
     if (this.#isClosed()) {
       await session.close();
       fail('session-closed', 'the app is closing');
+    }
+    try {
+      this.#o.onPlay?.({ sid: session.sid, video, peers: found.peers });
+    } catch {
+      // Seeding is a side job of a play: its failure is not the play's.
     }
     return session;
   }

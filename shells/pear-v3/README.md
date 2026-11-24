@@ -149,11 +149,69 @@ Every `ipcMain` message is dropped unless it came from the top frame of a window
 `app://nutflix`.
 
 **The RPC allow-list** (`MAIN_WINDOW_POLICY`, `src/main/rpc-gate.ts`): the renderer's window may call
-`status`, `nfx.play.open` and `nfx.play.close`, and hear the `status` event. Any other method,
-`init`, `nfx.seed.*`, `nfx.endpoint`, is answered `invalid-argument` in main and never reaches the
-worker. At most 32 requests in flight per window; a play session belongs to the window that opened
-it (another window's `nfx.play.close` does nothing, and a window that goes away closes its sessions).
-What the worker sees is main's own re-encoding of a checked request, with main's id.
+`status`, `nfx.play.open`, `nfx.play.close`, `signer.status`, `seeding.status`,
+`seeding.watch`, `seeding.stop` (stops serving, keeps the bytes), `seeding.beacons`,
+`seeding.segment`, `studio.ffmpeg`, `studio.probe`, `studio.publish` and `studio.cancel`, and hear
+`status` and `studio.progress`. Any other method, `init`, `nfx.seed.*`, `nfx.endpoint`,
+`seeding.set`, `seeding.resume`, `seeding.delete`, `studio.source`, `studio.discard`,
+`signer.local.*`, `signer.nip46.connect`, `signer.lock`, `signer.check`, `signer.sign`, is answered `invalid-argument` in main and never reaches the worker. At most 32 requests in flight per window; a play session
+belongs to the window that opened it (another window's `nfx.play.close` does nothing, a window that
+goes away closes its sessions, and `seeding.segment` and `seeding.watch` must name one of its own). What the worker sees
+is main's own re-encoding of a checked request, with main's id.
+
+These methods are answered by main itself and never reach the worker as such
+(`src/main/main-calls.ts`), each behind a surface only the user can answer, one at a time. A "no" is
+not asked again for a minute, and turning seeding off is never held up:
+- `app.pickVideo` opens the OS file picker. The path goes from main to the worker (`studio.source`);
+  the page gets a random token, the base name and the size.
+- `app.seeding.set` turns "seed what you watch" on only after a native confirmation that says it
+  shares the user's IP address with viewers (the default answer is to keep it off).
+- `app.seeding.resume` and `app.seeding.delete` serve a stopped video again, or delete a video's
+  bytes, after a native confirmation.
+- `app.publish.sign` has the user's signer sign Studio's draft, which publishes the video and starts
+  seeding it, only after a native confirmation. The box shows the worker's account of its own draft
+  (`signer.check`): the file's name, size and length, the whole npub, the whole title, the tags and
+  the start of the description, with every control, format and line-separator character removed.
+  "No" deletes the draft. The key the user approved goes back with the request.
+
+**Secret entry is reachable only from the native Account menu** (`src/main/account-menu.ts`): Unlock
+Key, Create Key, Connect Bunker and Lock, with shortcuts main catches in `before-input-event`
+(Ctrl or Cmd + Shift + O, K, B, L), before the page and out of its reach. No window has a method
+that opens it, because a compromised page could otherwise draw its own box and own the button that
+opens the real one. The page says only: use the Account menu, and Nutflix never asks for a key or
+bunker link inside this page. The menu bar is kept on screen (`autoHideMenuBar: false`) on Linux and
+Windows, and is in the system's menu bar on macOS. Every packaged launch on all five targets reads
+back from Electron that the menu is in place and, on Linux and Windows, that the bar is visible
+(`accountMenu` and `menuBar` in the ready line); a launch that fails this fails CI. **There is no Account menu in fullscreen:** a page can go
+fullscreen on the user's click and draw a fake menu, so press Esc first, and never enter a key or
+bunker link while in fullscreen. In the Electron proof (Linux under Xvfb, no window manager), a real
+click took the page to fullscreen and Electron reported the menu bar hidden; a real Esc left it and
+Electron reported the bar visible again. Windows and macOS were not measured. Lock never
+waits for another dialog, so a page that keeps one open cannot keep the key unlocked, and a cancelled
+file picker stays closed for a few seconds.
+
+Main's **prompt window** (`src/main/prompt-window.ts`, `src/prompt/`) sends what is typed to the
+worker, so a passphrase or bunker URI never enters the page. It is modal, sandboxed and isolated, in
+an in-memory session of its own that reaches one file; its policy is `default-src 'none'`, so its
+page runs no script and its form is built by its preload; and main takes a value only from that
+exact webContents' top frame, at that exact URL. Closing it while a value is being handled waits for
+that call and reports what really happened. The proof kills the renderer process of a prompt on screen, and the prompt ends as a cancel; a prompt
+that never loads is destroyed by a 30 s watchdog. For a renderer killed before its first paint, the
+proof requires a cancel by a named path, no value delivered, a destroyed window, and a next prompt
+that opens and answers normally through the real dialog lock. Each run's `death-before-paint` log
+line names the path that ended it (`load-failed`, `render-process-gone` or `watchdog`). In the
+one CI run this was first recorded in, the path was `load-failed`. **Known
+limit:** a renderer that has crashed but not exited does not end the prompt until the process is
+gone. In CI, `forcefullyCrashRenderer` left it alive for at least 12 s, and only the proof's kill
+ended it.
+
+Without Chromium's sandbox, `init` says `localKey: false`: only a bunker can sign, and a key on disk
+stays untouched. Choosing Unlock or Create Key says why.
+
+`scripts/prompt-proof.ts` (run in the `seed-publish` workflow) drives that real window and the real
+menu in Electron with a script: the item is clicked and the keys are sent by the script. A failure
+is final, and the workflow requires one exact result line with every check true. No person has used
+them in CI, and no test drives the native message boxes.
 
 ### Without Chromium's sandbox (amendment, item 2)
 

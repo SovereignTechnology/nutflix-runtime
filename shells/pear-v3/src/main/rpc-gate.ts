@@ -14,7 +14,21 @@
  *   4. at most `maxInflight` requests per window; a repeated id in flight is refused;
  *   5. a play session belongs to the window that opened it: another window's `nfx.play.close`
  *      is a no-op, and a window that goes away closes its sessions;
- *   6. events reach only the windows whose policy lists them, as main re-encoded them.
+ *   6. events reach only the windows whose policy lists them, as main re-encoded them;
+ *   7. a `seeding.segment` or `seeding.watch` must name a play session this window holds: what it
+ *      hands over or asks to seed is checked against THAT session's video and hash list;
+ *   8. `mainMethods` are answered here and never reach the worker (`main-calls.ts`): the file
+ *      picker, and each thing that starts sharing the user's IP address or deletes a video (behind
+ *      a native confirmation).
+ *
+ * No window can open secret entry: it is reached only from the native Account menu
+ * (`account-menu.ts`), so a page cannot pose as the prompt by being what opens it.
+ *
+ * What the worker checks is the arguments, strictly, for every method (`guards.ts`). The methods
+ * that take a path or a secret, turn the switch, sign, or delete (`studio.source`, `signer.local.*`,
+ * `signer.nip46.connect`, `signer.lock`, `seeding.set`, `seeding.resume`, `seeding.title`,
+ * `seeding.delete`,
+ * `studio.discard`, `signer.check`, `signer.sign`) are in no window's list: only main's own `request()` reaches them.
  *
  * Main itself uses the same id space through `request()` (`init`, `status`). Runtime-neutral and
  * Electron-free: bytes in, bytes out, so the tests drive it with fakes.
@@ -43,19 +57,55 @@ export interface WindowPolicy {
    * dropped, so a compromised data worker cannot tell the page an update was verified.
    */
   readonly mainEvents?: ReadonlySet<string>;
+  /**
+   * The methods main answers itself (`RpcGateDeps.mainCall`); the worker never sees them. A
+   * window that may call one has it here and NOT in `methods`.
+   */
+  readonly mainMethods?: ReadonlySet<string>;
   readonly maxInflight: number;
 }
 
 /**
- * The renderer's window: what `packages/renderer` uses (`status` to wait for the worker,
- * `nfx.play.open` and `nfx.play.close`), the one event that follows `status`, and main's `update`
- * status to display. No `init` (main sends it, with the storage directory), no `nfx.seed.*`, no
- * `nfx.endpoint`, no logs, and no method that touches the updater.
+ * The renderer's window: what `packages/renderer` uses, each with its own guard in the worker.
+ *
+ *   play      `status`, `nfx.play.open`, `nfx.play.close`
+ *   signer    `signer.status`. No key, passphrase, bunker secret or derived key ever crosses this
+ *             window: creating, unlocking, connecting and locking are the Account menu's.
+ *   seeding   `seeding.status` (nothing of a private draft), `.watch` (its own open play, with the
+ *             switch on), `.stop` (stops serving; the bytes stay), `.beacons` (the worker signs,
+ *             the renderer publishes), `.segment` (a file its own play verified)
+ *   Studio    `studio.ffmpeg`, `.probe`, `.publish`, `.cancel`, on the one live token from
+ *             `app.pickVideo`. The signature is `app.publish.sign`, after a native confirmation.
+ *
+ * Not here, ever: `init` (main sends it, with the storage directory), `nfx.seed.*` and
+ * `nfx.endpoint` (the page would pick what this machine serves), every main-only method listed
+ * at the top of this file, logs, and any method that touches the updater.
  */
 export const MAIN_WINDOW_POLICY: WindowPolicy = {
-  methods: new Set(['status', 'nfx.play.open', 'nfx.play.close']),
-  events: new Set(['status']),
-  mainEvents: new Set(['update']),
+  methods: new Set([
+    'status',
+    'nfx.play.open',
+    'nfx.play.close',
+    'signer.status',
+    'seeding.status',
+    'seeding.watch',
+    'seeding.stop',
+    'seeding.beacons',
+    'seeding.segment',
+    'studio.ffmpeg',
+    'studio.probe',
+    'studio.publish',
+    'studio.cancel',
+  ]),
+  events: new Set(['status', 'studio.progress']),
+  mainEvents: new Set(['update', 'serving', 'signer']),
+  mainMethods: new Set([
+    'app.pickVideo',
+    'app.seeding.set',
+    'app.seeding.resume',
+    'app.seeding.delete',
+    'app.publish.sign',
+  ]),
   maxInflight: 32,
 };
 
@@ -71,6 +121,11 @@ export interface RpcGateDeps {
   /** End window `windowId`'s pipe (its renderer sees `close`). */
   closeWindow(windowId: number): void;
   now?(): number;
+  /**
+   * Answers a `mainMethods` call (a native dialog, usually). Rejects with a `WorkerError`, whose
+   * code and message cross; anything else crosses as `internal`. Absent: such a call is refused.
+   */
+  mainCall?(windowId: number, method: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
 type Pending =
@@ -214,7 +269,8 @@ export class RpcGate {
     };
     const m = msg['m'];
     const a = msg['a'];
-    if (typeof m !== 'string' || !w.policy.methods.has(m)) {
+    const isMain = typeof m === 'string' && w.policy.mainMethods?.has(m) === true;
+    if (typeof m !== 'string' || (!isMain && !w.policy.methods.has(m))) {
       refuse('invalid-argument', 'method not allowed');
       return;
     }
@@ -234,11 +290,22 @@ export class RpcGate {
       refuse('backend-down', 'the worker is not running');
       return;
     }
+    if (isMain) {
+      this.#runMainCall(windowId, w, id, m, a);
+      return;
+    }
 
     const sidArg = a['sid'];
     const sid = typeof sidArg === 'string' && SID.test(sidArg) ? sidArg : undefined;
     let addedSid: string | undefined;
     let closesSid: string | undefined;
+    if (
+      (m === 'seeding.segment' || m === 'seeding.watch') &&
+      (sid === undefined || !w.sids.has(sid))
+    ) {
+      refuse('invalid-argument', 'not a play session of this window');
+      return;
+    }
     if (m === 'nfx.play.open' && sid !== undefined && !w.sids.has(sid)) {
       addedSid = sid;
       w.sids.add(sid);
@@ -264,6 +331,52 @@ export class RpcGate {
     this.#pending.set(wid, { kind: 'window', windowId, id, method: m, addedSid, closesSid });
     w.inflight.set(id, wid);
     this.#send(frame);
+  }
+
+  /** A method main answers itself; it counts against the window's in-flight limit. */
+  #runMainCall(
+    windowId: number,
+    w: WindowState,
+    id: number,
+    m: string,
+    a: Record<string, unknown>,
+  ): void {
+    const answer = (r: { ok: true; r: unknown } | { ok: false; e: WireError }): void => {
+      if (this.#windows.get(windowId) !== w) return;
+      w.inflight.delete(id);
+      this.#toWindow(windowId, { op: 'res', id, ...r });
+    };
+    if (this.#d.mainCall === undefined) {
+      this.#toWindow(windowId, {
+        op: 'res',
+        id,
+        ok: false,
+        e: wire('invalid-argument', 'method not allowed'),
+      });
+      return;
+    }
+    // Not a worker id: only this entry's presence counts.
+    w.inflight.set(id, -1);
+    let running: Promise<unknown>;
+    try {
+      running = this.#d.mainCall(windowId, m, a);
+    } catch (e) {
+      running = Promise.reject(e instanceof Error ? e : new Error('main call failed'));
+    }
+    running.then(
+      (r) => {
+        answer({ ok: true, r: r ?? null });
+      },
+      (e: unknown) => {
+        answer({
+          ok: false,
+          e:
+            e instanceof WorkerError
+              ? { code: e.code, message: e.message.slice(0, 512) }
+              : wire('internal', 'internal error'),
+        });
+      },
+    );
   }
 
   // ---- the worker --------------------------------------------------------------------------
