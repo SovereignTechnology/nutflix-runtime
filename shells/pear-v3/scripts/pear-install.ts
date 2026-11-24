@@ -1,10 +1,11 @@
 /**
  * The install job's entry point (`pear-ci/run.ts` says what it does):
  *
- *   node scripts/pear-install.ts --target linux-x64 --artifacts <dir> --work <dir>
+ *   node scripts/pear-install.ts --target linux-x64 --artifacts <dir> --clip <dir> --work <dir>
  *
  * `--artifacts` holds the `shell-<target>` directories that `actions/download-artifact` made;
- * `--work` is a scratch directory. Exit 0 only if every step of every phase held.
+ * `--clip` the packaged-playback proof's video (`pear-ci/playback-clip.ts`); `--work` is a scratch
+ * directory. Exit 0 only if every step of every phase held.
  */
 import { resolve } from 'node:path';
 
@@ -27,6 +28,7 @@ if (!TARGETS.some((t) => `${t.platform}-${t.arch}` === target))
 run({
   target: target as TargetName,
   artifacts: resolve(arg(argv, '--artifacts')),
+  clip: resolve(arg(argv, '--clip')),
   work: resolve(arg(argv, '--work')),
 }).then(
   (code) => {

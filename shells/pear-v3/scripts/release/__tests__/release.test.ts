@@ -1263,7 +1263,7 @@ function fakeBundle(path: string, version: string, root: TrustRoot): void {
   const flag = String(root.upgrade !== null);
   writeFileSync(
     join(app, ...STAGED.main.split('/')),
-    `x = { updates: ${flag} ? "on" : "off" };\nif (${flag}) await startUpdates();\n`,
+    `x = { updates: ${flag} ? "on" : "off" };\nif (${flag}) await startUpdates();\nconst root = "${encodeBakedRoot(root)}";\n`,
   );
 }
 
@@ -1493,8 +1493,9 @@ describe('what CI launches', () => {
   });
 
   describe('verify-root', () => {
-    const mainWith = (flag: boolean): string =>
-      `x = { updates: ${String(flag)} ? "on" : "off" };\nif (${String(flag)}) await startUpdates();\n`;
+    /** Main's bundle: its updates switch, and the root it holds. */
+    const mainWith = (flag: boolean, root: TrustRoot): string =>
+      `x = { updates: ${String(flag)} ? "on" : "off" };\nif (${String(flag)}) await startUpdates();\nconst root = "${encodeBakedRoot(root)}";\n`;
     const appWith = (worker: string, main: string): string => {
       const app = tmp();
       mkdirSync(join(app, 'main'));
@@ -1506,14 +1507,14 @@ describe('what CI launches', () => {
     it('accepts the production root with main’s switch agreeing', async () => {
       const flag = releaseRoot().upgrade !== null;
       const io = fakeIo();
-      const app = appWith(bundle(releaseRoot()), mainWith(flag));
+      const app = appWith(bundle(releaseRoot()), mainWith(flag, releaseRoot()));
       expect(await runCli(['verify-root', '--app', app], io)).toBe(0);
       expect(io.printed.join('\n')).toContain(RELEASE_PUBKEY);
     });
 
     it('refuses any other root', async () => {
       for (const other of [withLink, throwawayLaunchRoot()]) {
-        const app = appWith(bundle(other), mainWith(other.upgrade !== null));
+        const app = appWith(bundle(other), mainWith(other.upgrade !== null, other));
         await expect(runCli(['verify-root', '--app', app], fakeIo())).rejects.toThrow(
           /release build/,
         );
@@ -1522,14 +1523,14 @@ describe('what CI launches', () => {
 
     it('refuses a main whose switch disagrees with the root', () => {
       expect(() => {
-        assertMainMatchesRoot(mainWith(true), noLink);
+        assertMainMatchesRoot(mainWith(true, noLink), noLink);
       }).toThrow(/not false/);
       expect(() => {
-        assertMainMatchesRoot(mainWith(false), withLink);
+        assertMainMatchesRoot(mainWith(false, withLink), withLink);
       }).toThrow(/not true/);
       expect(() => {
         assertMainMatchesRoot(
-          'x = { updates: false ? "on" : "off" };\nif (true) await startUpdates();\n',
+          `x = { updates: false ? "on" : "off" };\nif (true) await startUpdates();\nconst root = "${encodeBakedRoot(noLink)}";\n`,
           noLink,
         );
       }).toThrow(/not false/);
@@ -1537,8 +1538,22 @@ describe('what CI launches', () => {
 
     it('refuses a main that does not show its switch', () => {
       expect(() => {
-        assertMainMatchesRoot('nothing here', noLink);
+        assertMainMatchesRoot(`const root = "${encodeBakedRoot(noLink)}";`, noLink);
       }).toThrow(/does not show/);
+    });
+
+    it('refuses a main that holds no root, two, or another one than the updater', () => {
+      const flag = noLink.upgrade !== null;
+      const sw = `x = { updates: ${String(flag)} ? "on" : "off" };\nif (${String(flag)}) await startUpdates();\n`;
+      expect(() => {
+        assertMainMatchesRoot(sw, noLink);
+      }).toThrow(/does not hold one update root/);
+      expect(() => {
+        assertMainMatchesRoot(mainWith(flag, noLink) + mainWith(true, withLink), noLink);
+      }).toThrow(/does not hold one update root/);
+      expect(() => {
+        assertMainMatchesRoot(mainWith(true, withLink), noLink);
+      }).toThrow(/another root than the updater/);
     });
   });
 });

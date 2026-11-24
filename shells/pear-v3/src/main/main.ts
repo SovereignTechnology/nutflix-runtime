@@ -14,9 +14,15 @@
  * an upgrade link starts one more Bare process, the updater (`src/update/update-worker.ts`), which
  * holds the gate; main only passes its checked status to the window. A build without a link, as
  * every shipped build is until a real link exists, starts nothing (README, "Updates").
+ *
+ * The baked root (`src/update/root.ts`, the updater's own, compiled in here too) decides two more
+ * things, and only a TEST root can ask for either: its private DHT is the one the data worker joins,
+ * and its `play` makes the window open and play that one video once (`play-proof.ts`, the install
+ * job's packaged-playback proof). A release root names neither: the worker then gets no bootstrap
+ * (HyperDHT's public one) and nothing plays by itself.
  */
 import { readFile, realpath, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -48,6 +54,7 @@ import {
   UPDATE_BANNER_ID,
   updateBannerText,
 } from '../../../../packages/renderer/src/update-text.ts';
+import { decodeBakedRoot, type TrustRoot } from '../update/root.ts';
 import type { UpdateStatus } from '../update/status.ts';
 import { accountMenuPresent, menuBarState, wireAccountMenu } from './account-menu.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
@@ -62,6 +69,7 @@ import {
 } from './fuse-notice.ts';
 import { event, readyLine } from './log.ts';
 import { WorkerPorts, installLoopbackGuard } from './loopback.ts';
+import { OffLoopback, runPlayProof } from './play-proof.ts';
 import {
   NOT_MOUNTED_CODE,
   PROBE_CODE,
@@ -109,6 +117,8 @@ const NFX_DISK_CAP_BYTES = 64 * 1024 * 1024 * 1024;
 
 /** Replaced by the bundler (`packaging/stage.ts`): this build was packaged with an upgrade link. */
 declare const __NUTFLIX_UPDATES__: boolean;
+/** Replaced by the bundler: this build's baked trust root, the updater's own (`update-root.ts`). */
+declare const __NUTFLIX_ROOT__: string;
 
 /** `resources/app` (the staged tree): this file is `<app>/main/main.cjs`. */
 const appDir = join(__dirname, '..');
@@ -327,7 +337,17 @@ if (app.commandLine.hasSwitch(SANDBOX_PREFLIGHT_SWITCH)) {
 
 // ---- the run -----------------------------------------------------------------------------
 
+/** A test root's DHT node, `127.0.0.1:<port>` (checked when the root was parsed), as `init` takes it. */
+function bootstrapNode(node: string): { host: string; port: number } {
+  const at = node.lastIndexOf(':');
+  return { host: node.slice(0, at), port: Number(node.slice(at + 1)) };
+}
+
 async function main(): Promise<void> {
+  // Parsed again here: a root that does not parse fails the start (`startup-failed`).
+  const root: TrustRoot = decodeBakedRoot(__NUTFLIX_ROOT__);
+  // Only a test root with `play` counts the window's requests that leave loopback.
+  const offLoopback = root.play === undefined ? undefined : new OffLoopback();
   await app.whenReady();
   // The Account menu is the only way to secret entry. The page hears only that the signer may have
   // changed, and asks `signer.status`.
@@ -347,9 +367,18 @@ async function main(): Promise<void> {
   const csp = headerPolicy(readFileSync(join(rendererDir, 'index.html'), 'utf8'));
   installSessionPolicy(session.defaultSession);
   // Inside the page's policy: its plain HTTP reaches the worker's own ports and nothing else.
-  installLoopbackGuard(session.defaultSession, workerPorts, (name, fields) => {
-    event(name, fields);
-  });
+  installLoopbackGuard(
+    session.defaultSession,
+    workerPorts,
+    (name, fields) => {
+      event(name, fields);
+    },
+    offLoopback === undefined
+      ? undefined
+      : (url) => {
+          offLoopback.see(url);
+        },
+  );
   // The prompt window's own session: in memory, every permission denied, one file on its network.
   installPromptSession(session.fromPartition(PROMPT_PARTITION, { cache: false }), () =>
     readFile(join(__dirname, 'prompt.html')),
@@ -428,6 +457,9 @@ async function main(): Promise<void> {
       accountMenu: accountMenuPresent(Menu.getApplicationMenu()) ? 'present' : 'missing',
       menuBar: mainWindow === undefined ? 'hidden' : menuBarState(process.platform, mainWindow),
     });
+    // A test root's playback proof, once, after the ready line (`play-proof.ts`).
+    if (root.play !== undefined && offLoopback !== undefined && mainWindow !== undefined)
+      startPlayProof(root.play, mainWindow, offLoopback);
   };
 
   // The worker, then `init` (the storage directory is main's, never the renderer's), then a
@@ -456,6 +488,8 @@ async function main(): Promise<void> {
         // A sealed key needs Chromium's sandbox. A user who chose to run without it signs through
         // a bunker, the same rule as shape (b); a key on disk stays untouched (ADR 0001).
         localKey: !unsandboxed,
+        // A test root's private DHT on 127.0.0.1; a release root names none (the public DHT).
+        ...(root.dht === null ? {} : { bootstrap: root.dht.map(bootstrapNode) }),
       });
       await gate.request('status', {}, 30_000);
       state.worker = true;
@@ -509,6 +543,47 @@ async function main(): Promise<void> {
   });
   void win.loadURL(APP_URL);
   if (__NUTFLIX_UPDATES__) await startUpdates();
+}
+
+/** Made (exclusively) before the proof first plays: one run per installed copy (`play-proof.ts`). */
+const PLAY_PROOF_MARKER = 'play-proof-ran';
+
+/**
+ * The install job's packaged-playback proof (`play-proof.ts`), in this window, once per installed
+ * copy. Reached only from a baked test root's `play`, which a release root refuses.
+ */
+function startPlayProof(
+  play: NonNullable<TrustRoot['play']>,
+  win: BrowserWindow,
+  requests: OffLoopback,
+): void {
+  try {
+    writeFileSync(join(app.getPath('userData'), PLAY_PROOF_MARKER), `${PKG.version}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch {
+    // It ran here before (or the directory takes no file): not again.
+    event('play-proof-skipped');
+    return;
+  }
+  const wc = win.webContents;
+  void runPlayProof(play, {
+    page: {
+      run: (code, gesture) =>
+        wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }], gesture === true),
+      load: (url) => wc.loadURL(url),
+      destroyed: () => wc.isDestroyed(),
+    },
+    playSessions: async () =>
+      ((await gate.request('status', {}, 30_000)) as WorkerStatus).playSessions,
+    requests,
+    log: (name, fields) => {
+      event(name, fields);
+    },
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
 }
 
 /**

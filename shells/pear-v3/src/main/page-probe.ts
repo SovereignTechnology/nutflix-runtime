@@ -5,7 +5,8 @@
  * worker (no answer until then), whether its WebRTC player is available (the renderer's own capability
  * probe: `RTCPeerConnection`, WebAssembly and `MediaSource`), and whether this Chromium can
  * decode the two codecs a video is likely to carry, which says what the packaged engine can
- * play. Whether a video plays needs a seeder and a relay, and is not asserted here (README).
+ * play. Whether a video plays needs a seeder and a relay, and is not asserted here: the install
+ * job's test builds prove it (`play-proof.ts`, README "Playback in the installed app").
  */
 
 /** Which part of the page's start is missing, read once when `PROBE_CODE` never answered. */

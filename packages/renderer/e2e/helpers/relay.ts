@@ -38,10 +38,16 @@ function matches(f: Filter, ev: NostrEvent): boolean {
 }
 
 export interface TestRelayOptions {
-  /** A fresh beacon for each subscription that asks for beacons; absent: none. */
-  readonly beacon?: (() => NostrEvent) | undefined;
+  /**
+   * A fresh beacon (or one per seeder, in the order sent) for each subscription that asks for
+   * beacons; absent: none.
+   */
+  readonly beacon?: (() => NostrEvent | readonly NostrEvent[]) | undefined;
   readonly beaconEveryMs?: number;
 }
+
+const isList = (x: NostrEvent | readonly NostrEvent[]): x is readonly NostrEvent[] =>
+  Array.isArray(x);
 
 export class TestRelay {
   readonly #http: Server;
@@ -134,8 +140,9 @@ export class TestRelay {
       const beacon = this.#o.beacon;
       if (beacon !== undefined) {
         const push = (): void => {
-          const ev = beacon();
-          if (sub.filters.some((f) => matches(f, ev))) this.#send(ws, ['EVENT', a, ev]);
+          const made = beacon();
+          for (const ev of isList(made) ? made : [made])
+            if (sub.filters.some((f) => matches(f, ev))) this.#send(ws, ['EVENT', a, ev]);
         };
         push();
         sub.timer = setInterval(push, this.#o.beaconEveryMs ?? 3_000);

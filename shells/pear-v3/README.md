@@ -313,10 +313,21 @@ macOS, the `.app`'s executable; Windows, the executable inside the
 unpacked `.msix` (`makeappx unpack`). The `shell` job does not install the `.msix` (it is unsigned);
 the `install` job below does.
 
-It does **not** prove playback. Playing a video needs a relay and a seeder, and the app takes no
-switch to name them (a release build would accept it); a seeder on the public DHT would be a server
-waiting for outside traffic, which CI must not be. Playing is covered, on Linux only and outside the
-packaged app, by the renderer's own end-to-end job.
+This job does **not** prove playback. Playing a video needs a relay and a seeder, and the app takes
+no switch to name them (a release build would accept it); a seeder on the public DHT would be a
+server waiting for outside traffic, which CI must not be. The install job proves it instead, in an
+installed test build whose baked root names a relay and a seeder on loopback ("Playback in the
+installed app", below).
+
+Every launch here and in the install job ends only when **every process the app started has exited**
+(`smoke.ts` `stop`): the processes found by parent from the launched pid just before the stop (pid
+and start time, `scripts/processes.ts`) and every member of its process group. One still running
+15 s after the stop fails the launch, whatever it proved before, and is then killed. Waiting for the
+launched pid alone was not enough: in the AppImage's no-FUSE path that pid is the runtime, which dies
+at once while the app it started is still quitting and writing its profile. The stop is SIGTERM (a
+quit), except for a launch parked in the sandbox warning: that box is modal and native, so on Linux
+and macOS main handles no SIGTERM until it is answered, and the harness kills it (SIGKILL), then
+still requires every process gone.
 
 ## The install job: `pear build`, `stage`, `seed` and `install`, on five targets
 
@@ -333,6 +344,7 @@ runner. It downloads the five packages the `shell` job uploaded and then, with
 | installed | `pear install pear://<link>`, on the private DHT; the installed bytes are compared with the staged ones (a file's sha256; a macOS bundle's every file, symlink and executable bit) |
 | launched | the INSTALLED app is started as installed, and must print its ready line: `pipe` `round-trip`, `rendererSandbox` `enforced`, and the rest of what the `shell` job requires |
 | gate | the update gate, on two more real builds (below) |
+| playback | right after its `pear install`, the first of those builds finds a video on a loopback relay, fetches it over the private DHT and plays it, measured (below) |
 
 ### No peer on the public network
 
@@ -398,6 +410,45 @@ a forged notice really reaches the app):
 On Windows the proof of the swap is the installed package's version plus every file under `app\\`
 compared with B's `.msix`, because `applyUpdate()` hands the package to Windows.
 
+### Playback in the installed app, on every target
+
+The root of builds A and B also carries `play`: the relay of a small world on the gate's private DHT
+and one video in it (`scripts/pear-ci/playback.ts`). Only a `test` root may carry it; a `release` or
+`launch` root refuses it, as it refuses a DHT (`src/update/root.ts`). Main holds the same baked root
+as the updater (`packaging/stage.ts`, read back by `assertStagedRoot` and `verify-root`), and from it,
+in a test build only: the data worker joins the root's private DHT (`init`'s `bootstrap`), and once
+the ready line is out, `src/main/play-proof.ts` does what a viewer does. It stores the viewer's
+settings as Settings would (the root's relay, WebRTC off), opens the renderer's own Watch route of the
+video, presses "Play — free", and reads the `<video>` from main's isolated world. Then the same with
+WebRTC on (that relay for signaling, a STUN address on loopback that nothing answers). It runs once
+per installed copy (a marker in the user-data directory), so the gate's later launches of the same
+builds are left alone. Nothing at run time names any of it: no page, setting, variable or switch.
+Nor is its code in any other build: `stage.ts` bundles `play-proof-off.ts`, which does nothing, into
+the main of every root but a test one, and `assertMainMatchesRoot` refuses a non-test main that holds
+the proof's own words (`PLAY_PROOF_WORDS`). The window's sandbox, context isolation,
+CSP and RPC allow-list are the shipped ones.
+
+The world, on loopback: nutflix-pear's e2e relay with the signed manifest and live beacons;
+nutflix-pear's own seeder (`listenNfx`) serving a real VP9 clip that the `playback-clip` job makes
+with ffmpeg (`scripts/pear-ci/playback-clip.ts`; checked file by file against its hash list here);
+and a **liar**, the same seeder with a newer beacon, so dialed first, that serves the hash list and
+playlists as they are and every init and segment with each byte flipped.
+
+| Must be true | Measured how |
+| --- | --- |
+| the progressive stream plays | the `<video>`'s source is the worker's `http://127.0.0.1` stream; media time advances at least 4 s while watched for 6 s; Chromium counts at least 75 frames meanwhile (`getVideoPlaybackQuality`) and 100 decoded in all; 320x240; no media error |
+| nfx's web player plays | the same, with the source a MediaSource (`blob:`) that the player fills from the worker's origin |
+| the bytes were sha256-checked | the liar sent at least one file wrong and whole (so the app had all of it to check), and every file it sent wrong was sent again, later and whole, by the honest seeder; and the video still played |
+| the seeder saw the app | the honest seeder was dialed (its firewall records each watcher key; nothing else on the private DHT dials it) and sent the init and segments whole |
+| nothing left loopback | main counts every request of the window's session from the moment the proof's settings are stored to the end of the run (the loopback guard's observer, which decides nothing): zero to anything but `127.0.0.1`, the app's files and `blob:`. The first page load, with the renderer's defaults, does ask for the default relays: the sinkhole sends those names to loopback and the tripwire counts zero packets to their real addresses. The observer does not see the worker's own traffic or WebRTC's ICE; the tripwire does, for the public addresses it watches |
+
+Then a **release-shaped build refuses it**: this target's `shell` package (made by `package.ts build`)
+holds the production root in main and the updater, with no DHT and no `play`, and its main holds none
+of the proof's code (build A's holds it); the root parser refuses
+`play` in a release and a launch root; `package.ts build` takes no root at all, and `test-build`
+refuses a release root with `play`; and `verify-root` refuses build A and a release updater spliced
+with build A's main ("main's bundle holds another root than the updater's").
+
 ### What is, and is not, proved per platform
 
 - **Linux:** the AppImage is launched as `pear install` placed it (`~/.local/bin/Nutflix.AppImage`),
@@ -427,9 +478,10 @@ compared with B's `.msix`, because `applyUpdate()` hands the package to Windows.
   running process belongs to. A Windows file system cannot keep a macOS bundle's symlinks, so on the
   Windows runner the macOS entries of the deployment are stand-ins (compared by their files only);
   the other four legs unpack them exactly. Those four legs' deployments hold the unsigned `.msix`.
-- **The app's own DHT node.** The worker uses the public bootstrap, but starts its node only when a
-  play or a stored video needs one. CI launches have neither, so they send nothing to the public
-  network, and the install job fails if one does.
+- **The app's own DHT node.** A release build's worker uses the public bootstrap, but starts its node
+  only when a play or a stored video needs one. CI launches of release builds have neither, so they
+  send nothing to the public network, and the install job fails if one does. A test build's worker
+  joins its root's private DHT on `127.0.0.1` instead, which is where the playback proof plays.
 
 ### The AppImage runtime (for amendment, item 3)
 
@@ -449,11 +501,11 @@ The AppImage carries this repository's patched type-2 runtime
 
 | Path | What it is |
 | --- | --- |
-| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `loopback.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `consent-file.ts`, `external-links.ts`, `page-probe.ts`, `log.ts` |
+| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `loopback.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `consent-file.ts`, `external-links.ts`, `page-probe.ts`, `log.ts`, and `play-proof.ts` (test builds only) |
 | `src/preload/preload.ts` | the preload |
 | `src/update/` | the update gate: `gate.ts`, `notice.ts`, `root.ts`, `relays.ts`, `hash.ts`, and its Bare entry `update-worker.ts` |
 | `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check |
-| `scripts/package.ts`, `scripts/smoke.ts` | the packaging driver; the launcher CI runs |
+| `scripts/package.ts`, `scripts/smoke.ts`, `scripts/processes.ts` | the packaging driver; the launcher CI runs, and how it waits for every process the app started |
 
 Adapted from nutflix-pear (the submodule's pinned commit): `window.ts`, `security.ts`, `csp.ts`,
 `app-protocol.ts`, `schemes.ts` from `app-desktop/src/main/`; `fuses.ts`, `maker-appimage.ts`,

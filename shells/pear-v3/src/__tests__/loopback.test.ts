@@ -280,6 +280,28 @@ describe('the guard in the session', () => {
     expect(f.send(stream(4100))).toEqual({ cancel: true });
   });
 
+  it('shows an observer every URL before deciding, and its failure decides nothing', () => {
+    const f = fakeSession();
+    const seen: string[] = [];
+    installLoopbackGuard(
+      f.ses,
+      new WorkerPorts(),
+      () => undefined,
+      (url) => {
+        seen.push(url);
+        if (url.startsWith('wss:')) throw new Error('an observer that throws');
+      },
+    );
+    expect(f.send('wss://relay.example.org/')).toEqual({});
+    expect(f.send('http://127.0.0.1:631/')).toEqual({ cancel: true });
+    expect(f.send('app://nutflix/index.html')).toEqual({});
+    expect(seen).toEqual([
+      'wss://relay.example.org/',
+      'http://127.0.0.1:631/',
+      'app://nutflix/index.html',
+    ]);
+  });
+
   it('logs at most a fixed number of refusals, and still refuses after that', () => {
     const f = fakeSession();
     const log: string[] = [];

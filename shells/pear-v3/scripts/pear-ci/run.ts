@@ -10,7 +10,9 @@
  *   seeded     `pear seed` on the private DHT, until the install is done
  *   installed  `pear install pear://<link>` from the private DHT
  *   launched   the INSTALLED app, started as installed, prints its ready line
- *   gate       the update gate, on two more real builds (`update-proof.ts`)
+ *   gate       the update gate, on two more real builds (`update-proof.ts`); right after its own
+ *              `pear install`, the first of them plays the clip, measured, and a release-shaped
+ *              build refuses what made it play (`playback.ts`)
  *
  * The app takes no test switch. The builds of the `shell` job have no upgrade link and run no
  * updater, and each must say so. Nothing here provisions or multisigs. Every link is made on the
@@ -41,7 +43,7 @@ import { PKG_DIR, REPO_ROOT } from '../../packaging/paths.ts';
 import { assertNoUpgradeLink } from '../../packaging/update-root.ts';
 import { makeAppx } from '../../packaging/windows-kit.ts';
 import { readPackaged } from '../release/inspect.ts';
-import { launch, readyProblems, type LaunchResult, type ReadyFields } from '../smoke.ts';
+import { launch, readyProblems, stopLine, type LaunchResult, type ReadyFields } from '../smoke.ts';
 import {
   deploymentPackageJson,
   expectedDeploymentEntries,
@@ -96,6 +98,8 @@ export interface Options {
   readonly artifacts: string;
   /** A scratch directory the run may fill. */
   readonly work: string;
+  /** The packaged-playback proof's clip (`playback-clip.ts`, the `playback-clip` job's artifact). */
+  readonly clip: string;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -699,6 +703,7 @@ export async function run(o: Options): Promise<number> {
       scriptsDir: SCRIPTS_DIR,
       cert,
       baseVersion: version,
+      playback: { clip: o.clip, releaseShaped: prepared.get(o.target)?.path ?? '' },
       phase,
       say,
     });
@@ -908,6 +913,7 @@ async function launchInstalled(
   say(
     `${result.ok ? 'PASS' : 'FAIL'} ${result.reason} (${String(result.ms)} ms); events ${result.events.join(', ')}; at teardown ${result.teardown.join(', ') || 'none'}`,
   );
+  say(`stop: ${stopLine(result.stopped)}`);
   if (platform === 'win32') {
     if (result.ok && processPackage?.startsWith(`${MSIX.identity}_`) !== true)
       return {
