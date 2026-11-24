@@ -40,8 +40,11 @@ vi.setConfig({ testTimeout: 120_000 });
 const SEEDER_NOSTR = 'ab'.repeat(32);
 const namespaceOf = (video: string): string => video.slice(0, video.lastIndexOf(':'));
 
-/** A stand-in node bound to `host` (`null`: not yet), recording what each call was given. */
-function fakeNode(host: string | null | 'throws', bindTo?: string): {
+/**
+ * A stand-in node bound to `host` (`null`: not yet; `'throws'`: its `address()` throws), recording
+ * what each call was given.
+ */
+function fakeNode(host: string | null, bindTo?: string): {
   node: BindableNode;
   seen: unknown[];
   listened: KeyPair[];
@@ -95,7 +98,9 @@ describe('localAddressesByBind', () => {
       const { node, seen } = fakeNode(host);
       const view = localAddressesByBind(node);
       view.connect(new Uint8Array(32), { keyPair, localConnection: true });
-      await view.createServer({ firewall, shareLocalAddress: true }, () => undefined).listen(keyPair);
+      await view
+        .createServer({ firewall, shareLocalAddress: true }, () => undefined)
+        .listen(keyPair);
       expect(seen).toEqual([
         { keyPair, localConnection: false },
         { firewall, shareLocalAddress: false },

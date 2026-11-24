@@ -26,8 +26,6 @@ export function updaterSwarm(
 ): Hyperswarm {
   return new Hyperswarm({
     keyPair: DHT.keyPair(),
-    ...(testDht === null
-      ? { dht: hideLocalAddressesOn(new DHT()) }
-      : { bootstrap: [...testDht] }),
+    ...(testDht === null ? { dht: hideLocalAddressesOn(new DHT()) } : { bootstrap: [...testDht] }),
   });
 }

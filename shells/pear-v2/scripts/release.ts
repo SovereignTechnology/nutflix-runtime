@@ -79,7 +79,7 @@ export function privateDir(dir: string): string {
 export function defaultWorkDir(env: NodeJS.ProcessEnv = process.env): string {
   const cache = env['XDG_CACHE_HOME'];
   return join(
-    cache !== undefined && cache.startsWith('/') ? cache : join(homedir(), '.cache'),
+    cache?.startsWith('/') === true ? cache : join(homedir(), '.cache'),
     'nutflix-runtime',
     'release-stage',
   );

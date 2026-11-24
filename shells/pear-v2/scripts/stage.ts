@@ -290,8 +290,7 @@ export async function stage(o: {
 }): Promise<StageResult> {
   if (o.testLine === null) {
     assertReleasable();
-    if (!inCleanCopy())
-      fail('a release is staged only from a clean copy: run scripts/release.ts');
+    if (!inCleanCopy()) fail('a release is staged only from a clean copy: run scripts/release.ts');
   }
   const line = o.testLine ?? RELEASE_LINE;
   if (line === null) fail('no release line');

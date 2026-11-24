@@ -71,7 +71,12 @@ describe('the release entry', () => {
 describe.skipIf(process.platform === 'win32')('the copy’s folder', () => {
   const scratch = (): { dir: string; rm: () => void } => {
     const dir = mkdtempSync(join(tmpdir(), 'nf-release-'));
-    return { dir, rm: () => rmSync(dir, { recursive: true, force: true }) };
+    return {
+      dir,
+      rm: () => {
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
   };
 
   it('is made 0700, and a real planted package.json above it is found', () => {
