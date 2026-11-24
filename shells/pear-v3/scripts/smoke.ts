@@ -15,8 +15,12 @@
  *   node scripts/smoke.ts msix     --file <file>                 `makeappx unpack`, then `ready` on app/Nutflix.exe
  *   node scripts/smoke.ts bare     --app <resources/app dir> --platform p --arch a
  *
- * The app is killed by its recorded process group (its pid on Windows, with its tree), never by
- * a name match. Output is the verdict plus, on a failure, the tail of what the app printed.
+ * The app is stopped by its recorded process group (its pid on Windows, with its tree), never by
+ * a name match, and a launch is over only once EVERY process it started has exited: the ones read
+ * from the process table by parent just before the stop (pid and start time, `processes.ts`), and
+ * any other member of its process group. One still running `STOP_GRACE_MS` after the stop fails the
+ * launch, whatever it proved before: Quit must end everything the app started. Output is the
+ * verdict plus, on a failure, the tail of what the app printed.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
@@ -38,6 +42,7 @@ import { EVENT_PREFIX, READY_PREFIX } from '../src/shared/ids.ts';
 import { APP, MIN_BARE, bareBinary } from '../packaging/identity.ts';
 import { CONSENT_FILE } from '../src/main/sandbox-gate.ts';
 import { makeAppx } from '../packaging/windows-kit.ts';
+import { describe, processTable, stillRunning, treeOf, type Proc } from './processes.ts';
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -147,25 +152,161 @@ export function compareVersions(a: string, b: string): number {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Ends the app and what it started: its process group, or its tree on Windows. Recorded pids only. */
-export async function stop(child: ChildProcess, exited: Promise<unknown>): Promise<void> {
+/** How long every process the app started has, after the stop, to exit. */
+export const STOP_GRACE_MS = 15_000;
+
+export interface StopReport {
+  /** How it was asked to stop: SIGTERM (a quit), or SIGKILL for an app held in its modal warning. */
+  readonly signal: 'SIGTERM' | 'SIGKILL';
+  /** The app's processes read just before the stop: the launched one and its descendants. */
+  readonly tracked: number;
+  /** How long until every one of them, and its whole process group, had exited; null if not in time. */
+  readonly exitedMs: number | null;
+  /** What was still running `STOP_GRACE_MS` after the stop (then killed hard), as `pid name`. */
+  readonly lingering: readonly string[];
+}
+
+/** The app's processes now, by the table; `null` when the table cannot be read. */
+function treeNow(pid: number): Proc[] | null {
+  try {
+    return treeOf(processTable(), pid);
+  } catch {
+    return null;
+  }
+}
+
+/** What stands for the launched process while it runs and no table can be read. */
+const launched = (pid: number): Proc => ({
+  pid,
+  ppid: 0,
+  pgid: -1,
+  start: '',
+  name: 'the launched process',
+  zombie: false,
+});
+
+/** What stands for "unknown" when no table can be read: nothing proves the app is gone. Never signaled. */
+const UNREAD: Proc = {
+  pid: 0,
+  ppid: 0,
+  pgid: -1,
+  start: '',
+  name: '(the process table could not be read)',
+  zombie: false,
+};
+
+/**
+ * Ends the app and what it started: SIGTERM to its process group (`taskkill /T /F` on Windows, which
+ * is always a hard kill), then waits until the launched process, every process recorded just before
+ * (`processes.ts`) and every member of its group have exited. Whatever is left after `graceMs` is
+ * killed hard and named in the report; so is a table that could not be read (nothing then proves
+ * the app is gone). Recorded pids with their start times, and the recorded group, never a name
+ * match: a process is signaled only while the table still shows it with the start time it had, and
+ * the group only while its leader's pid is not someone else's.
+ *
+ * `SIGKILL` is for an app parked in its sandbox warning: that box is modal and native, so on Linux
+ * and macOS main's thread handles no SIGTERM until it is answered (before this, every such launch
+ * on those two ran out the 15 s SIGTERM wait and was killed: about 25 s a launch where a ready one
+ * takes 5). Every process must still be gone within `graceMs`.
+ */
+export async function stop(
+  child: ChildProcess,
+  exited: Promise<unknown>,
+  graceMs: number = STOP_GRACE_MS,
+  signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM',
+): Promise<StopReport> {
+  const posix = process.platform !== 'win32';
+  const used = posix ? signal : 'SIGKILL';
   const pid = child.pid;
-  if (pid === undefined) return;
-  const signal = (sig: 'SIGTERM' | 'SIGKILL'): void => {
+  if (pid === undefined || pid <= 1)
+    return { signal: used, tracked: 0, exitedMs: 0, lingering: [] };
+  // Already reaped: its pid, and so its group's id, may be another process's by now.
+  const reaped = child.exitCode !== null || child.signalCode !== null;
+  const tracked = treeNow(pid);
+  const self = tracked?.find((p) => p.pid === pid);
+  let gone = reaped;
+  void exited.then(() => {
+    gone = true;
+  });
+  /**
+   * The group whose members are ours: the launched pid's, while that pid is still the process we
+   * spawned, or has no process at all (POSIX does not reuse a pid while a group of that id has
+   * members, so the members of a group whose leader is gone are still the ones it left). Never
+   * while the pid names another process.
+   */
+  const groupOf = (table: ReadonlyMap<number, Proc>): number | undefined => {
+    if (!posix) return undefined;
+    const now = table.get(pid);
+    if (now === undefined) return pid;
+    return self !== undefined && now.start === self.start ? pid : undefined;
+  };
+  const running = (): Proc[] => {
+    if (tracked === null) return gone ? [UNREAD] : [launched(pid)];
     try {
-      if (process.platform === 'win32')
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-      else process.kill(-pid, sig);
+      const table = processTable();
+      return stillRunning(table, tracked, groupOf(table));
+    } catch {
+      return gone ? [UNREAD] : [launched(pid)];
+    }
+  };
+  const kill = (p: Proc, sig: 'SIGTERM' | 'SIGKILL'): void => {
+    if (p.pid <= 1 || p === UNREAD) return;
+    if (posix) {
+      try {
+        process.kill(p.pid, sig);
+      } catch {
+        // Gone meanwhile.
+      }
+      return;
+    }
+    // Windows reuses pids quickly: kill it only if it is still the process that started then.
+    if (!/^[0-9]+$/.test(p.start)) return;
+    spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${String(p.pid)}"; if ($null -ne $p -and $null -ne $p.CreationDate -and $p.CreationDate.ToFileTimeUtc() -eq ${p.start}) { Stop-Process -Id ${String(p.pid)} -Force }`,
+      ],
+      { stdio: 'ignore', windowsHide: true, timeout: 30_000 },
+    );
+  };
+  const t0 = Date.now();
+  if (!reaped) {
+    try {
+      if (posix) process.kill(-pid, signal);
+      else spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
     } catch {
       // Already gone.
     }
-  };
-  signal('SIGTERM');
-  const done = await Promise.race([exited.then(() => true), sleep(15_000).then(() => false)]);
-  if (!done) {
-    signal('SIGKILL');
-    await Promise.race([exited, sleep(10_000)]);
   }
+  // Each recorded process too, where it may have left the group or the tree walk.
+  if (signal === 'SIGKILL' || reaped) for (const p of running()) kill(p, signal);
+  // Windows' table costs a PowerShell start: read it less often.
+  const every = posix ? 250 : 1000;
+  const done = (): StopReport | null => {
+    const left = running();
+    return gone && left.length === 0
+      ? { signal: used, tracked: tracked?.length ?? 0, exitedMs: Date.now() - t0, lingering: [] }
+      : null;
+  };
+  while (Date.now() - t0 < graceMs) {
+    const r = done();
+    if (r !== null) return r;
+    await sleep(every);
+  }
+  const r = done();
+  if (r !== null) return r;
+  const left = running();
+  const lingering = (left.length > 0 ? left : [launched(pid)]).map(describe);
+  for (const p of left) kill(p, 'SIGKILL');
+  const until = Date.now() + 10_000;
+  while (Date.now() < until && !(gone && running().every((p) => p === UNREAD))) {
+    await sleep(every);
+    for (const p of running()) kill(p, 'SIGKILL');
+  }
+  return { signal: used, tracked: tracked?.length ?? 0, exitedMs: null, lingering };
 }
 
 export interface LaunchResult {
@@ -180,6 +321,13 @@ export interface LaunchResult {
   readonly teardown: readonly string[];
   /** Every `update` status main printed, in order. */
   readonly updates: readonly Record<string, unknown>[];
+  /** The fields of every event `LaunchOptions.collect` names, in order. */
+  readonly collected: readonly {
+    readonly name: string;
+    readonly fields: Record<string, unknown>;
+  }[];
+  /** How the stop went: every process the app started must have exited. */
+  readonly stopped: StopReport;
 }
 
 export type Expect = 'ready' | 'warning';
@@ -198,6 +346,8 @@ export interface LaunchOptions {
   readonly settleMs?: number;
   /** Called with the app's pid once it is ready and still running (the install job asks Windows whose it is). */
   readonly onReady?: (pid: number) => Promise<void> | void;
+  /** Events whose fields the result keeps (`collected`), before the stop. */
+  readonly collect?: readonly string[];
 }
 
 export async function launch(
@@ -241,6 +391,7 @@ export async function launch(
     late: string | null;
     updates: Record<string, unknown>[];
     updateSeen: boolean;
+    collected: { name: string; fields: Record<string, unknown> }[];
   } = {
     verdict: null,
     ready: null,
@@ -253,6 +404,7 @@ export async function launch(
     late: null,
     updates: [],
     updateSeen: false,
+    collected: [],
   };
   void exited.then((c) => {
     st.exited = true;
@@ -291,6 +443,8 @@ export async function launch(
           if (opts.untilUpdate?.(status) === true) st.updateSeen = true;
         }
       }
+      if (name !== null && !st.stopping && opts.collect?.includes(name) === true)
+        st.collected.push({ name, fields: eventFields(line) ?? {} });
       if (name === 'sandbox-warning') st.warned = true;
       if (name !== null && (FAILURE_EVENTS as readonly string[]).includes(name) && !st.stopping) {
         const fields = eventFields(line);
@@ -344,11 +498,26 @@ export async function launch(
   st.stopping = true;
   const events = [...st.events];
   const updates = [...st.updates];
-  const final =
+  const collected = [...st.collected];
+  const late =
     verdict.ok && st.late !== null
       ? { ok: false, reason: `the app reported ${st.late} after it was ready` }
       : verdict;
-  await stop(child, exited);
+  // The sandbox warning is a modal native box that holds main's thread: it is killed (`stop`).
+  const stopped = await stop(
+    child,
+    exited,
+    STOP_GRACE_MS,
+    expect === 'warning' ? 'SIGKILL' : 'SIGTERM',
+  );
+  // Everything the app started must be gone in time, whatever the run proved before.
+  const final =
+    stopped.lingering.length > 0
+      ? {
+          ok: false,
+          reason: `${late.ok ? '' : `${late.reason}; and `}${String(stopped.lingering.length)} of its processes were still running ${String(STOP_GRACE_MS / 1000)} s after ${stopped.signal}: ${stopped.lingering.slice(0, 8).join(', ')}`,
+        }
+      : late;
   return {
     ok: final.ok,
     reason: final.reason,
@@ -358,6 +527,8 @@ export async function launch(
     events,
     teardown: [...st.teardown],
     updates,
+    collected,
+    stopped,
   };
 }
 
@@ -401,17 +572,27 @@ export async function bareVersion(bin: string): Promise<{ version?: string; deta
     });
     const version = await Promise.race([found, sleep(30_000).then(() => undefined)]);
     child.stdio[3]?.destroy();
-    await stop(child, exited);
+    const stopped = await stop(child, exited);
+    if (stopped.lingering.length > 0)
+      return { detail: `still running after the stop: ${stopped.lingering.join(', ')}` };
     return { ...(version === undefined ? {} : { version }), detail: `${out}${err}`.slice(0, 400) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
+/** What `stop` measured, as one line. */
+export function stopLine(s: StopReport): string {
+  return s.lingering.length > 0
+    ? `${String(s.tracked)} processes sent ${s.signal}; still running after ${String(STOP_GRACE_MS / 1000)} s: ${s.lingering.join(', ')}`
+    : `${String(s.tracked)} processes sent ${s.signal}; every one, and its process group, exited in ${String(s.exitedMs)} ms`;
+}
+
 function report(label: string, r: LaunchResult): void {
   process.stdout.write(
     `SMOKE ${r.ok ? 'PASS' : 'FAIL'} ${label}: ${r.reason} (${String(r.ms)} ms)\n`,
   );
+  process.stdout.write(`SMOKE   stop: ${stopLine(r.stopped)}\n`);
   if (r.ok && r.ready !== null)
     process.stdout.write(
       `SMOKE   proved: window loaded, renderer mounted, worker answered status, page round trip ${JSON.stringify(r.ready.pipe)}, sandbox ${JSON.stringify(r.ready.sandbox)}, OS reports renderer ${JSON.stringify(r.ready.rendererSandbox)}\n` +

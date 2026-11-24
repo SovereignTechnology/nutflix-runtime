@@ -11,6 +11,11 @@
  * refused unless the key is NOT the production key and every address is on loopback. A `launch`
  * root is the same with no link at all: what CI launches once the release build carries a real
  * link, because a build with a link never runs on a runner (`assertNoUpgradeLink`).
+ *
+ * Main's bundle holds the same root as the updater's (`stage.ts`): with it, a test build's data
+ * worker joins the root's private DHT, and a test root's `play` (the install job's playback proof)
+ * is the only thing that makes the window open a video by itself. `assertMainMatchesRoot` holds the
+ * two bundles together, so a release check of the updater's root covers main too.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -114,10 +119,22 @@ export function assertNoUpgradeLink(bundle: string): void {
 /**
  * Throws unless main's own switch agrees with the root: `__NUTFLIX_UPDATES__` is compiled into
  * main's bundle (`stage.ts`), and it is what decides whether an updater starts at all. Both places
- * it lands must say the same. This is a check against a mistake in the build, not against hostile
- * code, which can say anything here and do something else.
+ * it lands must say the same. Main also holds the baked root itself (what its worker's DHT and the
+ * playback proof read), and it must be the updater's, field for field. This is a check against a
+ * mistake in the build, not against hostile code, which can say anything here and do something
+ * else.
  */
 export function assertMainMatchesRoot(mainBundle: string, root: TrustRoot): void {
+  let held: TrustRoot;
+  try {
+    held = bakedRootIn(mainBundle);
+  } catch (e) {
+    throw new Error(
+      `main's bundle does not hold one update root: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (JSON.stringify(held) !== JSON.stringify(root))
+    throw new Error("main's bundle holds another root than the updater's");
   const reported = [...mainBundle.matchAll(/updates: (true|false) \? "on" : "off"/g)];
   const started = [...mainBundle.matchAll(/if \((true|false)\) await startUpdates\(\)/g)];
   if (reported.length !== 1 || started.length !== 1)
@@ -136,6 +153,7 @@ export function assertStagedRoot(
   const baked = bakedRootIn(readFileSync(join(stageDir, STAGED.updateWorker), 'utf8'));
   if (JSON.stringify(baked) !== JSON.stringify(expected))
     throw new Error('the staged updater does not hold the root it was given');
+  assertMainMatchesRoot(readFileSync(join(stageDir, STAGED.main), 'utf8'), baked);
   if (mode === 'release') assertReleaseRoot(baked);
   else if (baked.channel === 'launch') assertLaunchRoot(baked);
   else assertTestRoot(baked);

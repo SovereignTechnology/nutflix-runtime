@@ -9,7 +9,8 @@
  *   main/preload.cjs      `src/preload/preload.ts`, bundled; `electron` is its one import
  *   main/prompt-preload.cjs, main/prompt.html  main's prompt window for secrets (`src/prompt/`)
  *   main/update-worker.cjs  `src/update/update-worker.ts`, bundled with this build's trust root
- *                         compiled in (`update-root.ts`); it runs only if that root has a link
+ *                         compiled in (`update-root.ts`); it runs only if that root has a link.
+ *                         Main's bundle holds the same root (a test root's DHT and playback proof)
  *   renderer/             the renderer's own build (`packages/renderer/scripts/build.ts`)
  *   node_modules/         the runtime closure of this workspace's `dependencies`, from
  *                         package-lock.json by nutflix-pear's own `runtimeClosure` (so the versions
@@ -195,8 +196,13 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
     target: 'node22',
     // pear-runtime is loaded at run time from node_modules (it spawns Bare from real file paths).
     external: ['electron', 'pear-runtime'],
-    // Whether this build starts an updater. The root itself is only in the updater's bundle.
-    define: { __NUTFLIX_UPDATES__: o.updateRoot.upgrade === null ? 'false' : 'true' },
+    // Whether this build starts an updater, and the same root the updater holds: main reads a test
+    // root's private DHT and playback proof from it (`src/update/root.ts`); a release root has
+    // neither. `assertStagedRoot` reads both bundles back.
+    define: {
+      __NUTFLIX_UPDATES__: o.updateRoot.upgrade === null ? 'false' : 'true',
+      __NUTFLIX_ROOT__: JSON.stringify(encodeBakedRoot(o.updateRoot)),
+    },
   });
   const preloadBuild = await build({
     ...common,

@@ -29,6 +29,10 @@ import {
 
 const LINK = `pear://${'y'.repeat(52)}`;
 const THROWAWAY = 'ab'.repeat(32);
+const PLAY = {
+  relays: ['ws://127.0.0.1:7778'],
+  video: `38504:${'cd'.repeat(32)}:nfx:testnet:1:packaged-playback-1`,
+};
 
 const testRoot = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   v: 1,
@@ -152,14 +156,20 @@ describe('what a stage actually holds', () => {
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
-  const staged = (bundle: string): string => {
+  const bundleOf = (r: TrustRoot): string => `var root = "${encodeBakedRoot(r)}";\n`;
+  /** Main as the stage writes it: the updates switch, and the same root. */
+  const mainOf = (r: TrustRoot): string => {
+    const flag = String(r.upgrade !== null);
+    return `x = { updates: ${flag} ? "on" : "off" };\nif (${flag}) await startUpdates();\n${bundleOf(r)}`;
+  };
+  const staged = (r: TrustRoot, main: string = mainOf(r)): string => {
     const d = mkdtempSync(join(tmpdir(), 'update-root-'));
     dirs.push(d);
     mkdirSync(join(d, 'main'));
-    writeFileSync(join(d, STAGED.updateWorker), bundle);
+    writeFileSync(join(d, STAGED.updateWorker), bundleOf(r));
+    writeFileSync(join(d, STAGED.main), main);
     return d;
   };
-  const bundleOf = (r: TrustRoot): string => `var root = "${encodeBakedRoot(r)}";\n`;
   const test = parseTrustRoot(testRoot());
 
   it('reads the one baked root back', () => {
@@ -172,14 +182,14 @@ describe('what a stage actually holds', () => {
   });
 
   it('passes a release stage holding the production root', () => {
-    const d = staged(bundleOf(releaseRoot()));
+    const d = staged(releaseRoot());
     expect(() => {
       assertStagedRoot(d, releaseRoot(), 'release');
     }).not.toThrow();
   });
 
   it('REFUSES a release stage holding a throwaway root', () => {
-    const d = staged(bundleOf(test));
+    const d = staged(test);
     expect(() => {
       assertStagedRoot(d, test, 'release');
     }).toThrow(/release/);
@@ -189,10 +199,68 @@ describe('what a stage actually holds', () => {
   });
 
   it('refuses a test stage holding the production root', () => {
-    const d = staged(bundleOf(releaseRoot()));
+    const d = staged(releaseRoot());
     expect(() => {
       assertStagedRoot(d, releaseRoot(), 'test');
     }).toThrow();
+  });
+
+  it('passes a test stage whose root carries the playback proof, in both bundles', () => {
+    const withPlay = parseTrustRoot(testRoot({ play: PLAY }));
+    expect(() => {
+      assertStagedRoot(staged(withPlay), withPlay, 'test');
+    }).not.toThrow();
+  });
+
+  it('REFUSES a stage whose main holds another root than its updater (a playback proof spliced in)', () => {
+    const withPlay = parseTrustRoot(testRoot({ play: PLAY }));
+    for (const [r, main] of [
+      [releaseRoot(), mainOf(withPlay)],
+      [test, mainOf(withPlay)],
+      [withPlay, mainOf(test)],
+    ] as const) {
+      expect(() => {
+        assertStagedRoot(staged(r, main), r, r.channel === 'release' ? 'release' : 'test');
+      }).toThrow(/another root than the updater/);
+    }
+    expect(() => {
+      assertStagedRoot(
+        staged(releaseRoot(), 'if (false) await startUpdates();'),
+        releaseRoot(),
+        'release',
+      );
+    }).toThrow(/does not hold one update root/);
+  });
+});
+
+describe('the playback proof (a test root only)', () => {
+  it('is refused in the production root, in a launch root, and by the release path', () => {
+    expect(() => parseTrustRoot({ ...releaseRoot(), play: PLAY })).toThrow(
+      /a release build opens no video by itself/,
+    );
+    expect(() =>
+      parseTrustRoot({
+        ...testRoot(),
+        channel: 'launch',
+        upgrade: null,
+        dht: null,
+        delayMs: null,
+        play: PLAY,
+      }),
+    ).toThrow(/a launch build opens no video by itself/);
+    expect(() => {
+      assertReleaseRoot(parseTrustRoot(testRoot({ play: PLAY })));
+    }).toThrow(/release/);
+    expect(() => parseCli(['build', '--update-root', 'r.json'])).toThrow(
+      /refused outside test-build/,
+    );
+  });
+
+  it('is taken by test-build, with the production key still refused', () => {
+    expect(testRootFromText(JSON.stringify(testRoot({ play: PLAY }))).play).toEqual(PLAY);
+    expect(() =>
+      testRootFromText(JSON.stringify(testRoot({ pubkey: RELEASE_PUBKEY, play: PLAY }))),
+    ).toThrow(/production key/);
   });
 });
 

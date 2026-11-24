@@ -12,6 +12,10 @@
  *   (c)        a notice naming B exactly:     applied, the swap proved by hash
  *   restart    the installed app IS B
  *
+ * With a clip (the install job's), the same root also carries `play`, and right after its
+ * `pear install` build A must find, fetch and play the clip, measured (`playback.ts`): a relay and
+ * two seeders on the same private DHT. Then a release-shaped build must refuse what made that run.
+ *
  * Nothing here reaches the public network: every address baked into these builds is on loopback
  * (the package step refuses anything else), and the job's tripwire is read after this ran.
  */
@@ -28,9 +32,16 @@ import { makeAppx } from '../../packaging/windows-kit.ts';
 import { artifactName } from '../../src/update/gate.ts';
 import { NOTICE_D, NOTICE_KIND, type TrustRoot } from '../../src/update/root.ts';
 import { digestOf } from '../release/digest.ts';
-import { launch, type LaunchResult } from '../smoke.ts';
+import { launch, stopLine, type LaunchResult } from '../smoke.ts';
 import { deploymentPackageJson, manifestProblems, treeManifest } from './deployment.ts';
 import { NoticeRelay } from './notice-relay.ts';
+import {
+  loadClip,
+  provePlayback,
+  proveReleaseRefusal,
+  startPlaybackWorld,
+  type PlaybackWorld,
+} from './playback.ts';
 import { Pear, isolatedEnv, killTree, type RunResult, type Started } from './pear.ts';
 import type { TargetName } from './pins.ts';
 import {
@@ -64,6 +75,11 @@ export interface ProofContext {
   readonly cert: TestCert | undefined;
   /** This package's version; the two test builds are the next two patch versions. */
   readonly baseVersion: string;
+  /**
+   * The packaged-playback proof (the install job): the clip's directory (`playback-clip.ts`) and this
+   * target's release-shaped package (the `shell` job's). Absent: no playback (the release proof).
+   */
+  readonly playback?: { readonly clip: string; readonly releaseShaped: string };
   phase<T>(title: string, fn: () => Promise<T> | T): Promise<T>;
   say(line: string): void;
 }
@@ -213,7 +229,7 @@ export async function proveGateMatrix(m: GateMatrix): Promise<void> {
     });
     const last = r.updates[r.updates.length - 1];
     c.say(
-      `updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}; at teardown: ${r.teardown.join(', ') || 'none'}`,
+      `updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}; at teardown: ${r.teardown.join(', ') || 'none'}; stop: ${stopLine(r.stopped)}`,
     );
     if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
     if (last?.['state'] !== 'held' || last['reason'] !== wantReason)
@@ -264,7 +280,7 @@ export async function proveGateMatrix(m: GateMatrix): Promise<void> {
       });
       const last = r.updates[r.updates.length - 1];
       c.say(
-        `updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}; at teardown: ${r.teardown.join(', ') || 'none'}`,
+        `updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}; at teardown: ${r.teardown.join(', ') || 'none'}; stop: ${stopLine(r.stopped)}`,
       );
       if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
       if (last?.['state'] !== 'applied')
@@ -295,7 +311,9 @@ export async function proveGateMatrix(m: GateMatrix): Promise<void> {
   // ---- the restart ---------------------------------------------------------------------------
   await c.phase('update gate: the restarted app is build B', async () => {
     const r = await launch(exe, [], 'ready', 240, { env, updates: 'on', settleMs: 5000 });
-    c.say(`updates: ${JSON.stringify(r.updates)}; ready ${JSON.stringify(r.ready)}`);
+    c.say(
+      `updates: ${JSON.stringify(r.updates)}; ready ${JSON.stringify(r.ready)}; stop: ${stopLine(r.stopped)}`,
+    );
     if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
     if (r.ready?.version !== versionB)
       throw new Error(`the restarted app says ${String(r.ready?.version)}, not ${versionB}`);
@@ -344,6 +362,9 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
   let relay: NoticeRelay | undefined;
   let seed: Started | undefined;
   let pear: Pear | undefined;
+  let world: PlaybackWorld | undefined;
+  // Checked before anything starts: every file against the clip's own hash list.
+  const clip = c.playback === undefined ? undefined : loadClip(c.playback.clip);
 
   const pearOk = (what: string, r: RunResult): void => {
     c.say(`$ pear ${what}: exit ${String(r.code)}, ${String(r.ms)} ms, ${r.logFile}`);
@@ -420,6 +441,9 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
         const link = field(lastRecord(touched.records, 'final'), 'link');
         if (link === undefined || !/^pear:\/\/[a-z0-9]{52}$/.test(link))
           throw new Error('pear touch printed no link');
+        // The playback proof's relay (its seeders join this DHT later, `provePlayback`): the root
+        // names the relay and the video.
+        if (clip !== undefined) world = await startPlaybackWorld(bootstrap, clip);
         const trust: TrustRoot = {
           v: 1,
           channel: 'test',
@@ -428,12 +452,17 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
           upgrade: link,
           dht: bootstrap.split(','),
           delayMs: 0,
+          ...(world === undefined ? {} : { play: world.play }),
         };
         const rootFile = join(root, 'trust-root.json');
         writeFileSync(rootFile, `${JSON.stringify(trust)}\n`);
         c.say(
           `relay ${startedRelay.url}, DHT ${bootstrap}, link ${link}, release key ${trust.pubkey}`,
         );
+        if (world !== undefined)
+          c.say(
+            `playback: relay ${world.relay.url}, video ${world.play.video}; an honest and a lying seeder join this DHT before the play`,
+          );
         return { bootstrap, link, rootFile, releaseKey, wrongKey, trust, relay: startedRelay };
       },
     );
@@ -557,6 +586,38 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
       throw new Error('the installed app is not build A');
     row('installed', `build A from the private DHT (${versionA})`);
 
+    // ---- the installed app plays (the install job) -------------------------------------------
+    if (world !== undefined && clip !== undefined && c.playback !== undefined) {
+      await provePlayback({
+        world,
+        clip,
+        exe,
+        env,
+        phase: (title, fn) => c.phase(title, fn),
+        say: (line) => {
+          c.say(line);
+        },
+        row,
+      });
+      const out = join(root, 'out-a', `Nutflix-${c.platform}-${c.arch}`);
+      await proveReleaseRefusal({
+        releaseShaped: c.playback.releaseShaped,
+        testApp:
+          c.platform === 'darwin'
+            ? join(out, c.file, 'Contents', 'Resources', 'app')
+            : join(out, 'resources', 'app'),
+        play: world.play,
+        platform: c.platform,
+        arch: c.arch,
+        work: root,
+        phase: (title, fn) => c.phase(title, fn),
+        say: (line) => {
+          c.say(line);
+        },
+        row,
+      });
+    }
+
     // ---- B, on the link ------------------------------------------------------------------------
     const verlinkB = await c.phase('update gate: stage build B on the same link', async () => {
       const dir = await deploy('b', versionB, appB);
@@ -600,6 +661,7 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
       c.say(`update teardown: ${e instanceof Error ? e.message : String(e)}`);
     }
     await relay?.stop().catch(() => undefined);
+    await world?.close().catch(() => undefined);
     const d = dht;
     if (d !== undefined) {
       d.stdin?.end();

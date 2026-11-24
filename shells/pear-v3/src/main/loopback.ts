@@ -113,14 +113,22 @@ export const REFUSALS_LOGGED = 20;
  * request of the session reaches the listener. `log` hears the first `REFUSALS_LOGGED` refusals,
  * by port only (never the URL, which the page chose). Electron keeps ONE `onBeforeRequest`
  * listener per session: another call on the same session, anywhere, would replace this guard.
+ * `observe` sees every request's URL before the decision and changes nothing: only a test root's
+ * playback proof passes one (`play-proof.ts` counts what leaves loopback).
  */
 export function installLoopbackGuard(
   ses: GuardedSession,
   ports: Pick<WorkerPorts, 'has'>,
   log: (name: string, fields?: Fields) => void,
+  observe?: (url: string) => void,
 ): void {
   let logged = 0;
   ses.webRequest.onBeforeRequest((details, callback) => {
+    try {
+      observe?.(details.url);
+    } catch {
+      // An observer's failure never decides a request.
+    }
     const v = allowRequest(details.url, ports);
     if (v.allow) {
       callback({});

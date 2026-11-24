@@ -135,9 +135,10 @@ const refusedAsync = async (p: Promise<unknown>, re: RegExp): Promise<void> => {
   await expect(p).rejects.toBeInstanceOf(ReleaseRefusal);
   await expect(p).rejects.toThrow(re);
 };
-const mainFor = (upgrade: string | null): string => {
+/** Main's bundle as the stage writes it: its updates switch, and the root it holds (the release one). */
+const mainFor = (upgrade: string | null, root = releaseRoot()): string => {
   const flag = String(upgrade !== null);
-  return `x = { updates: ${flag} ? "on" : "off" };\nif (${flag}) await startUpdates();\n`;
+  return `x = { updates: ${flag} ? "on" : "off" };\nif (${flag}) await startUpdates();\nconst root = "${encodeBakedRoot(root)}";\n`;
 };
 
 // ---- the zip reader --------------------------------------------------------------------------
