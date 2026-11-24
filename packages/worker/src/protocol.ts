@@ -36,6 +36,12 @@ export const ERROR_CODES = [
   'disk-cap',
   /** The store could not read or write its files. */
   'io',
+  /** A signature was asked for and no signer is connected, or the local key is locked. */
+  'no-signer',
+  /** The passphrase did not open the local key. */
+  'bad-passphrase',
+  /** Studio needs the system's ffmpeg and ffprobe, and did not find them. */
+  'ffmpeg-missing',
   'internal',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -68,6 +74,65 @@ export const MAX_NFX_STORED_VIDEOS = 4096;
 export const MAX_LABEL = 64;
 /** A rendition's `resolution` as it crosses (`<w>x<h>`, NFX-05 §2, bounded here). */
 export const NFX_RESOLUTION = /^[0-9]{1,6}x[0-9]{1,6}$/;
+
+/** A local key's passphrase, in UTF-16 units (ADR 0001 §8). */
+export const MIN_PASSPHRASE = 8;
+export const MAX_PASSPHRASE = 1024;
+/** The longest `bunker://` URI `signer.nip46.connect` takes. */
+export const MAX_BUNKER_URI = 2048;
+/** The most relays one bunker URI may name. */
+export const MAX_BUNKER_RELAYS = 4;
+/**
+ * The ONLY event kinds the renderer may ask the user's signer for: the kind-38504 manifest of a
+ * video this node packaged. Everything else is refused before a signer is touched.
+ */
+export const SIGNABLE_KINDS = [38504] as const;
+export const MAX_SIGN_TAGS = 128;
+export const MAX_SIGN_TAG_VALUES = 8;
+export const MAX_SIGN_TAG_CHARS = 1024;
+export const MAX_SIGN_CONTENT = 8192;
+/** A manifest someone else signed, as `seeding.watch` takes it: its description may be longer. */
+export const MAX_MANIFEST_CONTENT = 64 * 1024;
+
+/** The largest video Studio reads. */
+export const MAX_SOURCE_BYTES = 16 * 1024 * 1024 * 1024;
+/** The longest video Studio packages, seconds. */
+export const MAX_SOURCE_SECONDS = 4 * 3600;
+/** The widest or tallest frame Studio reads (8K). */
+export const MAX_SOURCE_DIMENSION = 7680;
+export const MAX_TITLE = 256;
+/**
+ * The most combining marks in a row on one character, in a title or as a dialog shows any text. Real
+ * scripts stack a few (Hebrew points, Tibetan subjoined letters); a long run draws over nearby lines.
+ */
+export const MAX_COMBINING_RUN = 6;
+export const MAX_DESCRIPTION = 8192;
+export const MAX_VIDEO_TAGS = 16;
+export const MAX_VIDEO_TAG = 32;
+/** The most rendition sizes one video names (core's `MAX_UPLOAD_SIZES`). */
+export const MAX_STUDIO_SIZES = 7;
+/** The tallest rendition (core's `MAX_UPLOAD_HEIGHT`). */
+export const MAX_STUDIO_HEIGHT = 2160;
+/** The most packaged drafts waiting for a signature that the worker remembers. */
+export const MAX_STUDIO_SOURCES = 8;
+
+/** A WebRTC segment handed to the worker: the largest file, and the largest chunk of one. */
+export const MAX_OFFERED_FILE_BYTES = 64 * 1024 * 1024;
+export const MAX_OFFERED_CHUNK_BYTES = 512 * 1024;
+/** `MAX_OFFERED_CHUNK_BYTES` in base64. */
+export const MAX_OFFERED_CHUNK_CHARS = Math.ceil(MAX_OFFERED_CHUNK_BYTES / 3) * 4;
+/** The most beacons one `seeding.beacons` signs. */
+export const MAX_BEACONS = 64;
+/** What "seed what you watch" may keep on disk, within the store's own cap. */
+export const MAX_WATCHED_BYTES = 16 * 1024 * 1024 * 1024;
+/** New videos "seed what you watch" may start storing in an hour. */
+export const MAX_WATCH_STARTS_PER_HOUR = 20;
+/** Bytes "seed what you watch" may fetch in an hour, however many it has deleted since. */
+export const MAX_WATCH_BYTES_PER_HOUR = MAX_WATCHED_BYTES;
+/** How long a picked file stays usable, seconds. A new pick replaces it sooner. */
+export const STUDIO_SOURCE_TTL_SEC = 30 * 60;
+/** The most one Studio job may write as encoded output, within the store's free space. */
+export const MAX_STUDIO_JOB_BYTES = 32 * 1024 * 1024 * 1024;
 
 // ---- shared wire shapes --------------------------------------------------------------------
 
@@ -115,6 +180,11 @@ export interface InitArgs {
   readonly diskCapBytes?: number;
   /** The least severe log level sent as `log` events; default `info`. */
   readonly logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Whether this shell may hold a passphrase-sealed key. Absent means NO: shape (b) has no sandbox
+   * and ADR 0001's amendment allows it no signing key on disk, so it signs through a bunker only.
+   */
+  readonly localKey?: boolean;
 }
 
 /**
@@ -197,6 +267,160 @@ export interface NfxSeedListResult {
   readonly listening: readonly NfxListenerWire[];
 }
 
+/** What the renderer may know of the user's signer: never a key, a passphrase or a URI. */
+export interface SignerStatusWire {
+  readonly kind: 'none' | 'local' | 'nip46';
+  /** 64 lowercase hex, once known; a locked key file still names its public key. */
+  readonly pubkey: string | null;
+  /** Nothing can be signed until `signer.local.unlock`. */
+  readonly locked: boolean;
+  /** A sealed local key exists on this machine. */
+  readonly keyFile: boolean;
+  /**
+   * Whether this run may use one. `false` in a shell without Chromium's sandbox: a key on disk stays
+   * there, untouched and unused, and only a bunker can sign.
+   */
+  readonly localAllowed: boolean;
+}
+
+/** An event to sign: the user's signer fills in `id`, `pubkey` and `sig`. */
+export interface UnsignedEventWire {
+  readonly kind: number;
+  readonly created_at: number;
+  readonly tags: readonly (readonly string[])[];
+  readonly content: string;
+}
+
+export interface SignedEventWire extends UnsignedEventWire {
+  readonly id: string;
+  readonly pubkey: string;
+  readonly sig: string;
+}
+
+/**
+ * How a stored video got here. `published`: Studio packaged it, and it is served once the user has
+ * confirmed and signed its manifest. `watched`: seeded because the viewer watched it with the
+ * switch on, and served only while the switch stays on. `host`: stored through `nfx.seed.start`,
+ * always served. `unknown`: no record says why it is here, so it is NOT served.
+ */
+export type SeedOrigin = 'published' | 'watched' | 'host' | 'unknown';
+
+export interface SeedingVideoWire {
+  readonly video: string;
+  readonly files: number;
+  readonly bytes: number;
+  readonly origin: SeedOrigin;
+  /** Peers can fetch it from this node right now, or will as soon as a listener is up. */
+  readonly served: boolean;
+  /** The user stopped serving it. Its bytes are kept until they delete it. */
+  readonly stopped: boolean;
+}
+
+export interface SeedingStatusWire {
+  /** The Settings switch: seed what I watch. Off by default. */
+  readonly watched: boolean;
+  readonly videos: readonly SeedingVideoWire[];
+  readonly listening: readonly NfxListenerWire[];
+}
+
+/** Seed a video the viewer is watching, from the seeders its beacons name. */
+export interface SeedingWatchArgs {
+  /** The open play of this video: what makes it a video the viewer is watching. */
+  readonly sid: string;
+  /** The video's signed kind-38504 manifest, verified again here. */
+  readonly manifest: SignedEventWire;
+  readonly peers: readonly NfxHyperdhtEndpointWire[];
+}
+
+/** One chunk of a file the renderer's WebRTC player verified, in order from offset 0. */
+export interface SeedingSegmentArgs {
+  /** The play session the file belongs to: the hash list it is checked against. */
+  readonly sid: string;
+  readonly sha256: string;
+  /** The whole file's size, which must be the hash list's. */
+  readonly size: number;
+  readonly offset: number;
+  /** Base64, at most `MAX_OFFERED_CHUNK_CHARS`. */
+  readonly data: string;
+}
+
+export interface SeedingSegmentResult {
+  /** `false`: refused or already held; the renderer stops sending this file. */
+  readonly accepted: boolean;
+  /** The whole file arrived and its sha256 is the hash list's. */
+  readonly complete: boolean;
+}
+
+export interface StudioFfmpegWire {
+  readonly found: boolean;
+  readonly version?: string;
+  /** How to install it on this OS, as a line of plain text. */
+  readonly install: string;
+}
+
+/** A file the user picked in main's native dialog. The worker alone knows its path. */
+export interface StudioSourceWire {
+  /** 32 hex: what `studio.probe` and `studio.publish` take. */
+  readonly source: string;
+  /** The file's base name, for display. */
+  readonly name: string;
+  readonly bytes: number;
+}
+
+export interface StudioSizeWire {
+  /** Lines of the short side (720 for 720p). */
+  readonly height: number;
+  /** The source's own size, which is no standard tier. */
+  readonly original: boolean;
+  readonly kbps: number;
+}
+
+export interface StudioProbeWire {
+  readonly durationSec: number;
+  readonly width: number;
+  readonly height: number;
+  readonly sizes: readonly StudioSizeWire[];
+}
+
+export interface StudioPublishArgs {
+  readonly source: string;
+  readonly title: string;
+  readonly description: string;
+  readonly tags: readonly string[];
+  /** Heights from `studio.probe`, each offered and named once. */
+  readonly sizes: readonly number[];
+}
+
+/**
+ * A packaged, stored, still private video. Its manifest draft stays in the worker: main asks for it
+ * (`signer.check`) when it asks the user.
+ */
+export interface StudioPublishedWire {
+  readonly video: string;
+  readonly files: number;
+  readonly bytes: number;
+}
+
+/** What the publish confirmation shows: the worker's own record of the draft it would sign. */
+export interface SignCheckWire {
+  readonly video: string;
+  /** The exact event `signer.sign` would sign. */
+  readonly event: UnsignedEventWire;
+  /** The key that would sign it, 64 hex: main hands it back, and a different key is refused. */
+  readonly signer: string;
+  /** The same key as an `npub`, for the user to read. */
+  readonly npub: string;
+  readonly title: string;
+  readonly tags: readonly string[];
+  readonly description: string;
+  /** The file that was encoded. */
+  readonly file: {
+    readonly name: string;
+    readonly bytes: number;
+    readonly durationSec: number;
+  };
+}
+
 export interface WorkerStatus {
   /**
    * `idle`: no DHT node yet, none starts until a play or a stored video needs one. `ready` once
@@ -229,6 +453,54 @@ export interface WorkerMethodTable {
     args: { readonly seeder: string; readonly namespace: string },
     result: { readonly hyperdht: NfxHyperdhtEndpointWire | null },
   ];
+  'signer.status': [args: Record<string, never>, result: SignerStatusWire];
+  /** MAIN ONLY: make a new key in the worker, sealed under the passphrase. Refused if one exists. */
+  'signer.local.create': [args: { readonly passphrase: string }, result: SignerStatusWire];
+  /** MAIN ONLY: the passphrase comes from main's own prompt window, never a page. */
+  'signer.local.unlock': [args: { readonly passphrase: string }, result: SignerStatusWire];
+  /** MAIN ONLY: the URI holds a pairing secret. The session lives in the worker. */
+  'signer.nip46.connect': [args: { readonly uri: string }, result: SignerStatusWire];
+  /** Zero the local key, or close the bunker session. Refused while a signature is pending. */
+  'signer.lock': [args: Record<string, never>, result: SignerStatusWire];
+  /** MAIN ONLY: the draft waiting for `video`'s signature, for the native confirmation. */
+  'signer.check': [args: { readonly video: string }, result: SignCheckWire];
+  /**
+   * MAIN ONLY, after the user confirmed: sign the draft Studio made, with exactly the key they were
+   * shown. Signing it starts serving the video, which shares the user's IP address.
+   */
+  'signer.sign': [
+    args: { readonly event: UnsignedEventWire; readonly signer: string },
+    result: SignedEventWire,
+  ];
+  'seeding.status': [args: Record<string, never>, result: SeedingStatusWire];
+  /** The switch. MAIN ONLY: turning it on takes the user's answer to a native dialog. */
+  'seeding.set': [args: { readonly watched: boolean }, result: SeedingStatusWire];
+  /** Store and seed a video being watched. Refused while the switch is off. */
+  'seeding.watch': [args: SeedingWatchArgs, result: NfxStoredVideoWire];
+  /** Stop serving a video. Its bytes stay: deleting them is `seeding.delete`, behind main. */
+  'seeding.stop': [args: { readonly video: string }, result: { readonly stopped: boolean }];
+  /** MAIN ONLY, after a native confirmation: serve a stopped video again. */
+  'seeding.resume': [args: { readonly video: string }, result: { readonly resumed: boolean }];
+  /** MAIN ONLY, after a native confirmation: stop serving a video and delete its bytes. */
+  /** MAIN ONLY: the one title a native dialog needs. Titles are not in the bulk status. */
+  'seeding.title': [args: { readonly video: string }, result: { readonly title: string | null }];
+  'seeding.delete': [args: { readonly video: string }, result: { readonly removed: boolean }];
+  /** A fresh signed kind-20464 beacon for every video served now, for the renderer to publish. */
+  'seeding.beacons': [
+    args: Record<string, never>,
+    result: { readonly events: readonly SignedEventWire[] },
+  ];
+  'seeding.segment': [args: SeedingSegmentArgs, result: SeedingSegmentResult];
+  'studio.ffmpeg': [args: Record<string, never>, result: StudioFfmpegWire];
+  /** MAIN ONLY: the path the user picked in the native dialog. */
+  'studio.source': [args: { readonly path: string }, result: StudioSourceWire];
+  'studio.probe': [args: { readonly source: string }, result: StudioProbeWire];
+  /** Encode, package and store; answers with the manifest draft. One at a time. */
+  'studio.publish': [args: StudioPublishArgs, result: StudioPublishedWire];
+  /** Kill the running encode, if any. */
+  'studio.cancel': [args: Record<string, never>, result: { readonly cancelled: boolean }];
+  /** MAIN ONLY: the user declined to publish: the unsigned draft and its bytes are deleted. */
+  'studio.discard': [args: { readonly video: string }, result: { readonly removed: boolean }];
 }
 export type WorkerMethod = keyof WorkerMethodTable;
 export type ArgsOf<M extends WorkerMethod> = WorkerMethodTable[M][0];
@@ -243,7 +515,52 @@ export const WORKER_METHODS = [
   'nfx.seed.stop',
   'nfx.seed.list',
   'nfx.endpoint',
+  'signer.status',
+  'signer.local.create',
+  'signer.local.unlock',
+  'signer.nip46.connect',
+  'signer.lock',
+  'signer.check',
+  'signer.sign',
+  'seeding.status',
+  'seeding.set',
+  'seeding.watch',
+  'seeding.stop',
+  'seeding.resume',
+  'seeding.title',
+  'seeding.delete',
+  'seeding.beacons',
+  'seeding.segment',
+  'studio.ffmpeg',
+  'studio.source',
+  'studio.probe',
+  'studio.publish',
+  'studio.cancel',
+  'studio.discard',
 ] as const satisfies readonly WorkerMethod[];
+
+/**
+ * What a window may ask of main itself: answered by the shell (`main-calls.ts`), never forwarded to
+ * the worker. Each is something a page must not do alone, so each goes through a surface only the
+ * user can answer: the native file picker, a native confirmation, or main's own prompt window for
+ * a passphrase or a bunker URI (neither ever enters the page).
+ */
+export interface WindowMethodTable {
+  'app.pickVideo': [args: Record<string, never>, result: StudioSourceWire | null];
+  'app.seeding.set': [args: { readonly on: boolean }, result: SeedingStatusWire];
+  'app.seeding.resume': [args: { readonly video: string }, result: SeedingStatusWire];
+  'app.seeding.delete': [args: { readonly video: string }, result: SeedingStatusWire];
+  /** `null`: the user declined, and the draft is gone. */
+  'app.publish.sign': [args: { readonly video: string }, result: SignedEventWire | null];
+}
+export type WindowMethod = keyof WindowMethodTable;
+export const WINDOW_METHODS = [
+  'app.pickVideo',
+  'app.seeding.set',
+  'app.seeding.resume',
+  'app.seeding.delete',
+  'app.publish.sign',
+] as const satisfies readonly WindowMethod[];
 
 // ---- events --------------------------------------------------------------------------------
 
@@ -261,6 +578,14 @@ export type WorkerEvent =
       readonly done?: number;
       readonly total?: number;
       readonly error?: WireError;
+    }
+  /** A publish's progress: what it is doing now, and how far (0..100) where that is known. */
+  | {
+      readonly op: 'ev';
+      readonly e: 'studio.progress';
+      readonly stage: 'probing' | 'encoding' | 'thumbnails' | 'packaging' | 'storing';
+      readonly rendition?: string;
+      readonly percent?: number;
     }
   /** One redacted log line (the worker's only output path). */
   | {

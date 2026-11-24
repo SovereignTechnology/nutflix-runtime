@@ -68,6 +68,10 @@ export interface ReadyFields {
   readonly h264?: unknown;
   /** Whether this build was packaged with an upgrade link, and so runs the updater. */
   readonly updates?: unknown;
+  /** The native Account menu, the only way to secret entry, is in place with all its items. */
+  readonly accountMenu?: unknown;
+  /** `visible` on Linux and Windows; `system` on macOS, whose menu bar is not the window's. */
+  readonly menuBar?: unknown;
 }
 
 /** The fields of a READY line, or `null` when `line` is not one. */
@@ -102,6 +106,8 @@ export function readyProblems(
     ['player', 'available'],
     // A build for release has no upgrade link and starts no updater: every launch checks it.
     ['updates', updates],
+    ['accountMenu', 'present'],
+    ['menuBar', process.platform === 'darwin' ? 'system' : 'visible'],
   ];
   return want
     .filter(([k, v]) => f[k] !== v)
@@ -389,7 +395,8 @@ function report(label: string, r: LaunchResult): void {
   if (r.ok && r.ready !== null)
     process.stdout.write(
       `SMOKE   proved: window loaded, renderer mounted, worker answered status, page round trip ${JSON.stringify(r.ready.pipe)}, sandbox ${JSON.stringify(r.ready.sandbox)}, OS reports renderer ${JSON.stringify(r.ready.rendererSandbox)}\n` +
-        `SMOKE   engine: webrtc player ${JSON.stringify(r.ready.player)}, webrtc ip policy ${JSON.stringify(r.ready.webrtcPolicy)}, vp9-in-mp4 ${JSON.stringify(r.ready.vp9)}, h264 ${JSON.stringify(r.ready.h264)}\n`,
+        `SMOKE   engine: webrtc player ${JSON.stringify(r.ready.player)}, webrtc ip policy ${JSON.stringify(r.ready.webrtcPolicy)}, vp9-in-mp4 ${JSON.stringify(r.ready.vp9)}, h264 ${JSON.stringify(r.ready.h264)}\n` +
+        `SMOKE   account menu ${JSON.stringify(r.ready.accountMenu)}, menu bar ${JSON.stringify(r.ready.menuBar)}\n`,
     );
   if (!r.ok) for (const l of r.tail.slice(-60)) process.stdout.write(`SMOKE   | ${l}\n`);
 }

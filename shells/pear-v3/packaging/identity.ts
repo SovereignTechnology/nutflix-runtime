@@ -54,6 +54,9 @@ export type Arch = (typeof TARGETS)[number]['arch'];
 export const STAGED = {
   main: 'main/main.cjs',
   preload: 'main/preload.cjs',
+  /** The prompt window's preload and its one page (`src/prompt/`). */
+  promptPreload: 'main/prompt-preload.cjs',
+  promptHtml: 'main/prompt.html',
   /** The updater process (`src/update/update-worker.ts`), with this build's trust root in it. */
   updateWorker: 'main/update-worker.cjs',
   rendererIndex: 'renderer/index.html',

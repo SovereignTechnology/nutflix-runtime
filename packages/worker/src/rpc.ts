@@ -17,7 +17,7 @@
  */
 import { INTERNAL, toWireError } from './errors.js';
 import { FrameDecoder, FramingError, encodeFrame } from './framing.js';
-import { isRequest, requestId } from './guards.js';
+import { isRequest, refusalReason, requestId } from './guards.js';
 import type { ArgsOf, ResultOf, WorkerEvent, WorkerMethod } from './protocol.js';
 import { PROTOCOL_V } from './protocol.js';
 
@@ -105,7 +105,10 @@ export class WorkerRpc {
         op: 'res',
         id,
         ok: false,
-        e: { code: 'invalid-argument', message: 'invalid-argument: the request failed validation' },
+        e: {
+          code: 'invalid-argument',
+          message: `invalid-argument: ${refusalReason(msg) ?? 'the request failed validation'}`,
+        },
       });
       return;
     }

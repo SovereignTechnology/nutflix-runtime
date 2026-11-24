@@ -7,6 +7,7 @@
  *                         so that Forge finds the Electron version (the packaged copy drops it)
  *   main/main.cjs         `src/main/main.ts`, bundled; `electron` and `pear-runtime` stay imports
  *   main/preload.cjs      `src/preload/preload.ts`, bundled; `electron` is its one import
+ *   main/prompt-preload.cjs, main/prompt.html  main's prompt window for secrets (`src/prompt/`)
  *   main/update-worker.cjs  `src/update/update-worker.ts`, bundled with this build's trust root
  *                         compiled in (`update-root.ts`); it runs only if that root has a link
  *   renderer/             the renderer's own build (`packages/renderer/scripts/build.ts`)
@@ -19,6 +20,7 @@
  * way the worker's own Bare test runs it). It never reads anything the renderer names.
  */
 import {
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -206,6 +208,16 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
     // A sandboxed preload gets Electron's restricted `require` and nothing else.
     external: ['electron'],
   });
+  const promptBuild = await build({
+    ...common,
+    entryPoints: ['src/prompt/prompt-preload.ts'],
+    outfile: join(o.out, STAGED.promptPreload),
+    platform: 'browser',
+    format: 'cjs',
+    target: 'es2022',
+    external: ['electron'],
+  });
+  copyFileSync(join(PKG_DIR, 'src', 'prompt', 'prompt.html'), join(o.out, STAGED.promptHtml));
   const updateBuild = await build({
     ...common,
     entryPoints: ['src/update/update-worker.ts'],
@@ -222,6 +234,7 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
   for (const [label, meta, may] of [
     ['main', mainBuild.metafile, allowed],
     ['preload', preloadBuild.metafile, allowed],
+    ['prompt preload', promptBuild.metafile, allowed],
     ['updater', updateBuild.metafile, updateAllowed],
   ] as const) {
     const inputs = Object.keys(meta.inputs).map((p) => resolve(PKG_DIR, p).replaceAll('\\', '/'));
@@ -233,9 +246,12 @@ export async function stageApp(o: StageOptions): Promise<StageReport> {
     if (!existsSync(join(o.out, 'node_modules', n, 'package.json')))
       fail(`the updater imports ${n}, which the closure does not ship`);
   const mainExternals = externalsOf(mainBuild.metafile).filter((n) => n !== 'electron');
-  const preloadExternals = externalsOf(preloadBuild.metafile);
+  const preloadExternals = [
+    ...externalsOf(preloadBuild.metafile),
+    ...externalsOf(promptBuild.metafile),
+  ];
   if (preloadExternals.some((n) => n !== 'electron'))
-    fail(`the preload imports more than electron: ${preloadExternals.join(', ')}`);
+    fail(`a preload imports more than electron: ${preloadExternals.join(', ')}`);
   for (const n of mainExternals)
     if (!existsSync(join(o.out, 'node_modules', n, 'package.json')))
       fail(`main imports ${n}, which the closure does not ship`);

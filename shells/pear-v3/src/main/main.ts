@@ -33,11 +33,15 @@ import {
   type WebContents,
 } from 'electron';
 
+import { WorkerError, type WorkerStatus } from '@nutflix-runtime/worker';
+
 import {
   OPEN_LINK,
   PIPE_CLOSE,
   PIPE_DATA,
   PIPE_WRITE,
+  PROMPT_CANCEL,
+  PROMPT_SUBMIT,
   SANDBOX_PREFLIGHT_SWITCH,
 } from '../shared/ids.ts';
 import {
@@ -45,6 +49,7 @@ import {
   updateBannerText,
 } from '../../../../packages/renderer/src/update-text.ts';
 import type { UpdateStatus } from '../update/status.ts';
+import { accountMenuPresent, menuBarState, wireAccountMenu } from './account-menu.ts';
 import { createAppProtocolHandler } from './app-protocol.ts';
 import { headerPolicy } from './csp.ts';
 import { LinkOpener } from './external-links.ts';
@@ -63,6 +68,23 @@ import {
   type NotMounted,
   type Probe,
 } from './page-probe.ts';
+import {
+  CONFIRM_SEEDING_DIALOG,
+  CONFIRM_SEEDING_YES,
+  CONFIRM_YES,
+  MainCalls,
+  PICK_VIDEO_DIALOG,
+  accountProblemDialog,
+  publishDialog,
+  videoDialog,
+} from './main-calls.ts';
+import {
+  PROMPT_PARTITION,
+  PromptHost,
+  installPromptSession,
+  openPrompt,
+  promptSender,
+} from './prompt-window.ts';
 import { MAIN_WINDOW_POLICY, RpcGate } from './rpc-gate.ts';
 import {
   BANNER_TEXT,
@@ -78,6 +100,9 @@ import { hardenWebContents, installSessionPolicy, refusedSwitch } from './securi
 import { installedApp, startUpdater } from './update-proc.ts';
 import { startWorker, type WorkerHandle } from './worker-proc.ts';
 import { WEBRTC_IP_POLICY, createMainWindow } from './window.ts';
+
+/** The most the NFX store may hold on disk: what seeding and publishing can take. */
+const NFX_DISK_CAP_BYTES = 64 * 1024 * 1024 * 1024;
 
 /** Replaced by the bundler (`packaging/stage.ts`): this build was packaged with an upgrade link. */
 declare const __NUTFLIX_UPDATES__: boolean;
@@ -123,7 +148,7 @@ const sendTo = (id: number, channel: string, ...args: unknown[]): void => {
   if (wc !== undefined && !wc.isDestroyed()) wc.send(channel, ...args);
 };
 
-const gate = new RpcGate({
+const gate: RpcGate = new RpcGate({
   toWorker: (frame) => {
     if (worker === undefined) throw new Error('no worker');
     worker.write(frame);
@@ -134,6 +159,65 @@ const gate = new RpcGate({
   closeWindow: (id) => {
     sendTo(id, PIPE_CLOSE);
   },
+  mainCall: (id, method, args) => mainCalls.answer(id, method, args),
+});
+
+/** The window a dialog belongs to. */
+function ownerOf(id: number): BrowserWindow {
+  const wc = webContents.fromId(id);
+  const owner = wc === undefined ? null : BrowserWindow.fromWebContents(wc);
+  if (owner === null) throw new WorkerError('session-closed', 'no window');
+  return owner;
+}
+
+const prompts = new PromptHost({
+  open: (windowId, spec, onGone) =>
+    openPrompt(
+      BrowserWindow,
+      ownerOf(windowId),
+      join(__dirname, 'prompt-preload.cjs'),
+      session.fromPartition(PROMPT_PARTITION, { cache: false }),
+      spec,
+      onGone,
+      {
+        onRendererGone: (reason, exitCode) => {
+          event('prompt-renderer-gone', { reason, exitCode });
+        },
+        onNeverShown: () => {
+          event('prompt-never-shown');
+        },
+        onEnded: (path) => {
+          event('prompt-ended', { path });
+        },
+      },
+    ),
+});
+ipcMain.on(PROMPT_SUBMIT, (e, value: unknown) => {
+  prompts.message(promptSender(e), PROMPT_SUBMIT, value);
+});
+ipcMain.on(PROMPT_CANCEL, (e) => {
+  prompts.message(promptSender(e), PROMPT_CANCEL, undefined);
+});
+
+const mainCalls = new MainCalls({
+  pickFile: async (id) => {
+    const r = await dialog.showOpenDialog(ownerOf(id), PICK_VIDEO_DIALOG);
+    return r.canceled ? null : (r.filePaths[0] ?? null);
+  },
+  confirmSeeding: async (id) => {
+    const r = await dialog.showMessageBox(ownerOf(id), CONFIRM_SEEDING_DIALOG);
+    return r.response === CONFIRM_SEEDING_YES;
+  },
+  confirmPublish: async (id, shown) => {
+    const r = await dialog.showMessageBox(ownerOf(id), publishDialog(shown));
+    return r.response === CONFIRM_YES;
+  },
+  confirmVideo: async (id, action, v) => {
+    const r = await dialog.showMessageBox(ownerOf(id), videoDialog(action, v));
+    return r.response === CONFIRM_YES;
+  },
+  askSecret: (id, spec, submit) => prompts.ask(id, spec, submit),
+  worker: (m, a, timeoutMs) => gate.request(m, a, timeoutMs),
 });
 
 const links = new LinkOpener({
@@ -182,6 +266,8 @@ app.on('before-quit', (e) => {
   quitReady = true;
   mainWindow?.hide();
   for (const id of [...windowIds]) gate.detach(id);
+  // A running encode ends with the app: stopping the worker alone would orphan ffmpeg.
+  void gate.request('studio.cancel', {}, QUIT_GRACE_MS).catch(() => undefined);
   void gate.drained(QUIT_GRACE_MS).finally(() => {
     app.quit();
   });
@@ -221,16 +307,27 @@ if (app.commandLine.hasSwitch(SANDBOX_PREFLIGHT_SWITCH)) {
 
 async function main(): Promise<void> {
   await app.whenReady();
-  Menu.setApplicationMenu(
-    process.platform === 'darwin'
-      ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }])
-      : null,
-  );
+  // The Account menu is the only way to secret entry. The page hears only that the signer may have
+  // changed, and asks `signer.status`.
+  const accountMenu = wireAccountMenu({
+    platform: process.platform,
+    menu: Menu,
+    window: () => mainWindow,
+    account: (id, action) => mainCalls.account(id, action),
+    tellPage: () => {
+      gate.fromMain('signer', { changed: true });
+    },
+    showProblem: (win, problem) => dialog.showMessageBox(win, accountProblemDialog(problem)),
+  });
 
   // The page's policy is the renderer's own, read from the file the protocol serves.
   const rendererDir = join(appDir, 'renderer');
   const csp = headerPolicy(readFileSync(join(rendererDir, 'index.html'), 'utf8'));
   installSessionPolicy(session.defaultSession);
+  // The prompt window's own session: in memory, every permission denied, one file on its network.
+  installPromptSession(session.fromPartition(PROMPT_PARTITION, { cache: false }), () =>
+    readFile(join(__dirname, 'prompt.html')),
+  );
   protocol.handle(
     APP_SCHEME,
     createAppProtocolHandler({
@@ -307,6 +404,9 @@ async function main(): Promise<void> {
       vp9: probe.vp9,
       h264: probe.h264,
       updates: __NUTFLIX_UPDATES__ ? 'on' : 'off',
+      // Read back from Electron: secret entry is reachable only from this menu.
+      accountMenu: accountMenuPresent(Menu.getApplicationMenu()) ? 'present' : 'missing',
+      menuBar: mainWindow === undefined ? 'hidden' : menuBarState(process.platform, mainWindow),
     });
   };
 
@@ -329,7 +429,14 @@ async function main(): Promise<void> {
   }
   void (async (): Promise<void> => {
     try {
-      await gate.request('init', { v: 1, storage: join(app.getPath('userData'), 'worker') });
+      await gate.request('init', {
+        v: 1,
+        storage: join(app.getPath('userData'), 'worker'),
+        diskCapBytes: NFX_DISK_CAP_BYTES,
+        // A sealed key needs Chromium's sandbox. A user who chose to run without it signs through
+        // a bunker, the same rule as shape (b); a key on disk stays untouched (ADR 0001).
+        localKey: !unsandboxed,
+      });
       await gate.request('status', {}, 30_000);
       state.worker = true;
       maybeReady();
@@ -351,6 +458,8 @@ async function main(): Promise<void> {
   win.once('ready-to-show', () => {
     win.show();
   });
+  // Before the page: a page cannot swallow these, and its own synthetic key events never get here.
+  accountMenu.attach(win.webContents);
   win.webContents.setWebRTCIPHandlingPolicy(WEBRTC_IP_POLICY);
   if (unsandboxed) win.setTitle('Nutflix (NO SANDBOX)');
   win.webContents.on('did-fail-load', (_e, code) => {
@@ -361,6 +470,7 @@ async function main(): Promise<void> {
     state.window = true;
     if (unsandboxed) void injectBanner(win.webContents);
     if (lastUpdate !== undefined) showUpdate(lastUpdate);
+    void tellPageIfServing();
     void showFuseNotice(win.webContents);
     void untilMounted(win.webContents).then((probe) => {
       if (probe !== null) {
@@ -375,6 +485,19 @@ async function main(): Promise<void> {
   });
   void win.loadURL(APP_URL);
   if (__NUTFLIX_UPDATES__) await startUpdates();
+}
+
+/**
+ * A stored video is served from launch, and its beacons go out through the page: the worker's own
+ * `status` was sent before the page existed, so the page is told once it has loaded.
+ */
+async function tellPageIfServing(): Promise<void> {
+  try {
+    const s = (await gate.request('status', {}, 30_000)) as WorkerStatus;
+    if (s.listening.length > 0) gate.fromMain('serving', { networks: s.listening.length });
+  } catch {
+    // No worker: nothing is served.
+  }
 }
 
 // ---- the updater (a build with an upgrade link only) ----------------------------------------
