@@ -8,7 +8,9 @@
  * maintainer's step, once the production `pear multisig` link exists.
  *
  * The TEST path (`package.ts test-build`) takes a root from a file, for CI's update proof. It is
- * refused unless the key is NOT the production key and every address is on loopback.
+ * refused unless the key is NOT the production key and every address is on loopback. A `launch`
+ * root is the same with no link at all: what CI launches once the release build carries a real
+ * link, because a build with a link never runs on a runner (`assertNoUpgradeLink`).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -74,6 +76,22 @@ export function testRootFromText(text: string): TrustRoot {
   return root;
 }
 
+/** Throws unless `root` is a throwaway root with no link: a build of it starts no updater. */
+export function assertLaunchRoot(root: TrustRoot): void {
+  if (root.channel !== 'launch') throw new Error('a launch build needs the launch channel');
+  if (root.pubkey === RELEASE_PUBKEY)
+    throw new Error('a launch build never uses the production key');
+  if (root.upgrade !== null) throw new Error('a launch build has no upgrade link');
+}
+
+/** What `test-build` accepts: a `test` root or a `launch` root, each with its own checks. */
+export function throwawayRootFromText(text: string): TrustRoot {
+  const root = parseTrustRoot(JSON.parse(text));
+  if (root.channel === 'launch') assertLaunchRoot(root);
+  else assertTestRoot(root);
+  return root;
+}
+
 /** The one root a bundle holds; throws on none, or on two that differ. */
 export function bakedRootIn(bundle: string): TrustRoot {
   const found = new Set(bundle.match(BAKED_PATTERN) ?? []);
@@ -103,5 +121,6 @@ export function assertStagedRoot(
   if (JSON.stringify(baked) !== JSON.stringify(expected))
     throw new Error('the staged updater does not hold the root it was given');
   if (mode === 'release') assertReleaseRoot(baked);
+  else if (baked.channel === 'launch') assertLaunchRoot(baked);
   else assertTestRoot(baked);
 }

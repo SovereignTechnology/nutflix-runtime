@@ -387,6 +387,8 @@ is imported from there unchanged. The MSIX settings and the Windows SDK lookup a
 - **Turning updates on** takes: a `pear multisig` production link, set as `RELEASE_UPGRADE_LINK`; each
   release notice signed with the SovTech key; and `nutflix-runtime` added to `RELEASE_D_TAGS` in
   nutflix-pear's release scripts, whose artifact-name rules must also learn this app's names.
+  [`docs/release.md`](../../docs/release.md) is the runbook, step by step, and says which steps are
+  the tool's (`scripts/release/`) and which are the owner's.
 - The MSIX manifest gets `packageManagement`, `unvirtualizedResources` and write virtualization off
   **only in a build with a link** (an in-app MSIX update needs all three, and Holepunch's template has
   them). A shipped build today does not ask for them. It does have the `Nutflix.exe`

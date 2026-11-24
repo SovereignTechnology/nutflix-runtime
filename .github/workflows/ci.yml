@@ -221,13 +221,31 @@ jobs:
             "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/$asset"
       - name: package (stage, Forge, fuses, layout)
         run: node shells/pear-v3/scripts/package.ts build --platform "$PLATFORM" --arch "$ARCH"
-      # A build with an upgrade link starts an updater on the public DHT at launch, so it must never
-      # be launched here. This reads the packaged bytes, before the first launch.
-      - name: this build starts no updater
+      # The production root, read from the packaged bytes. This is the only check a build with a
+      # real upgrade link ever gets on a runner: it is never launched here.
+      - name: the packaged root is the production root (read, not run)
         run: |
           case "$PLATFORM" in
             darwin) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/Resources/app" ;;
             *) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
+          esac
+          node shells/pear-v3/scripts/release/cli.ts verify-root --app "$app"
+      # What the steps below launch. With no link in the source, the package above, as a user would
+      # run it. With a link, a second build of this source with a throwaway root and no link
+      # (docs/release.md, "The day the link is set"): the production build is never started here.
+      - name: what this job launches
+        run: |
+          node shells/pear-v3/scripts/release/launch-subject.ts --platform "$PLATFORM" --arch "$ARCH" --out "$SHELL_OUT" > "$RUNNER_TEMP/launch-subject"
+          cat "$RUNNER_TEMP/launch-subject"
+          cat "$RUNNER_TEMP/launch-subject" >> "$GITHUB_ENV"
+      # A build with an upgrade link starts an updater on the public DHT at launch, so it must never
+      # be launched here. This reads the packaged bytes of what is about to run, before the first
+      # launch, whichever build that is.
+      - name: this build starts no updater
+        run: |
+          case "$PLATFORM" in
+            darwin) app="$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/Resources/app" ;;
+            *) app="$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
           esac
           node shells/pear-v3/scripts/pear-ci/no-updater.ts "$app"
       # No runner talks to a public Nostr relay or STUN server: the app's renderer connects to its
@@ -238,10 +256,10 @@ jobs:
       # AppImage must reach the warning, and after "Run anyway" it must run and say the sandbox is off.
       - name: stock Ubuntu, no usable sandbox, the AppImage reaches the warning (Xvfb)
         if: matrix.platform == 'linux'
-        run: xvfb-run -a node "$SMOKE" stock-warning --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 90
+        run: xvfb-run -a node "$SMOKE" stock-warning --file "$LAUNCH_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 90
       - name: stock Ubuntu, after Run anyway, the AppImage runs with the sandbox off (Xvfb)
         if: matrix.platform == 'linux'
-        run: xvfb-run -a node "$SMOKE" stock-consented --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 120
+        run: xvfb-run -a node "$SMOKE" stock-consented --file "$LAUNCH_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 120
       # Chromium's sandbox stays on: Ubuntu 24.04 restricts the unprivileged user namespaces it
       # uses, so lift that on this throwaway runner (the AppImage's chrome-sandbox is not setuid).
       - name: allow Chromium's user-namespace sandbox on this runner
@@ -252,53 +270,76 @@ jobs:
       - name: the launcher's sandbox question answers at once and opens nothing (Linux, Xvfb)
         if: matrix.platform == 'linux'
         run: |
-          out=$(xvfb-run -a timeout 60 "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix" --sandbox-preflight 2>&1) || {
+          out=$(xvfb-run -a timeout 60 "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix" --sandbox-preflight 2>&1) || {
             echo "the preflight exited $?"; printf '%s\n' "$out" | tail -20; exit 1; }
           if printf '%s\n' "$out" | grep -q NUTFLIX_SHELL; then echo "the preflight ran the app"; exit 1; fi
           echo "preflight: exit 0, nothing started"
       - name: the shipped Bare runtime is the version the worker needs
         run: |
           case "$PLATFORM" in
-            linux) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
-            darwin) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/Resources/app" ;;
-            win32) app="$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
+            linux) app="$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
+            darwin) app="$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/Resources/app" ;;
+            win32) app="$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/resources/app" ;;
           esac
           node "$SMOKE" bare --app "$app" --platform "$PLATFORM" --arch "$ARCH"
       - name: launch the packaged AppImage; the window loads and the worker answers (Xvfb)
         if: matrix.platform == 'linux'
-        run: xvfb-run -a node "$SMOKE" appimage --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage"
+        run: xvfb-run -a node "$SMOKE" appimage --file "$LAUNCH_OUT/make/appimage/$ARCH/Nutflix.AppImage"
       # ADR 0001 amendment, item 3: with no FUSE tools the real app still starts, from a private
       # extraction, says how to start faster once, and reuses the extraction on the next start.
       - name: no FUSE tools, the AppImage runs from a private extraction, with the notice (Xvfb)
         if: matrix.platform == 'linux'
-        run: xvfb-run -a node "$SMOKE" no-fuse --file "$SHELL_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 180
+        run: xvfb-run -a node "$SMOKE" no-fuse --file "$LAUNCH_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 180
       - name: launch the packaged .app; the window loads and the worker answers
         if: matrix.platform == 'darwin'
-        run: node "$SMOKE" ready --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix"
+        run: node "$SMOKE" ready --exe "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix"
       - name: unpack the .msix, launch its app; the window loads and the worker answers
         if: matrix.platform == 'win32'
-        run: node "$SMOKE" msix --file "$SHELL_OUT/make/msix/$ARCH/Nutflix.msix"
+        run: node "$SMOKE" msix --file "$LAUNCH_OUT/make/msix/$ARCH/Nutflix.msix"
       # ADR 0001 amendment, item 2: with --no-sandbox the app warns before any window and does not
       # open one. (Nothing answers the box: the run proves the warning comes first.)
       - name: --no-sandbox shows the warning and opens no window (Linux, Xvfb)
         if: matrix.platform == 'linux'
-        run: xvfb-run -a node "$SMOKE" warning --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix" --timeout 90
+        run: xvfb-run -a node "$SMOKE" warning --exe "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix" --timeout 90
       - name: --no-sandbox shows the warning and opens no window (macOS)
         if: matrix.platform == 'darwin'
-        run: node "$SMOKE" warning --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix" --timeout 90
+        run: node "$SMOKE" warning --exe "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix" --timeout 90
       - name: --no-sandbox shows the warning and opens no window (Windows)
         if: matrix.platform == 'win32'
-        run: node "$SMOKE" warning --exe "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.exe" --timeout 90
+        run: node "$SMOKE" warning --exe "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.exe" --timeout 90
+      # With the bundle's digest, taken here: `assemble` unpacks the zip on another OS and must get
+      # this exact tree back (every file, executable bit and symlink the signature seals).
       - name: zip the .app (symlinks and modes survive a zip made by ditto)
         if: matrix.platform == 'darwin'
-        run: ditto -c -k --keepParent "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app" "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH.app.zip"
+        run: |
+          ditto -c -k --keepParent "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app" "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH.app.zip"
+          node shells/pear-v3/scripts/release/cli.ts bundle-digest --app "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app" --write "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH.app.digest"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shell-${{ matrix.target }}
           path: |
-            shells/pear-v3/out/make/appimage/*/Nutflix.AppImage
-            shells/pear-v3/out/make/msix/*/Nutflix.msix
-            shells/pear-v3/out/Nutflix-*.app.zip
+            ${{ env.LAUNCH_OUT }}/make/appimage/*/Nutflix.AppImage
+            ${{ env.LAUNCH_OUT }}/make/msix/*/Nutflix.msix
+            ${{ env.LAUNCH_OUT }}/Nutflix-*.app.zip
+            ${{ env.LAUNCH_OUT }}/Nutflix-*.app.digest
+          if-no-files-found: error
+          retention-days: 3
+      # Only once the source has a real link: the production build, which nothing here launched,
+      # as the release tool's input (`check` reads `release-<target>` first).
+      - name: zip the production .app
+        if: env.LAUNCH_OUT != env.SHELL_OUT && matrix.platform == 'darwin'
+        run: |
+          ditto -c -k --keepParent "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app" "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH.app.zip"
+          node shells/pear-v3/scripts/release/cli.ts bundle-digest --app "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app" --write "$SHELL_OUT/Nutflix-$PLATFORM-$ARCH.app.digest"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.LAUNCH_OUT != env.SHELL_OUT
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ env.SHELL_OUT }}/make/appimage/*/Nutflix.AppImage
+            ${{ env.SHELL_OUT }}/make/msix/*/Nutflix.msix
+            ${{ env.SHELL_OUT }}/Nutflix-*.app.zip
+            ${{ env.SHELL_OUT }}/Nutflix-*.app.digest
           if-no-files-found: error
           retention-days: 3
 
@@ -402,5 +443,67 @@ jobs:
           path: |
             ${{ runner.temp }}/pear-install/logs
             ${{ runner.temp }}/pear-install/result.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # The release pipeline, end to end, with nothing real in it (shells/pear-v3/scripts/release/,
+  # docs/release.md). On one runner: the five packages of `shell` go through check, assemble,
+  # `pear build`, digest and a notice draft; then two more builds go through build, stage, provision,
+  # `pear multisig` (three throwaway signers, quorum two) and `pear install`, and the installed app
+  # holds and applies the update through the real gate. Last, the path for the day the source gets a
+  # real link: the build CI would launch instead must pass the unchanged no-updater guard.
+  #
+  # HARD CONSTRAINT, as in `install`: no runner is a peer of the public network. Every Pear process
+  # is on a private DHT on 127.0.0.1, the app's public relay names point at loopback, and the
+  # tripwire must count zero packets to the public bootstrap and relays. No key, link or notice
+  # here is real; none outlives the job, and nothing is published.
+  release-proof:
+    name: release proof (linux-x64)
+    needs: shell
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Electron's system libraries, Xvfb, FUSE, iptables, and the package readers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb fuse3 unzip iptables libatomic1 \
+            squashfs-tools libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: the patched AppImage runtime (this repo's release; the maker checks its sha256)
+        run: |
+          set -euo pipefail
+          mkdir -p shells/pear-v3/out/appimage-runtime
+          curl --proto '=https' --tlsv1.2 -fsSL -o shells/pear-v3/out/appimage-runtime/runtime-x86_64 \
+            "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/runtime-x86_64"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          # The launch builds and, once the source has a link, the production builds `check` wants.
+          pattern: '{shell,release}-{linux,darwin,win32}-*'
+          path: ${{ runner.temp }}/artifacts
+      - name: allow Chromium's user-namespace sandbox on this runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: the release, end to end, on a private DHT with throwaway keys (Xvfb)
+        run: |
+          xvfb-run -a node shells/pear-v3/scripts/release/prove.ts --target linux-x64 \
+            --artifacts "$RUNNER_TEMP/artifacts" --work "$RUNNER_TEMP/release-proof"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: release-proof-logs
+          path: |
+            ${{ runner.temp }}/release-proof/logs
+            ${{ runner.temp }}/release-proof/result.json
           if-no-files-found: ignore
           retention-days: 3

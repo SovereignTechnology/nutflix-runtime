@@ -17,8 +17,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { lstat, readdir, readlink } from 'node:fs/promises';
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure';
@@ -27,8 +26,8 @@ import type { Arch, Platform } from '../../packaging/identity.ts';
 import { PKG_DIR } from '../../packaging/paths.ts';
 import { makeAppx } from '../../packaging/windows-kit.ts';
 import { artifactName } from '../../src/update/gate.ts';
-import { artifactDigest, type HashFs, type Sha256Factory } from '../../src/update/hash.ts';
 import { NOTICE_D, NOTICE_KIND, type TrustRoot } from '../../src/update/root.ts';
+import { digestOf } from '../release/digest.ts';
 import { launch, type LaunchResult } from '../smoke.ts';
 import { deploymentPackageJson, manifestProblems, treeManifest } from './deployment.ts';
 import { NoticeRelay } from './notice-relay.ts';
@@ -80,26 +79,7 @@ export interface UpdateProofReport {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-const nodeFs: HashFs = {
-  lstat: (p) => lstat(p),
-  readdir: (p) => readdir(p),
-  readlink: (p) => readlink(p),
-  read: (p) => createReadStream(p) as AsyncIterable<Uint8Array>,
-  join: (a, b) => join(a, b),
-};
-
-const nodeSha: Sha256Factory = () => {
-  const h = createHash('sha256');
-  return {
-    update: (b) => {
-      h.update(b);
-    },
-    digestHex: () => h.digest('hex'),
-  };
-};
-
-/** The digest a notice names: the same code the app runs (`src/update/hash.ts`). */
-export const digestOf = (path: string): Promise<string> => artifactDigest(nodeFs, nodeSha, path);
+export { digestOf };
 
 /** `0.1.0` + 2 = `0.1.2`. */
 export function patchVersion(version: string, by: number): string {
@@ -141,11 +121,28 @@ export function noticeTemplate(n: NoticeFields): {
   };
 }
 
+/** What a notice is before it is signed. */
+export interface NoticeEventTemplate {
+  kind: number;
+  created_at: number;
+  tags: string[][];
+  content: string;
+}
+
+/** `template`, claiming `claimed` as its author, with a signature made by another key. */
+export function forgedFrom(
+  template: NoticeEventTemplate,
+  claimed: string,
+  other: Uint8Array,
+): object {
+  const signed = finalizeEvent({ ...template }, other);
+  const unsigned = { ...template, pubkey: claimed };
+  return { ...unsigned, id: getEventHash(unsigned), sig: signed.sig };
+}
+
 /** A notice claiming `claimed` as its author, carrying a signature made by another key. */
 export function forgedNotice(n: NoticeFields, claimed: string, other: Uint8Array): object {
-  const signed = finalizeEvent(noticeTemplate(n), other);
-  const unsigned = { ...noticeTemplate(n), pubkey: claimed };
-  return { ...unsigned, id: getEventHash(unsigned), sig: signed.sig };
+  return forgedFrom(noticeTemplate(n), claimed, other);
 }
 
 const TERMINAL = (s: Record<string, unknown>): boolean =>
@@ -154,6 +151,178 @@ const TERMINAL = (s: Record<string, unknown>): boolean =>
 function byteSize(p: string): number {
   const st = statSync(p);
   return st.isFile() ? st.size : 0;
+}
+
+/** What is installed, as a digest (Linux, macOS) or the package's version (Windows). */
+export async function installedIs(
+  c: Pick<ProofContext, 'platform' | 'scriptsDir'>,
+  installed: string | undefined,
+  digest: string,
+  version: string,
+): Promise<boolean> {
+  if (c.platform === 'win32') {
+    const v = packageInfo(c.scriptsDir).package?.Version;
+    return v === `${version}.0`;
+  }
+  return (await digestOf(installed ?? '')) === digest;
+}
+
+/** What the gate's matrix needs: a build A installed, and a build B waiting on its link. */
+export interface GateMatrix {
+  readonly c: ProofContext;
+  readonly relay: NoticeRelay;
+  /** A scratch directory. */
+  readonly work: string;
+  /** The throwaway key the installed app trusts. */
+  readonly releaseKey: Uint8Array;
+  readonly wrongKey: Uint8Array;
+  readonly releasePubkey: string;
+  /** How the installed app is started, and with what environment. */
+  readonly exe: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly installed: string | undefined;
+  readonly versionA: string;
+  readonly versionB: string;
+  readonly shaA: string;
+  readonly shaB: string;
+  readonly appB: string;
+  /** The unsigned notice naming B, with this date and this digest. */
+  readonly template: (createdAt: number, sha256: string) => NoticeEventTemplate;
+  readonly row: (step: string, result: string) => void;
+}
+
+/**
+ * The installed app decides, four times: no notice, a wrong hash and a wrong signer are held and
+ * leave A installed; the notice that names B is applied, and the restarted app is B.
+ */
+export async function proveGateMatrix(m: GateMatrix): Promise<void> {
+  const { c, exe, env, installed, versionA, versionB, shaA, shaB, appB, row } = m;
+  const base = Math.floor(Date.now() / 1000);
+
+  const isInstalled = (digest: string, version: string): Promise<boolean> =>
+    installedIs(c, installed, digest, version);
+
+  /** One launch of the installed app: it must decide, and A must still be installed after it. */
+  const heldCase = async (step: string, wantReason: string, minRefused: number): Promise<void> => {
+    // `update-shown`: main read the words back from the window.
+    const r = await launch(exe, [], 'ready', 360, {
+      env,
+      updates: 'on',
+      untilUpdate: TERMINAL,
+      waitFor: 'update-shown',
+    });
+    const last = r.updates[r.updates.length - 1];
+    c.say(`updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}`);
+    if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
+    if (last?.['state'] !== 'held' || last['reason'] !== wantReason)
+      throw new Error(`wanted held/${wantReason}, got ${JSON.stringify(last)}`);
+    if (typeof last['refused'] === 'number' ? last['refused'] < minRefused : minRefused > 0)
+      throw new Error(`wanted at least ${String(minRefused)} refused, got ${JSON.stringify(last)}`);
+    if (r.ready?.version !== versionA)
+      throw new Error(`build ${String(r.ready?.version)} ran, not A`);
+    if (!(await isInstalled(shaA, versionA)))
+      throw new Error('the installed app changed while the build was held');
+    row(
+      step,
+      `HELD (${wantReason}${typeof last['refused'] === 'number' ? `, ${String(last['refused'])} refused` : ''}); the window said so; installed app still build A`,
+    );
+  };
+
+  // ---- (a) no notice -------------------------------------------------------------------------
+  await c.phase('update gate (a): no notice, the build is held', async () => {
+    m.relay.hold([]);
+    await heldCase('(a) no notice', 'no-notice', 0);
+  });
+
+  // ---- (b) a wrong hash, then a wrong signer ---------------------------------------------------
+  await c.phase('update gate (b): a notice with the wrong hash, the build is held', async () => {
+    const wrong = shaB.replace(/^./, (x) => (x === '0' ? '1' : '0'));
+    m.relay.hold([finalizeEvent(m.template(base, wrong), m.releaseKey)]);
+    await heldCase('(b) wrong hash', 'hash-mismatch', 0);
+  });
+  await c.phase('update gate (b): notices from the wrong signer, the build is held', async () => {
+    // Right fields and right hash, a later date: one signed by another key under its own name,
+    // and one that claims the release key with a signature that key never made. The floor
+    // from the step before stays; neither may move it.
+    const n = m.template(base + 5, shaB);
+    m.relay.hold([finalizeEvent({ ...n }, m.wrongKey), forgedFrom(n, m.releasePubkey, m.wrongKey)]);
+    await heldCase('(b) wrong signer', 'no-notice', 2);
+  });
+
+  // ---- (c) the notice that names B ------------------------------------------------------------
+  const applied = await c.phase(
+    'update gate (c): a matching notice, the build is applied',
+    async () => {
+      m.relay.hold([finalizeEvent(m.template(base + 10, shaB), m.releaseKey)]);
+      const r: LaunchResult = await launch(exe, [], 'ready', 360, {
+        env,
+        updates: 'on',
+        untilUpdate: TERMINAL,
+        waitFor: 'update-shown',
+      });
+      const last = r.updates[r.updates.length - 1];
+      c.say(`updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}`);
+      if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
+      if (last?.['state'] !== 'applied')
+        throw new Error(`wanted applied, got ${JSON.stringify(last)}`);
+      if (c.platform === 'win32') {
+        if (last['proof'] !== 'msix-deployed')
+          throw new Error(`wanted the MSIX proof, got ${JSON.stringify(last)}`);
+        // Windows registers the update once the running package has exited.
+        const until = Date.now() + 120_000;
+        while (!(await isInstalled(shaB, versionB)) && Date.now() < until) await sleep(3000);
+      } else {
+        if (last['proof'] !== 'sha256')
+          throw new Error(`wanted the sha256 proof, got ${JSON.stringify(last)}`);
+        // The job's own hash of the installed app, apart from the one the app reported.
+        const now = await digestOf(installed ?? '');
+        if (now !== shaB) throw new Error(`the installed app is ${now}, not build B (${shaB})`);
+      }
+      return last['proof'];
+    },
+  );
+  row(
+    '(c) matching notice',
+    c.platform === 'win32'
+      ? 'APPLIED (Windows accepted the signed package; checked below)'
+      : `APPLIED; the job's own hash of the installed app equals build B (${shaB.slice(0, 16)}…), app's proof ${applied}`,
+  );
+
+  // ---- the restart ---------------------------------------------------------------------------
+  await c.phase('update gate: the restarted app is build B', async () => {
+    const r = await launch(exe, [], 'ready', 240, { env, updates: 'on', settleMs: 5000 });
+    c.say(`updates: ${JSON.stringify(r.updates)}; ready ${JSON.stringify(r.ready)}`);
+    if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
+    if (r.ready?.version !== versionB)
+      throw new Error(`the restarted app says ${String(r.ready?.version)}, not ${versionB}`);
+    if (r.updates.some((s) => s['state'] === 'held' || s['state'] === 'failed'))
+      throw new Error(`the restarted app is not current: ${JSON.stringify(r.updates)}`);
+    if (c.platform === 'darwin') {
+      const v = spawnSync('codesign', ['--verify', '--deep', '--strict', installed ?? ''], {
+        encoding: 'utf8',
+      });
+      if (v.status !== 0) throw new Error(`the swapped bundle fails codesign: ${v.stderr.trim()}`);
+    }
+    if (c.platform === 'win32') {
+      const p = packageInfo(c.scriptsDir).package;
+      if (p?.Version !== `${versionB}.0`)
+        throw new Error(`Windows has ${String(p?.Version)} installed, not ${versionB}`);
+      const unpack = join(m.work, 'msix-b');
+      rmSync(unpack, { recursive: true, force: true });
+      const u = spawnSync(makeAppx(), ['unpack', '/p', appB, '/d', unpack, '/o'], {
+        encoding: 'utf8',
+      });
+      if (u.status !== 0) throw new Error(`makeappx unpack: exit ${String(u.status)}`);
+      const diff = manifestProblems(
+        await treeManifest(join(unpack, 'app')),
+        await treeManifest(join(p.InstallLocation, 'app')),
+      );
+      if (diff.length > 0)
+        throw new Error(`the installed package is not build B: ${diff.join('; ')}`);
+      row('swap proof', `every file under app\\ of ${p.PackageFullName} equals build B's .msix`);
+    }
+    row('restart', `the installed app runs as ${versionB} (build B)`);
+  });
 }
 
 export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofReport> {
@@ -232,7 +401,8 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
         }
         assertLoopbackBootstrap(bootstrap);
         pear = new Pear({ bin: c.pearBin, home, bootstrap, logDir });
-        relay = await NoticeRelay.start();
+        const startedRelay = await NoticeRelay.start();
+        relay = startedRelay;
         const releaseKey = generateSecretKey();
         const wrongKey = generateSecretKey();
         let touched: RunResult | undefined;
@@ -250,15 +420,17 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
           v: 1,
           channel: 'test',
           pubkey: getPublicKey(releaseKey),
-          relays: [relay.url],
+          relays: [startedRelay.url],
           upgrade: link,
           dht: bootstrap.split(','),
           delayMs: 0,
         };
         const rootFile = join(root, 'trust-root.json');
         writeFileSync(rootFile, `${JSON.stringify(trust)}\n`);
-        c.say(`relay ${relay.url}, DHT ${bootstrap}, link ${link}, release key ${trust.pubkey}`);
-        return { bootstrap, link, rootFile, releaseKey, wrongKey, trust };
+        c.say(
+          `relay ${startedRelay.url}, DHT ${bootstrap}, link ${link}, release key ${trust.pubkey}`,
+        );
+        return { bootstrap, link, rootFile, releaseKey, wrongKey, trust, relay: startedRelay };
       },
     );
 
@@ -377,15 +549,8 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
       throw new Error(`pear install says ${String(installed)}, which is not there`);
     const env = c.platform === 'win32' ? process.env : isolatedEnv(home);
 
-    /** What is installed, as a digest (Linux, macOS) or the package's version (Windows). */
-    const installedIs = async (digest: string, version: string): Promise<boolean> => {
-      if (c.platform === 'win32') {
-        const v = packageInfo(c.scriptsDir).package?.Version;
-        return v === `${version}.0`;
-      }
-      return (await digestOf(installed ?? '')) === digest;
-    };
-    if (!(await installedIs(shaA, versionA))) throw new Error('the installed app is not build A');
+    if (!(await installedIs(c, installed, shaA, versionA)))
+      throw new Error('the installed app is not build A');
     row('installed', `build A from the private DHT (${versionA})`);
 
     // ---- B, on the link ------------------------------------------------------------------------
@@ -396,146 +561,31 @@ export async function proveUpdateGate(c: ProofContext): Promise<UpdateProofRepor
     row('staged', `build B at ${verlinkB}`);
 
     const artifact = artifactName(c.target, c.file);
-    const base = Math.floor(Date.now() / 1000);
-    const fields = (createdAt: number, sha256: string): NoticeFields => ({
-      createdAt,
-      version: versionB,
-      verlink: verlinkB,
-      artifact,
-      sha256,
-      bytes: byteSize(appB),
-    });
-
-    /** One launch of the installed app: it must decide, and A must still be installed after it. */
-    const heldCase = async (
-      step: string,
-      wantReason: string,
-      minRefused: number,
-    ): Promise<void> => {
-      // `update-shown`: main read the words back from the window.
-      const r = await launch(exe, [], 'ready', 360, {
-        env,
-        updates: 'on',
-        untilUpdate: TERMINAL,
-        waitFor: 'update-shown',
-      });
-      const last = r.updates[r.updates.length - 1];
-      c.say(`updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}`);
-      if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
-      if (last?.['state'] !== 'held' || last['reason'] !== wantReason)
-        throw new Error(`wanted held/${wantReason}, got ${JSON.stringify(last)}`);
-      if (typeof last['refused'] === 'number' ? last['refused'] < minRefused : minRefused > 0)
-        throw new Error(
-          `wanted at least ${String(minRefused)} refused, got ${JSON.stringify(last)}`,
-        );
-      if (r.ready?.version !== versionA)
-        throw new Error(`build ${String(r.ready?.version)} ran, not A`);
-      if (!(await installedIs(shaA, versionA)))
-        throw new Error('the installed app changed while the build was held');
-      row(
-        step,
-        `HELD (${wantReason}${typeof last['refused'] === 'number' ? `, ${String(last['refused'])} refused` : ''}); the window said so; installed app still build A`,
-      );
-    };
-
-    // ---- (a) no notice -------------------------------------------------------------------------
-    await c.phase('update gate (a): no notice, the build is held', async () => {
-      relay?.hold([]);
-      await heldCase('(a) no notice', 'no-notice', 0);
-    });
-
-    // ---- (b) a wrong hash, then a wrong signer ---------------------------------------------------
-    await c.phase('update gate (b): a notice with the wrong hash, the build is held', async () => {
-      const wrong = shaB.replace(/^./, (x) => (x === '0' ? '1' : '0'));
-      relay?.hold([finalizeEvent(noticeTemplate(fields(base, wrong)), setup.releaseKey)]);
-      await heldCase('(b) wrong hash', 'hash-mismatch', 0);
-    });
-    await c.phase('update gate (b): notices from the wrong signer, the build is held', async () => {
-      // Right fields and right hash, a later date: one signed by another key under its own name,
-      // and one that claims the release key with a signature that key never made. The floor
-      // from the step before stays; neither may move it.
-      const n = fields(base + 5, shaB);
-      relay?.hold([
-        finalizeEvent(noticeTemplate(n), setup.wrongKey),
-        forgedNotice(n, setup.trust.pubkey, setup.wrongKey),
-      ]);
-      await heldCase('(b) wrong signer', 'no-notice', 2);
-    });
-
-    // ---- (c) the notice that names B ------------------------------------------------------------
-    const applied = await c.phase(
-      'update gate (c): a matching notice, the build is applied',
-      async () => {
-        relay?.hold([finalizeEvent(noticeTemplate(fields(base + 10, shaB)), setup.releaseKey)]);
-        const r: LaunchResult = await launch(exe, [], 'ready', 360, {
-          env,
-          updates: 'on',
-          untilUpdate: TERMINAL,
-          waitFor: 'update-shown',
-        });
-        const last = r.updates[r.updates.length - 1];
-        c.say(`updates: ${JSON.stringify(r.updates)}; events: ${r.events.join(', ')}`);
-        if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
-        if (last?.['state'] !== 'applied')
-          throw new Error(`wanted applied, got ${JSON.stringify(last)}`);
-        if (c.platform === 'win32') {
-          if (last['proof'] !== 'msix-deployed')
-            throw new Error(`wanted the MSIX proof, got ${JSON.stringify(last)}`);
-          // Windows registers the update once the running package has exited.
-          const until = Date.now() + 120_000;
-          while (!(await installedIs(shaB, versionB)) && Date.now() < until) await sleep(3000);
-        } else {
-          if (last['proof'] !== 'sha256')
-            throw new Error(`wanted the sha256 proof, got ${JSON.stringify(last)}`);
-          // The job's own hash of the installed app, apart from the one the app reported.
-          const now = await digestOf(installed ?? '');
-          if (now !== shaB) throw new Error(`the installed app is ${now}, not build B (${shaB})`);
-        }
-        return last['proof'];
-      },
-    );
-    row(
-      '(c) matching notice',
-      c.platform === 'win32'
-        ? 'APPLIED (Windows accepted the signed package; checked below)'
-        : `APPLIED; the job's own hash of the installed app equals build B (${shaB.slice(0, 16)}…), app's proof ${applied}`,
-    );
-
-    // ---- the restart ---------------------------------------------------------------------------
-    await c.phase('update gate: the restarted app is build B', async () => {
-      const r = await launch(exe, [], 'ready', 240, { env, updates: 'on', settleMs: 5000 });
-      c.say(`updates: ${JSON.stringify(r.updates)}; ready ${JSON.stringify(r.ready)}`);
-      if (!r.ok) throw new Error(`${r.reason}\n${r.tail.slice(-25).join('\n')}`);
-      if (r.ready?.version !== versionB)
-        throw new Error(`the restarted app says ${String(r.ready?.version)}, not ${versionB}`);
-      if (r.updates.some((s) => s['state'] === 'held' || s['state'] === 'failed'))
-        throw new Error(`the restarted app is not current: ${JSON.stringify(r.updates)}`);
-      if (c.platform === 'darwin') {
-        const v = spawnSync('codesign', ['--verify', '--deep', '--strict', installed ?? ''], {
-          encoding: 'utf8',
-        });
-        if (v.status !== 0)
-          throw new Error(`the swapped bundle fails codesign: ${v.stderr.trim()}`);
-      }
-      if (c.platform === 'win32') {
-        const p = packageInfo(c.scriptsDir).package;
-        if (p?.Version !== `${versionB}.0`)
-          throw new Error(`Windows has ${String(p?.Version)} installed, not ${versionB}`);
-        const unpack = join(root, 'msix-b');
-        rmSync(unpack, { recursive: true, force: true });
-        const u = spawnSync(makeAppx(), ['unpack', '/p', appB, '/d', unpack, '/o'], {
-          encoding: 'utf8',
-        });
-        if (u.status !== 0) throw new Error(`makeappx unpack: exit ${String(u.status)}`);
-        const diff = manifestProblems(
-          await treeManifest(join(unpack, 'app')),
-          await treeManifest(join(p.InstallLocation, 'app')),
-        );
-        if (diff.length > 0)
-          throw new Error(`the installed package is not build B: ${diff.join('; ')}`);
-        row('swap proof', `every file under app\\ of ${p.PackageFullName} equals build B's .msix`);
-      }
-      row('restart', `the installed app runs as ${versionB} (build B)`);
+    await proveGateMatrix({
+      c,
+      relay: setup.relay,
+      work: root,
+      releaseKey: setup.releaseKey,
+      wrongKey: setup.wrongKey,
+      releasePubkey: setup.trust.pubkey,
+      exe,
+      env,
+      installed,
+      versionA,
+      versionB,
+      shaA,
+      shaB,
+      appB,
+      template: (createdAt, sha256) =>
+        noticeTemplate({
+          createdAt,
+          version: versionB,
+          verlink: verlinkB,
+          artifact,
+          sha256,
+          bytes: byteSize(appB),
+        }),
+      row,
     });
     return { rows };
   } finally {
