@@ -50,12 +50,15 @@ export async function run(o: CliOptions): Promise<Artifact[]> {
   // Fail before minutes of packaging when the AppImage maker would refuse anyway.
   if (make && o.platform === 'linux') pinnedRuntime(o.appImageRuntimeDir, o.arch);
   const stageDir = join(o.out, `stage-${o.platform}-${o.arch}`);
+  const sha = process.env['GITHUB_SHA'];
+  const ciCommit = sha !== undefined && /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
   const staged = await stageApp({
     out: stageDir,
     platform: o.platform,
     arch: o.arch,
     updateRoot,
     ...(o.appVersion === undefined ? {} : { version: o.appVersion }),
+    ...(ciCommit === undefined ? {} : { commit: ciCommit }),
   });
   // What the bundle holds, read back: a release must carry the production root and nothing else.
   assertStagedRoot(stageDir, updateRoot, o.command === 'test-build' ? 'test' : 'release');

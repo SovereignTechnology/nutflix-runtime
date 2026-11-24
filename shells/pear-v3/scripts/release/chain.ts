@@ -3,7 +3,9 @@
  *
  *   signers    three `pear multisig` keys, each in a home of its own, quorum 2
  *   link       the production link those keys derive: it is baked into both test builds
- *   release A  build, stage, provision onto a pre-production drive, seed, request, sign, verify, commit
+ *   five       a signer fetches the five real packages from the DHT and compares them with CI's
+ *   release A  build, stage, provision onto a pre-production drive, seed, request, a signer's own
+ *              check of what the request releases, sign, verify, commit
  *   installed  `pear install` of the production link
  *   release B  the same again, on top of A
  *   notice     this tool's digest and draft, signed by a test root, served by the loopback relay
@@ -49,19 +51,24 @@ import {
 } from '../pear-ci/update-proof.ts';
 import { digestTargets, type Digest } from './assemble.ts';
 import {
+  committed,
   planBuild,
   planCommit,
+  planDump,
   planMultisigLink,
   planProvision,
   planRequest,
   planSeed,
   planStage,
   planVerify,
+  planVerifyRequest,
+  type CoreLengths,
   type PlannedCommand,
 } from './commands.ts';
 import { artifactBytes, digestOf } from './digest.ts';
 import { noticeDraft, type UnsignedNotice } from './draft.ts';
-import { linkKeyOf } from './guards.ts';
+import { expectRefusal, linkKeyOf } from './guards.ts';
+import { assertRequestBinds, compareDrive, type CiEntry } from './signer.ts';
 import { RELEASE_TARGETS, type ReleaseTarget } from './targets.ts';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -112,7 +119,10 @@ export function withTerminal(
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.stdin.on('error', () => undefined);
+    // A timeout is a failure whatever `script` exits with once it is killed.
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
       killTree(child.pid);
     }, timeoutMs);
     child.once('error', (e) => {
@@ -121,7 +131,7 @@ export function withTerminal(
     });
     child.once('exit', (code) => {
       clearTimeout(timer);
-      resolvePromise({ code, out });
+      resolvePromise({ code: timedOut ? null : code, out });
     });
   });
 }
@@ -154,11 +164,6 @@ export function seedProgress(
   };
 }
 
-export interface CoreLengths {
-  readonly db: number;
-  readonly blobs: number;
-}
-
 /** A seed holds the whole drive at these lengths. */
 export function holdsAll(p: ReturnType<typeof seedProgress>, want: CoreLengths): boolean {
   return (
@@ -185,26 +190,6 @@ export function provisionedLengths(data: Readonly<Record<string, unknown>> | und
   return { verlink, lengths: { db, blobs } };
 }
 
-/** The production verlink and lengths in a `pear multisig commit` final record. */
-export function committed(
-  data: Readonly<Record<string, unknown>> | undefined,
-  key: string,
-): { verlink: string; lengths: CoreLengths } {
-  const r = data?.['result'] as
-    | {
-        db?: { destCore?: { length?: unknown; key?: unknown } };
-        blobs?: { destCore?: { length?: unknown } };
-      }
-    | undefined;
-  const db = r?.db?.destCore?.length;
-  const blobs = r?.blobs?.destCore?.length;
-  if (typeof db !== 'number' || typeof blobs !== 'number')
-    throw new Error('pear multisig commit reported no lengths');
-  if (r?.db?.destCore?.key !== key)
-    throw new Error('pear multisig commit wrote to another key than the production link');
-  return { verlink: `pear://0.${String(db)}.${key}`, lengths: { db, blobs } };
-}
-
 /** The event as the signer sees it: nothing of the draft but what is signed. */
 export function toTemplate(d: UnsignedNotice): NoticeEventTemplate {
   return {
@@ -215,7 +200,17 @@ export function toTemplate(d: UnsignedNotice): NoticeEventTemplate {
   };
 }
 
-export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
+/** The five real packages, as a signer's check needs them. */
+export interface FivePackages {
+  readonly deployment: string;
+  readonly version: string;
+  readonly entries: readonly CiEntry[];
+}
+
+export async function proveReleaseChain(
+  c: ProofContext,
+  five?: FivePackages,
+): Promise<ChainReport> {
   if (c.platform !== 'linux') throw new Error('the release chain proof runs on Linux');
   const rows: ProofRow[] = [];
   const row = (step: string, result: string): void => {
@@ -298,6 +293,7 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
             bootstrap: net,
             logDir: join(logRoot, name),
           });
+          pears.push(pear);
           const password = randomBytes(18).toString('base64url');
           const r = await withTerminal(pear, ['multisig', 'keys', 'get', name], password, 2);
           const publicKey = publicKeyIn(r.out);
@@ -437,13 +433,71 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
     const bundle = spawnSync(process.execPath, [join(c.scriptsDir, 'no-updater.ts'), unpacked], {
       encoding: 'utf8',
     });
-    if (bundle.status === 0) throw new Error('no-updater.ts passed a build that has a link');
+    if (bundle.status !== 1 || !bundle.stderr.includes('this build has an upgrade link'))
+      throw new Error(
+        `no-updater.ts did not refuse this build for its link: exit ${String(bundle.status)}, ${bundle.stderr.slice(-300)}`,
+      );
     const baked = bakedRootIn(
       readFileSync(join(unpacked, ...STAGED.updateWorker.split('/')), 'utf8'),
     );
     if (JSON.stringify(baked) !== JSON.stringify(setup.trust))
       throw new Error('the build does not hold the test root it was given');
     row('guard', 'no-updater.ts refuses this real build, whose baked root has a link');
+
+    // ---- all five, as a signer sees them -----------------------------------------------------
+    if (five !== undefined)
+      await c.phase(
+        'release chain: a signer checks the five real packages, from the DHT',
+        async () => {
+          const checker = setup.signers[1];
+          if (checker === undefined) throw new Error('no signer');
+          const touched = ok(
+            'touch five',
+            await setup.coordinator.run('touch-five', ['touch', '--json'], 180),
+          );
+          const link = field(lastRecord(touched.records, 'final'), 'link');
+          if (link === undefined) throw new Error('pear touch printed no link');
+          const staged = await planned(
+            setup.coordinator,
+            'stage-five',
+            planStage({ link, deployment: five.deployment }),
+            1500,
+          );
+          const verlink = field(lastRecord(staged.records, 'addendum'), 'verlink');
+          if (verlink === undefined) throw new Error('pear stage reported no versioned link');
+          const seeding = setup.coordinator.start('seed-five', planSeed({ link }).args);
+          seeds.push(seeding);
+          const until = Date.now() + 240_000;
+          while (lastRecord(parseRecords(seeding.read()), 'announced') === undefined) {
+            if (seeding.exited()) throw new Error('pear seed exited');
+            if (Date.now() > until) throw new Error('pear seed never announced');
+            await sleep(300);
+          }
+          const dir = join(root, 'signer-drive-five');
+          await planned(checker.pear, 'signer-dump-five', planDump({ verlink, dir }), 1500);
+          const rows = await compareDrive(dir, five.version, five.entries);
+          if (rows.length !== 5 || rows.some((r) => r.how !== 'exact'))
+            throw new Error(`the five entries: ${JSON.stringify(rows)}`);
+          // Each entry against another target's digest: a swap between two slots.
+          const [first, second, ...others] = five.entries;
+          if (first === undefined || second === undefined) throw new Error('no entries');
+          await expectRefusal(
+            'two swapped entries',
+            () =>
+              compareDrive(dir, five.version, [
+                { ...first, digest: second.digest },
+                { ...second, digest: first.digest },
+                ...others,
+              ]),
+            /is not what CI built/,
+          );
+          await seeding.stop();
+          row(
+            'signer, five',
+            `fetched ${verlink}: all five equal CI's, and a swap of two is refused`,
+          );
+        },
+      );
 
     // ---- one release through the whole pipeline -----------------------------------------------
     const seedsOnProduction: Started[] = [];
@@ -477,7 +531,13 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
       version: string,
       app: string,
       production: string,
-    ): Promise<{ verlink: string; lengths: CoreLengths; deployment: string }> => {
+      previous?: { fetched: string; version: string; verlink: string },
+    ): Promise<{
+      verlink: string;
+      lengths: CoreLengths;
+      deployment: string;
+      checked: { fetched: string; version: string; verlink: string };
+    }> => {
       const project = join(root, `project-${name}`);
       mkdirSync(project, { recursive: true });
       const packageJson = join(project, 'package.json');
@@ -522,6 +582,77 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
       const request = field(lastRecord(requested.records, 'final'), 'request');
       if (request === undefined) throw new Error('pear multisig request printed no request');
 
+      // A signer's own check, as `verify-request` runs it: from its own sidecar, the request, then
+      // the drive at that exact version against what was built, then the request again.
+      const checker = setup.signers[0];
+      if (checker === undefined) throw new Error('no signer');
+      const askPear = async (req: string, verlink: string, n: string): Promise<string> =>
+        assertRequestBinds(
+          lastRecord(
+            (
+              await planned(
+                checker.pear,
+                `signer-verify-${name}-${n}`,
+                planVerifyRequest({
+                  config: setup.config,
+                  source: setup.preProduction,
+                  request: req,
+                }),
+                600,
+              )
+            ).records,
+            'final',
+          )?.data,
+          setup.production,
+          verlink,
+        );
+      const before = await askPear(request, pre.verlink, '1');
+      const fetched = join(root, `signer-drive-${name}`);
+      await planned(
+        checker.pear,
+        `signer-dump-${name}`,
+        planDump({ verlink: pre.verlink, dir: fetched }),
+        900,
+      );
+      const digest = await digestOf(app);
+      const rows = await compareDrive(fetched, version, [{ target, app, digest }]);
+      if (rows[0]?.how !== 'exact') throw new Error('the signer did not get the exact build');
+      if ((await askPear(request, pre.verlink, '2')) !== before)
+        throw new Error('the request changed during the signer check');
+      if (previous !== undefined) {
+        // The drive of the last release, offered as this one: a swapped entry.
+        await expectRefusal(
+          'a swapped entry',
+          () => compareDrive(previous.fetched, previous.version, [{ target, app, digest }]),
+          /is not what CI built/,
+        );
+        // A request for this version, offered to a signer who checked the last one.
+        const data = await planned(
+          checker.pear,
+          `signer-verify-${name}-other`,
+          planVerifyRequest({ config: setup.config, source: setup.preProduction, request }),
+          600,
+        );
+        await expectRefusal(
+          'a request for another version',
+          () =>
+            assertRequestBinds(
+              lastRecord(data.records, 'final')?.data,
+              setup.production,
+              previous.verlink,
+            ),
+          /the request releases length/,
+        );
+        row(
+          `signer ${name}`,
+          'refused a swapped entry, and a request for another version than the one it checked',
+        );
+      }
+      row(
+        `signer ${name}`,
+        `fetched ${pre.verlink} itself; it holds exactly the build, and the request is for it`,
+      );
+
       // Quorum 2 of 3: the third signer does not sign.
       const responses: string[] = [];
       for (const s of setup.signers.slice(0, PROOF_QUORUM)) {
@@ -551,7 +682,8 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
           .args,
         420,
       );
-      if (short.code === 0 && succeeded(short.records))
+      if (short.timedOut) throw new Error('the one-signature commit timed out');
+      if (short.code === 0 || succeeded(short.records))
         throw new Error('pear multisig commit accepted one signature of a quorum of two');
       if (!/Insufficient quorum/i.test(short.out))
         throw new Error(`the short commit failed for another reason: ${short.out.slice(-400)}`);
@@ -575,7 +707,7 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
         `release ${name}`,
         `built, staged, provisioned, signed 2 of 3 (1 of 3 refused), committed at ${made.verlink}`,
       );
-      return { ...made, deployment };
+      return { ...made, deployment, checked: { fetched, version, verlink: pre.verlink } };
     };
 
     const firstProduction = `pear://0.0.${linkKeyOf(setup.production)}`;
@@ -621,11 +753,11 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
     row('installed', `build A, from the production link, by pear install (${a.verlink})`);
 
     const b = await c.phase('release chain: release B, on top of A', () =>
-      release('b', versionB, appB, a.verlink),
+      release('b', versionB, appB, a.verlink, a.checked),
     );
 
     // ---- the digest and the notice, by this tool ----------------------------------------------
-    const digests: Digest[] = await digestTargets(b.deployment, () => appB, [target]);
+    const digests: Digest[] = await digestTargets(b.deployment, () => shaB, [target]);
     const [digest] = digests;
     if (digest?.sha256 !== shaB)
       throw new Error('the digest of the deployment is not the digest of build B');
@@ -638,6 +770,7 @@ export async function proveReleaseChain(c: ProofContext): Promise<ChainReport> {
         commit: process.env['GITHUB_SHA'],
         createdAt,
         artifacts: [{ ...digest, sha256 }],
+        expectedLink: setup.production,
       });
     const check = finalizeEvent(
       toTemplate(draftFor(Math.floor(Date.now() / 1000), shaB)),

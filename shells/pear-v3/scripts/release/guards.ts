@@ -78,3 +78,24 @@ export async function confirmLink(link: string, ask: AskLine): Promise<void> {
   const typed = await ask(`This changes ${link}. Type that link to go on: `);
   if (typed.trim() !== link) refuse('what was typed is not the link: nothing was done');
 }
+
+/**
+ * `fn` must be refused by this tool, for this reason. A crash or a timeout is not a refusal, and a
+ * negative proof that accepted one would pass with the check broken.
+ */
+export async function expectRefusal(
+  what: string,
+  fn: () => unknown,
+  reason: RegExp,
+): Promise<void> {
+  let err: unknown;
+  try {
+    await fn();
+  } catch (e) {
+    err = e;
+  }
+  if (err === undefined) throw new Error(`${what}: it was accepted`);
+  if (!(err instanceof Error)) throw new Error(`${what}: something other than an error was thrown`);
+  if (!(err instanceof ReleaseRefusal) || !reason.test(err.message))
+    throw new Error(`${what}: it failed for another reason: ${err.message}`);
+}

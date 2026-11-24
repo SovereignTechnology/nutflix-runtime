@@ -6,7 +6,6 @@
  * `confirm` is the real link a step acts on, which must be typed back before it runs.
  * `publicDht` says it joins the DHT: on a real machine that is the public one.
  */
-import { releaseRoot } from '../../packaging/update-root.ts';
 import { assertLink, assertVerlink, linkKeyOf, refuse } from './guards.ts';
 
 export interface PlannedCommand {
@@ -42,10 +41,14 @@ export function planBuild(o: {
   };
 }
 
-export function planStage(o: { link: string; deployment: string }): PlannedCommand {
+export function planStage(o: {
+  link: string;
+  deployment: string;
+  /** The production link, if the source has one: a stage never goes there. */
+  production?: string | null;
+}): PlannedCommand {
   const link = assertLink(o.link, 'the staging link');
-  const production = releaseRoot().upgrade;
-  if (production !== null && linkKeyOf(link) === linkKeyOf(production))
+  if (o.production != null && linkKeyOf(link) === linkKeyOf(o.production))
     refuse('that is the production link: production changes only by a multisig');
   return {
     step: 'stage',
@@ -138,6 +141,45 @@ export function planVerify(o: {
   };
 }
 
+/**
+ * `pear multisig verify` with no responses: Pear checks the request against the source drive's own
+ * tree hash at the request's length, and reports that length and the drive it would write to.
+ */
+export function planVerifyRequest(o: {
+  config: string;
+  source: string;
+  request: string;
+}): PlannedCommand {
+  const source = assertLink(o.source, 'the provisioned link');
+  return {
+    step: 'multisig verify (the request, before signing)',
+    args: [
+      'multisig',
+      'verify',
+      '--config',
+      o.config,
+      '--peer-update-timeout',
+      PEER_UPDATE_TIMEOUT_MS,
+      '--json',
+      source,
+      assertBlob(o.request, 'the request'),
+    ],
+    confirm: source,
+    publicDht: true,
+  };
+}
+
+/** Fetches one version of a drive into an empty folder, from peers. */
+export function planDump(o: { verlink: string; dir: string }): PlannedCommand {
+  const verlink = assertVerlink(o.verlink, 'the version to fetch');
+  return {
+    step: 'dump',
+    args: ['dump', '--json', verlink, o.dir],
+    confirm: `pear://${linkKeyOf(verlink)}`,
+    publicDht: true,
+  };
+}
+
 export function planCommit(o: {
   config: string;
   source: string;
@@ -164,6 +206,35 @@ export function planSeed(o: { link: string }): PlannedCommand {
     confirm: link,
     publicDht: true,
   };
+}
+
+export interface CoreLengths {
+  readonly db: number;
+  readonly blobs: number;
+}
+
+/**
+ * The production verlink and lengths in a `pear multisig commit` final record. Pear's `--json` output
+ * has no verlink: it is built here the way its human output builds it, and a multisig core does not
+ * fork.
+ */
+export function committed(
+  data: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): { verlink: string; lengths: CoreLengths } {
+  const r = data?.['result'] as
+    | {
+        db?: { destCore?: { length?: unknown; key?: unknown } };
+        blobs?: { destCore?: { length?: unknown } };
+      }
+    | undefined;
+  const db = r?.db?.destCore?.length;
+  const blobs = r?.blobs?.destCore?.length;
+  if (typeof db !== 'number' || typeof blobs !== 'number' || db <= 0)
+    return refuse('pear multisig commit reported no lengths');
+  if (r?.db?.destCore?.key !== key)
+    return refuse('pear multisig commit wrote to another key than the production link');
+  return { verlink: `pear://0.${String(db)}.${key}`, lengths: { db, blobs } };
 }
 
 /** A command line a person can read and paste. */

@@ -111,6 +111,22 @@ export function assertNoUpgradeLink(bundle: string): void {
     );
 }
 
+/**
+ * Throws unless main's own switch agrees with the root: `__NUTFLIX_UPDATES__` is compiled into
+ * main's bundle (`stage.ts`), and it is what decides whether an updater starts at all. Both places
+ * it lands must say the same. This is a check against a mistake in the build, not against hostile
+ * code, which can say anything here and do something else.
+ */
+export function assertMainMatchesRoot(mainBundle: string, root: TrustRoot): void {
+  const reported = [...mainBundle.matchAll(/updates: (true|false) \? "on" : "off"/g)];
+  const started = [...mainBundle.matchAll(/if \((true|false)\) await startUpdates\(\)/g)];
+  if (reported.length !== 1 || started.length !== 1)
+    throw new Error("main's bundle does not show its updates switch where it should");
+  const want = root.upgrade === null ? 'false' : 'true';
+  if (reported[0]?.[1] !== want || started[0]?.[1] !== want)
+    throw new Error(`main's updates switch is not ${want}, which is what this root needs`);
+}
+
 /** Reads the staged updater back and refuses a root that is not what this build is allowed. */
 export function assertStagedRoot(
   stageDir: string,

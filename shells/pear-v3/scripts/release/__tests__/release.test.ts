@@ -24,6 +24,7 @@ import { APP, STAGED } from '../../../packaging/identity.ts';
 import {
   RELEASE_PUBKEY,
   assertLaunchRoot,
+  assertMainMatchesRoot,
   assertNoUpgradeLink,
   assertReleaseRoot,
   releaseRoot,
@@ -42,18 +43,7 @@ import {
 } from '../../../src/update/root.ts';
 import type { UpdateStatus } from '../../../src/update/status.ts';
 import { PEAR_PINS, PEAR_VERSION } from '../../pear-ci/pins.ts';
-import {
-  assemble,
-  assertBundleUnpacked,
-  bundleDigestFile,
-  checkPackages,
-  digestTargets,
-  inputName,
-  locatePackage,
-  readDigests,
-  readRelease,
-  type Digest,
-} from '../assemble.ts';
+import { digestTargets, inputName, readDigests, readRelease, type Digest } from '../assemble.ts';
 import { parseOptions, runCli, type Io } from '../cli.ts';
 import {
   PEER_UPDATE_TIMEOUT_MS,
@@ -114,8 +104,17 @@ interface FakeIo extends Io {
   built: (readonly string[])[];
 }
 
+const finalLine = (data: object): string =>
+  `${JSON.stringify({ cmd: 'multisig', tag: 'final', data: { success: true, ...data } })}\n`;
+
 function fakeIo(
-  over: Partial<Io> & { typed?: string; derived?: string; code?: number } = {},
+  over: Partial<Io> & {
+    typed?: string;
+    derived?: string;
+    code?: number;
+    linkCode?: number;
+    production?: string | null;
+  } = {},
 ): FakeIo {
   const printed: string[] = [];
   const ran: (readonly string[])[] = [];
@@ -126,6 +125,11 @@ function fakeIo(
       asked.push(prompt);
       return Promise.resolve(over.typed ?? '');
     },
+    api: {
+      get: () => Promise.reject(new Error('no API here')),
+      download: () => Promise.reject(new Error('no API here')),
+    },
+    productionLink: () => (over.production === undefined ? LINK_B : over.production),
     print: (l) => printed.push(l),
     pearPath: () => '/pinned/pear',
     ensurePear: () => {
@@ -134,9 +138,24 @@ function fakeIo(
     },
     runPublic: (_bin, args) => {
       ran.push(args);
-      return Promise.resolve(over.code ?? 0);
+      if (args[0] === 'multisig' && args[1] === 'link')
+        return Promise.resolve({
+          code: over.linkCode ?? 0,
+          out: over.linkCode === undefined ? finalLine({ link: over.derived ?? LINK_B }) : '',
+        });
+      if (args[0] === 'multisig' && args[1] === 'commit')
+        return Promise.resolve({
+          code: over.code ?? 0,
+          out: finalLine({
+            dstKey: KEY_B,
+            result: {
+              db: { destCore: { key: KEY_B, length: 7 } },
+              blobs: { destCore: { length: 5 } },
+            },
+          }),
+        });
+      return Promise.resolve({ code: over.code ?? 0, out: '' });
     },
-    multisigLink: () => Promise.resolve(over.derived ?? LINK_B),
     runBuild: (_bin, _out, args) => {
       io.built.push(args);
       return Promise.resolve();
@@ -374,6 +393,40 @@ describe('a step on a real link', () => {
     expect(ci.ran).toEqual([]);
   });
 
+  it('provision refuses a production verlink of another link', async () => {
+    const argv = [
+      'provision',
+      '--source',
+      `pear://0.9.${'n'.repeat(52)}`,
+      '--target',
+      LINK_A,
+      '--production',
+      `pear://0.3.${'d'.repeat(52)}`,
+      '--execute',
+    ];
+    const io = fakeIo({ typed: LINK_A });
+    await refused(runCli(argv, io), /not a version of this source's production link/);
+    expect(io.asked).toEqual([]);
+  });
+
+  it('stage refuses the production link itself', async () => {
+    const out = withDeployment();
+    await refused(
+      runCli(['stage', '--link', LINK_B, '--out', out], fakeIo()),
+      /production changes only by a multisig/,
+    );
+  });
+
+  it('nothing runs from a source with no production link', async () => {
+    const out = withDeployment();
+    const io = fakeIo({ typed: LINK_A, production: null });
+    await refused(runCli(stageArgv(out, '--execute'), io), /no production link/);
+    expect(io.asked).toEqual([]);
+    expect(io.ran).toEqual([]);
+    // A dry run still shows the command.
+    expect(await runCli(stageArgv(out), fakeIo({ production: null }))).toBe(0);
+  });
+
   describe('multisig', () => {
     const config = (): string => {
       const f = join(tmp(), 'pear.json');
@@ -408,18 +461,43 @@ describe('a step on a real link', () => {
       expect(io.printed.join('\n')).toContain(`type this link back: ${LINK_B}`);
     });
 
-    it('commits only when the config derives the link typed', async () => {
+    it('commits only when the config derives the link typed, and prints the verlink', async () => {
       const io = fakeIo({ typed: LINK_B, derived: LINK_B });
       expect(await runCli([...commitArgv(config()), '--execute'], io)).toBe(0);
-      expect(io.ran).toHaveLength(1);
-      expect(io.ran[0]?.slice(0, 2)).toEqual(['multisig', 'commit']);
+      expect(io.ran.map((a) => a.slice(0, 2))).toEqual([
+        ['multisig', 'link'],
+        ['multisig', 'commit'],
+      ]);
+      expect(io.printed.join('\n')).toContain(`production verlink: pear://0.7.${KEY_B}`);
     });
 
-    it('refuses when the signers’ config derives another link, and asks nothing', async () => {
+    it('refuses when the signers’ config derives another link, and commits nothing', async () => {
       const io = fakeIo({ typed: LINK_B, derived: LINK_A });
       await refused(runCli([...commitArgv(config()), '--execute'], io), /derives/);
+      expect(io.ran.map((a) => a[1])).toEqual(['link']);
+    });
+
+    it('asks Pear for the link only after the link is typed back', async () => {
+      const io = fakeIo({ typed: LINK_A, derived: LINK_B });
+      await refused(runCli([...commitArgv(config()), '--execute'], io), /not the link/);
       expect(io.ran).toEqual([]);
+      expect(io.fetched).toBe(0);
+    });
+
+    it('refuses when `pear multisig link` fails, whatever it printed', async () => {
+      const io = fakeIo({ typed: LINK_B, linkCode: 3 });
+      await refused(runCli([...commitArgv(config()), '--execute'], io), /exited 3/);
+      expect(io.ran.map((a) => a[1])).toEqual(['link']);
+    });
+
+    it('refuses a --production that is not this source’s production link', async () => {
+      const io = fakeIo({ typed: LINK_A, production: LINK_A });
+      await refused(
+        runCli([...commitArgv(config()), '--execute'], io),
+        /this source's production link/,
+      );
       expect(io.asked).toEqual([]);
+      expect(io.ran).toEqual([]);
     });
 
     it('refuses on CI before it even asks Pear for the link', async () => {
@@ -566,6 +644,7 @@ describe('the digest', () => {
         verlink: VERLINK_A,
         createdAt: 1_800_000_000,
         artifacts: [{ name: t.noticeName, sha256, bytes: await artifactBytes(app) }],
+        expectedLink: LINK_A,
       });
       const signed = finalizeEvent(
         {
@@ -586,6 +665,7 @@ describe('the digest', () => {
         verlink: VERLINK_A,
         createdAt: 1_800_000_001,
         artifacts: [{ name: t.noticeName, sha256: wrong, bytes: 1 }],
+        expectedLink: LINK_A,
       });
       const held = await gateDecides(
         next,
@@ -643,17 +723,16 @@ describe('the digest', () => {
     const entry = join(d, 'deployment', ...deploymentEntry(t).split('/'));
     mkdirSync(dirname(entry), { recursive: true });
     writeFileSync(entry, 'same');
-    const given = join(d, 'given');
-    writeFileSync(given, 'same');
-    const ok = await digestTargets(join(d, 'deployment'), () => given, [t]);
+    const recorded = await digestOf(entry);
+    const ok = await digestTargets(join(d, 'deployment'), () => recorded, [t]);
     expect(ok[0]).toMatchObject({ name: t.noticeName, bytes: 4 });
-    writeFileSync(given, 'other');
+    writeFileSync(entry, 'other');
     await refused(
-      digestTargets(join(d, 'deployment'), () => given, [t]),
+      digestTargets(join(d, 'deployment'), () => recorded, [t]),
       /not the package/,
     );
     await refused(
-      digestTargets(join(d, 'nothing'), () => given, [t]),
+      digestTargets(join(d, 'nothing'), () => recorded, [t]),
       /has no/,
     );
   });
@@ -706,7 +785,13 @@ const FIVE: Digest[] = RELEASE_TARGETS.map((t, i) => ({
 }));
 
 describe('the notice draft', () => {
-  const base = { version: '0.2.0', verlink: VERLINK_A, createdAt: 1_800_000_000, artifacts: FIVE };
+  const base = {
+    version: '0.2.0',
+    verlink: VERLINK_A,
+    createdAt: 1_800_000_000,
+    artifacts: FIVE,
+    expectedLink: LINK_A,
+  };
 
   it('is unsigned, for the release key, in the shape the app reads', () => {
     const d = releaseNoticeDraft(base);
@@ -762,6 +847,9 @@ describe('the notice draft', () => {
     ['a bad version', { version: '1.2' }],
     ['a prerelease', { version: '1.2.3-rc.1' }],
     ['an unversioned link', { verlink: LINK_A }],
+    ['a version of another link', { verlink: `pear://0.12.${KEY_B}` }],
+    ['an empty version', { verlink: `pear://0.0.${KEY_A}` }],
+    ['an expected link that is not a link', { expectedLink: 'pear://nope' }],
     ['a short commit', { commit: 'abc123' }],
     ['no time', { createdAt: 0 }],
     ['no artifacts', { artifacts: [] }],
@@ -779,42 +867,70 @@ describe('the notice draft', () => {
     expect(() => releaseNoticeDraft({ ...base, artifacts: FIVE.slice(0, 4) })).toThrow(/five/);
   });
 
-  it('the notice-draft command writes it, once, and signs nothing', async () => {
-    const out = tmp();
-    writeFileSync(
-      join(out, 'digests.json'),
-      JSON.stringify({ schema: 'nutflix-runtime-digests/1', version: '0.2.0', artifacts: FIVE }),
-    );
-    const io = fakeIo();
-    const argv = [
+  describe('the notice-draft command', () => {
+    const COMMIT = 'ab'.repeat(20);
+    const withDigests = (): string => {
+      const out = tmp();
+      writeFileSync(
+        join(out, 'digests.json'),
+        JSON.stringify({
+          schema: 'nutflix-runtime-digests/2',
+          version: '0.2.0',
+          commit: COMMIT,
+          artifacts: FIVE,
+        }),
+      );
+      return out;
+    };
+    const argv = (out: string, verlink = VERLINK_A): string[] => [
       'notice-draft',
       '--out',
       out,
       '--verlink',
-      VERLINK_A,
-      '--created-at',
-      '1800000000',
+      verlink,
     ];
-    expect(await runCli(argv, io)).toBe(0);
-    const ev = JSON.parse(readFileSync(join(out, 'release-event.unsigned.json'), 'utf8')) as {
-      id: string;
-      sig: string;
-      created_at: number;
-    };
-    expect(ev).toMatchObject({ id: '', sig: '', created_at: 1_800_000_000 });
-    await refused(runCli(argv, fakeIo()), /exists/);
-  });
+    const withLinkA = (): FakeIo => fakeIo({ production: LINK_A });
 
-  it('refuses a date ahead of the clock: it would raise every install’s replay floor', async () => {
-    const out = tmp();
-    writeFileSync(
-      join(out, 'digests.json'),
-      JSON.stringify({ schema: 'nutflix-runtime-digests/1', version: '0.2.0', artifacts: FIVE }),
-    );
-    const argv = ['notice-draft', '--out', out, '--verlink', VERLINK_A, '--created-at'];
-    await refused(runCli([...argv, '1800000061'], fakeIo()), /future/);
-    expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
-    expect(await runCli([...argv, '1800000060'], fakeIo())).toBe(0);
+    it('writes it once, unsigned, with the commit the packages carry', async () => {
+      const out = withDigests();
+      expect(await runCli([...argv(out), '--created-at', '1800000000'], withLinkA())).toBe(0);
+      const ev = JSON.parse(readFileSync(join(out, 'release-event.unsigned.json'), 'utf8')) as {
+        id: string;
+        sig: string;
+        created_at: number;
+        tags: string[][];
+      };
+      expect(ev).toMatchObject({ id: '', sig: '', created_at: 1_800_000_000 });
+      expect(ev.tags.find((t) => t[0] === 'commit')).toEqual(['commit', COMMIT]);
+      await refused(runCli(argv(out), withLinkA()), /exists/);
+    });
+
+    it('takes no commit from the command line', async () => {
+      await refused(
+        runCli([...argv(withDigests()), '--commit', 'cd'.repeat(20)], withLinkA()),
+        /the commit is the one the packages carry/,
+      );
+    });
+
+    it('refuses while the source has no production link', async () => {
+      const out = withDigests();
+      await refused(runCli(argv(out), fakeIo({ production: null })), /no production link/);
+      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+    });
+
+    it('with a link set, drafts only for a version of that link', async () => {
+      const out = withDigests();
+      await refused(runCli(argv(out, `pear://0.12.${KEY_B}`), withLinkA()), /is not a version of/);
+      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+      expect(await runCli(argv(out), withLinkA())).toBe(0);
+    });
+
+    it('refuses a date ahead of the clock: it would raise every install’s replay floor', async () => {
+      const out = withDigests();
+      await refused(runCli([...argv(out), '--created-at', '1800000061'], withLinkA()), /future/);
+      expect(existsSync(join(out, 'release-event.unsigned.json'))).toBe(false);
+      expect(await runCli([...argv(out), '--created-at', '1800000060'], withLinkA())).toBe(0);
+    });
   });
 
   describe('the vector shared with nutflix-pear', () => {
@@ -828,7 +944,10 @@ describe('the notice draft', () => {
     });
 
     it('is what this tool drafts, byte for byte', () => {
-      const d = releaseNoticeDraft(VECTOR.input);
+      const d = releaseNoticeDraft({
+        ...VECTOR.input,
+        expectedLink: `pear://${linkKeyOf(VECTOR.input.verlink)}`,
+      });
       expect(JSON.stringify(d)).toBe(JSON.stringify(VECTOR.unsigned));
     });
 
@@ -874,6 +993,11 @@ function fakeBundle(path: string, version: string, root: TrustRoot): void {
   writeFileSync(join(path, 'Contents', 'MacOS', APP.productName), 'exe');
   writeFileSync(join(app, 'package.json'), JSON.stringify({ version }));
   writeFileSync(join(app, ...STAGED.updateWorker.split('/')), `x="${encodeBakedRoot(root)}";`);
+  const flag = String(root.upgrade !== null);
+  writeFileSync(
+    join(app, ...STAGED.main.split('/')),
+    `x = { updates: ${flag} ? "on" : "off" };\nif (${flag}) await startUpdates();\n`,
+  );
 }
 
 describe('reading a package without running it', () => {
@@ -941,64 +1065,28 @@ describe('check and assemble', () => {
     ]);
   });
 
-  it('prefers the production artifact over the launch build', () => {
-    const d = tmp();
-    const t = RELEASE_TARGETS.find((x) => x.name === 'win32-x64');
-    if (t === undefined) throw new Error('no target');
-    for (const prefix of ['shell', 'release']) {
-      mkdirSync(join(d, `${prefix}-${t.name}`, 'make'), { recursive: true });
-      writeFileSync(join(d, `${prefix}-${t.name}`, 'make', t.file), prefix);
-    }
-    expect(locatePackage(d, t)).toBe(join(d, `release-${t.name}`, 'make', t.file));
-  });
-
-  it('refuses a missing target, and says which', () => {
-    const d = tmp();
-    for (const t of RELEASE_TARGETS.slice(1)) {
-      mkdirSync(join(d, `shell-${t.name}`));
-      writeFileSync(join(d, `shell-${t.name}`, inputName(t)), 'x');
-    }
-    expect(() => checkPackages(d)).toThrow(
-      new RegExp(`missing: ${String(RELEASE_TARGETS[0]?.name)}`),
-    );
-  });
-
-  it('will not assemble over an earlier release', async () => {
-    const out = tmp();
-    writeFileSync(join(out, 'release.json'), '{}');
-    await expect(assemble(tmp(), out)).rejects.toThrow(/already holds/);
-  });
-
-  it('refuses a bundle that did not unpack to the tree the Mac runner packed', async () => {
-    const d = tmp();
-    const app = join(d, 'Nutflix.app');
-    writeTree(app);
-    const zip = join(d, 'Nutflix-darwin-arm64.app.zip');
-    await expect(assertBundleUnpacked(zip, app)).rejects.toThrow(/missing/);
-    expect(bundleDigestFile(zip)).toBe(join(d, 'Nutflix-darwin-arm64.app.digest'));
-    writeFileSync(bundleDigestFile(zip), 'not a digest\n');
-    await expect(assertBundleUnpacked(zip, app)).rejects.toThrow(/not a digest/);
-    writeFileSync(bundleDigestFile(zip), `${'0'.repeat(64)}\n`);
-    await expect(assertBundleUnpacked(zip, app)).rejects.toThrow(/unpacked to/);
-    writeFileSync(bundleDigestFile(zip), `${await digestOf(app)}\n`);
-    await expect(assertBundleUnpacked(zip, app)).resolves.toBeUndefined();
-  });
-
   it('reads back only a whole release', () => {
     const out = tmp();
     expect(() => readRelease(out)).toThrow(/missing/);
     writeFileSync(
       join(out, 'release.json'),
       JSON.stringify({
-        schema: 'nutflix-runtime-release/1',
+        schema: 'nutflix-runtime-release/2',
         version: '1.0.0',
-        targets: [{ target: 'linux-x64', app: '/a' }],
+        commit: 'ab'.repeat(20),
+        run: 1,
+        targets: [{ target: 'linux-x64', app: '/a', ci: { digest: 'a'.repeat(64), bytes: 1 } }],
       }),
     );
     expect(() => readRelease(out)).toThrow(/five targets/);
     writeFileSync(
       join(out, 'digests.json'),
-      JSON.stringify({ schema: 'nutflix-runtime-digests/1', version: '1.0.0', artifacts: [] }),
+      JSON.stringify({
+        schema: 'nutflix-runtime-digests/2',
+        version: '1.0.0',
+        commit: 'ab'.repeat(20),
+        artifacts: [],
+      }),
     );
     expect(() => readDigests(out)).toThrow(/five targets/);
   });
@@ -1137,17 +1225,53 @@ describe('what CI launches', () => {
     expect(() => parseSubjectArgs(['--update-root', 'x'])).toThrow(/unknown/);
   });
 
-  it('verify-root accepts the production root and refuses any other', async () => {
-    const app = tmp();
-    mkdirSync(join(app, 'main'));
-    const file = join(app, ...STAGED.updateWorker.split('/'));
-    writeFileSync(file, bundle(releaseRoot()));
-    const io = fakeIo();
-    expect(await runCli(['verify-root', '--app', app], io)).toBe(0);
-    expect(io.printed.join('\n')).toContain(RELEASE_PUBKEY);
-    for (const other of [withLink, throwawayLaunchRoot()]) {
-      writeFileSync(file, bundle(other));
-      await expect(runCli(['verify-root', '--app', app], fakeIo())).rejects.toThrow();
-    }
+  describe('verify-root', () => {
+    const mainWith = (flag: boolean): string =>
+      `x = { updates: ${String(flag)} ? "on" : "off" };\nif (${String(flag)}) await startUpdates();\n`;
+    const appWith = (worker: string, main: string): string => {
+      const app = tmp();
+      mkdirSync(join(app, 'main'));
+      writeFileSync(join(app, ...STAGED.updateWorker.split('/')), worker);
+      writeFileSync(join(app, ...STAGED.main.split('/')), main);
+      return app;
+    };
+
+    it('accepts the production root with main’s switch agreeing', async () => {
+      const flag = releaseRoot().upgrade !== null;
+      const io = fakeIo();
+      const app = appWith(bundle(releaseRoot()), mainWith(flag));
+      expect(await runCli(['verify-root', '--app', app], io)).toBe(0);
+      expect(io.printed.join('\n')).toContain(RELEASE_PUBKEY);
+    });
+
+    it('refuses any other root', async () => {
+      for (const other of [withLink, throwawayLaunchRoot()]) {
+        const app = appWith(bundle(other), mainWith(other.upgrade !== null));
+        await expect(runCli(['verify-root', '--app', app], fakeIo())).rejects.toThrow(
+          /release build/,
+        );
+      }
+    });
+
+    it('refuses a main whose switch disagrees with the root', () => {
+      expect(() => {
+        assertMainMatchesRoot(mainWith(true), noLink);
+      }).toThrow(/not false/);
+      expect(() => {
+        assertMainMatchesRoot(mainWith(false), withLink);
+      }).toThrow(/not true/);
+      expect(() => {
+        assertMainMatchesRoot(
+          'x = { updates: false ? "on" : "off" };\nif (true) await startUpdates();\n',
+          noLink,
+        );
+      }).toThrow(/not false/);
+    });
+
+    it('refuses a main that does not show its switch', () => {
+      expect(() => {
+        assertMainMatchesRoot('nothing here', noLink);
+      }).toThrow(/does not show/);
+    });
   });
 });

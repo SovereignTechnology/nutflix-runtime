@@ -1,21 +1,30 @@
 /**
- * Reads a file out of a packaged app WITHOUT running it: the version a package says it is, and the
- * trust root baked into its updater. A production build is never launched on a runner (it would
- * join the public DHT), so this is how one is checked.
+ * Reads a file out of a packaged app WITHOUT running it: the version a package says it is, the
+ * commit CI built it from, its CPU, and the trust root baked into its updater. A production build
+ * is never launched on a runner (it would join the public DHT), so this is how one is checked.
  *
  *   - `.AppImage`: a static ELF, then a squashfs image; `unsquashfs` reads the file.
- *   - `.msix`: a ZIP (with ZIP64 records); `unzip` reads the file.
- *   - `.app.zip`: the macOS bundle as the `shell` job uploads it; `unzip` again.
- *   - `.app`: a directory.
+ *   - `.msix`: a ZIP, read by `zip.ts`, which refuses a duplicate or ambiguous entry.
+ *   - `.app`: a directory, already unpacked by `zip.ts`.
+ *
+ * These are checks against a MISTAKE: the wrong folder, the wrong run, a stale build. They read what
+ * a build declares; they cannot tell that hostile code declares the truth. What ties a package to
+ * reviewed code is where it came from (`provenance.ts`).
  */
 import { spawnSync } from 'node:child_process';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { APP, STAGED } from '../../packaging/identity.ts';
-import { assertReleaseRoot, bakedRootIn } from '../../packaging/update-root.ts';
+import { APP, STAGED, type Arch } from '../../packaging/identity.ts';
+import {
+  assertMainMatchesRoot,
+  assertReleaseRoot,
+  bakedRootIn,
+} from '../../packaging/update-root.ts';
 import type { TrustRoot } from '../../src/update/root.ts';
+import { elfArch, machoArches } from './binary.ts';
 import { assertVersion, refuse } from './guards.ts';
+import { readZipFile } from './zip.ts';
 
 /** No file this tool reads out of a package is larger (the updater bundle is the big one). */
 const MAX_READ = 64 * 1024 * 1024;
@@ -64,13 +73,7 @@ export function readPackaged(path: string, rel: string): string {
       ],
       what,
     );
-  if (path.endsWith('.msix')) return tool('unzip', ['-p', path, `app/resources/app/${rel}`], what);
-  if (path.endsWith('.app.zip'))
-    return tool(
-      'unzip',
-      ['-p', path, `${APP.productName}.app/Contents/Resources/app/${rel}`],
-      what,
-    );
+  if (path.endsWith('.msix')) return readZipFile(path, `app/resources/app/${rel}`).toString('utf8');
   if (path.endsWith('.app'))
     return readFileSync(join(path, 'Contents', 'Resources', 'app', ...rel.split('/')), 'utf8');
   return refuse(`${path} is not a package this tool knows`);
@@ -78,6 +81,8 @@ export function readPackaged(path: string, rel: string): string {
 
 export interface PackageFacts {
   readonly version: string;
+  /** The commit CI baked in; `null` in a build made anywhere else. */
+  readonly commit: string | null;
   readonly root: TrustRoot;
 }
 
@@ -90,8 +95,19 @@ export function packageFacts(path: string): PackageFacts {
     if (e instanceof SyntaxError) return refuse(`${path}: its package.json is not JSON`);
     throw e;
   }
-  const version = assertVersion((pkg as { version?: unknown } | null)?.version, `${path}: version`);
-  return { version, root: bakedRootIn(readPackaged(path, STAGED.updateWorker)) };
+  const fields = (pkg ?? {}) as { version?: unknown; commit?: unknown };
+  const version = assertVersion(fields.version, `${path}: version`);
+  const commit =
+    typeof fields.commit === 'string' && /^[0-9a-f]{40}$/.test(fields.commit)
+      ? fields.commit
+      : null;
+  const root = bakedRootIn(readPackaged(path, STAGED.updateWorker));
+  try {
+    assertMainMatchesRoot(readPackaged(path, STAGED.main), root);
+  } catch (e) {
+    return refuse(`${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { version, commit, root };
 }
 
 /** Throws unless the package's baked root is exactly the production root this source declares. */
@@ -101,4 +117,15 @@ export function assertProductionRoot(path: string, facts: PackageFacts): void {
   } catch (e) {
     refuse(`${path}: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/** Throws unless the package's native code is for `arch`. An `.msix` has one target to be. */
+export function assertPackageArch(path: string, arch: Arch): void {
+  if (path.endsWith('.msix')) return;
+  const exe = path.endsWith('.app') ? join(path, 'Contents', 'MacOS', APP.productName) : path;
+  const got = path.endsWith('.app') ? machoArches(exe) : elfArch(exe);
+  if (got === null) refuse(`${exe} is not a native binary of a known kind`);
+  const list = Array.isArray(got) ? got : [got];
+  if (list.length !== 1 || list[0] !== arch)
+    refuse(`${path} is built for ${list.join(', ') || 'an unknown CPU'}, not ${arch}`);
 }

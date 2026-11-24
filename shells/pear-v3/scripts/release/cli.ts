@@ -3,87 +3,122 @@
  *
  *   node shells/pear-v3/scripts/release/cli.ts <command> [options]
  *
- *   check        --artifacts <dir>    the five packages: present, one version, the production root
- *   assemble     --artifacts <dir> --out <dir>    the same, then the folder `pear build` takes
+ * From a CI run on `main` to a deployment, all local:
+ *   download     --run <id> --commit <sha> --artifacts <dir>   the five `release-*` artifacts
+ *   check        --run <id> --commit <sha> --artifacts <dir>   one verified run, one version, one
+ *                                     commit, the production root, the right CPU
+ *   assemble     --run <id> --commit <sha> --artifacts <dir> --out <dir>
+ *   record-signed --out <dir> --target <target> --signed <Nutflix.app|Nutflix.msix>
+ *                                     a package the owner signed: CI's, plus signatures, only
  *   build        --out <dir>          `pear build`: one deployment from the five
  *   digest       --out <dir>          what a notice names for each, read from the deployment
- *   notice-draft --out <dir> --verlink <pear://f.l.key> [--commit <sha>] [--created-at <unix>]
- *                                     an UNSIGNED kind-30071 event, as JSON
- *   verify-root  --app <resources/app dir>    the baked root is the production root (never launches)
- *   bundle-digest --app <Nutflix.app> --write <file>    on the Mac that zips it: the bundle's digest
+ *   notice-draft --out <dir> --verlink <pear://f.l.key> [--created-at <unix>]
+ *                                     an UNSIGNED kind-30071 event; its commit is the packages'
+ *   verify-root  --app <resources/app dir>    the baked root and main's switch (never launches)
+ *   bundle-digest --app <Nutflix.app> --write <file>    CI only, on the Mac that zips the bundle
  *
+ * On a real link, on the public DHT:
  *   stage        --link <link> --out <dir>
  *   provision    --source <verlink> --target <link> --production <verlink>
  *   multisig request --config <pear.json> --verlink <verlink>
+ *   verify-request --run <id> --commit <sha> --config <pear.json> --verlink <verlink>
+ *                --request <r> --work <empty dir> [--signed-target <target>]...
+ *                                     EACH SIGNER, before `pear multisig sign`
  *   multisig verify  --config <pear.json> --source <link> --request <r> --response <s>...
  *   multisig commit  --config <pear.json> --source <link> --production <link> --request <r> --response <s>...
  *   seed         --link <link>
  *
- * The second group acts on a real link on the public DHT. By default each only PRINTS the exact
- * command. `--execute` runs it, after the link is typed back on a terminal, and is refused on CI.
+ * The second group only PRINTS the exact command by default. `--execute` runs it, after the link is
+ * typed back on a terminal, and is refused on CI and while the source has no production link. These
+ * gates stop mistakes. They are not a boundary against hostile code on the same machine.
  *
- * This tool never reads, stores or prints a signing key: `pear multisig sign` is the owner's own
- * step, in the owner's terminal, and only its public response comes back here.
+ * This tool never reads, stores or prints a signing key: `pear multisig sign` is each signer's own
+ * step, in their own terminal, and only its public response comes back here.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { STAGED } from '../../packaging/identity.ts';
 import { PKG_DIR } from '../../packaging/paths.ts';
-import { assertReleaseRoot, bakedRootIn } from '../../packaging/update-root.ts';
+import {
+  assertMainMatchesRoot,
+  assertReleaseRoot,
+  bakedRootIn,
+  releaseRoot,
+} from '../../packaging/update-root.ts';
 import { sha256File } from '../pear-ci/deployment.ts';
 import { Pear, fetchPear } from '../pear-ci/pear.ts';
 import { PEAR_PINS, PEAR_VERSION, type TargetName } from '../pear-ci/pins.ts';
-import { failureMessage, succeeded } from '../pear-ci/records.ts';
+import { failureMessage, field, lastRecord, parseRecords, succeeded } from '../pear-ci/records.ts';
 import {
+  RELEASE_PREFIX,
   assemble,
   buildAppFlags,
-  checkPackages,
+  checkRelease,
   digestRelease,
+  downloadRelease,
+  productionRules,
   readDigests,
   readRelease,
+  unpackAll,
 } from './assemble.ts';
-import { digestOf } from './digest.ts';
-import { releaseNoticeDraft } from './draft.ts';
 import {
+  committed,
   planBuild,
   planCommit,
+  planDump,
   planMultisigLink,
   planProvision,
   planRequest,
   planSeed,
   planStage,
   planVerify,
+  planVerifyRequest,
   renderCommand,
   type PlannedCommand,
 } from './commands.ts';
+import { digestOf } from './digest.ts';
+import { releaseNoticeDraft } from './draft.ts';
 import {
   ReleaseRefusal,
   askOnTerminal,
   assertLink,
+  assertVerlink,
   confirmLink,
+  linkKeyOf,
+  onCi,
   refuse,
   refuseOnCi,
   type AskLine,
 } from './guards.ts';
+import { assertCommit, ghApi, parseRunId, type GitHubApi } from './provenance.ts';
+import { assertRequestBinds, compareDrive } from './signer.ts';
+import { recordSigned } from './signing.ts';
 import { RELEASE_TARGETS } from './targets.ts';
+
+export interface PearOutcome {
+  readonly code: number;
+  /** What it printed, up to the last megabyte. */
+  readonly out: string;
+}
 
 /** Everything that reaches outside the process, so that the tests can stand in for it. */
 export interface Io {
   readonly env: NodeJS.ProcessEnv;
   readonly ask: AskLine;
+  readonly api: GitHubApi;
+  /** The link this source's builds follow: `RELEASE_UPGRADE_LINK`. */
+  productionLink(): string | null;
   print(line: string): void;
   /** Where the pinned `pear` is, or will be: printed in a dry run. */
   pearPath(): string;
   /** Fetches the pinned CLI, checked against its sha256, and returns its path. */
   ensurePear(): Promise<string>;
-  /** Runs `pear <args>` on the real network with the caller's terminal. */
-  runPublic(bin: string, args: readonly string[]): Promise<number>;
-  /** `pear multisig link`: the link this config derives. */
-  multisigLink(bin: string, args: readonly string[]): Promise<string>;
+  /** Runs `pear <args>` on the real network; its output also goes to the terminal. */
+  runPublic(bin: string, args: readonly string[]): Promise<PearOutcome>;
   /** `pear build`, local and offline. */
   runBuild(bin: string, out: string, args: readonly string[]): Promise<void>;
   nowS(): number;
@@ -92,6 +127,7 @@ export interface Io {
 interface Parsed {
   readonly options: ReadonlyMap<string, string>;
   readonly responses: readonly string[];
+  readonly signedTargets: readonly string[];
   readonly execute: boolean;
 }
 
@@ -99,6 +135,7 @@ const VALUE_OPTIONS = new Set([
   '--artifacts',
   '--write',
   '--out',
+  '--run',
   '--verlink',
   '--commit',
   '--created-at',
@@ -110,11 +147,15 @@ const VALUE_OPTIONS = new Set([
   '--config',
   '--request',
   '--response',
+  '--signed',
+  '--signed-target',
+  '--work',
 ]);
 
 export function parseOptions(argv: readonly string[]): Parsed {
   const options = new Map<string, string>();
   const responses: string[] = [];
+  const signedTargets: string[] = [];
   let execute = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] ?? '';
@@ -127,10 +168,11 @@ export function parseOptions(argv: readonly string[]): Parsed {
       return refuse(`unknown or incomplete option ${a}`);
     i++;
     if (a === '--response') responses.push(v);
+    else if (a === '--signed-target') signedTargets.push(v);
     else if (options.has(a)) return refuse(`${a} is given twice`);
     else options.set(a, v);
   }
-  return { options, responses, execute };
+  return { options, responses, signedTargets, execute };
 }
 
 const need = (p: Parsed, name: string): string =>
@@ -138,8 +180,32 @@ const need = (p: Parsed, name: string): string =>
 
 const needPath = (p: Parsed, name: string): string => resolve(need(p, name));
 
+const runAndCommit = (p: Parsed): { run: number; commit: string } => ({
+  run: parseRunId(p.options.get('--run')),
+  commit: assertCommit(p.options.get('--commit'), '--commit'),
+});
+
+/** The production link, or a refusal: a release from a source with none strands every install. */
+function requireProductionLink(io: Io): string {
+  const link = io.productionLink();
+  if (link === null)
+    return refuse(
+      'this source has no production link (RELEASE_UPGRADE_LINK is null): its builds start no updater, so nothing released from it could ever be updated',
+    );
+  return link;
+}
+
+interface ActHooks {
+  /** Checks that need no network, before anyone is asked anything. */
+  readonly before?: (production: string) => void;
+  /** After the link is typed back, before the step runs. */
+  readonly confirmed?: (bin: string, production: string) => Promise<void>;
+  /** After the step ran and exited 0. */
+  readonly done?: (out: string, production: string) => void;
+}
+
 /** A dry run prints; `--execute` checks every gate, then runs. */
-async function act(io: Io, p: Parsed, plan: PlannedCommand): Promise<number> {
+async function act(io: Io, p: Parsed, plan: PlannedCommand, hooks: ActHooks = {}): Promise<number> {
   if (!p.execute) {
     io.print(`DRY RUN (${plan.step}): nothing was run. The command is:`);
     io.print(`  ${renderCommand(io.pearPath(), plan.args)}`);
@@ -148,12 +214,28 @@ async function act(io: Io, p: Parsed, plan: PlannedCommand): Promise<number> {
     return 0;
   }
   if (plan.publicDht) refuseOnCi(io.env, plan.step);
+  const production = requireProductionLink(io);
+  hooks.before?.(production);
   if (plan.confirm !== null) await confirmLink(plan.confirm, io.ask);
   const bin = await io.ensurePear();
+  await hooks.confirmed?.(bin, production);
   io.print(`$ ${renderCommand(bin, plan.args)}`);
-  const code = await io.runPublic(bin, plan.args);
-  if (code !== 0) io.print(`${plan.step}: pear exited ${String(code)}`);
-  return code;
+  const { code, out } = await io.runPublic(bin, plan.args);
+  if (code !== 0) {
+    io.print(`${plan.step}: pear exited ${String(code)}`);
+    return code;
+  }
+  hooks.done?.(out, production);
+  return 0;
+}
+
+/** What `pear multisig link` derives from this config; refused if Pear did not answer. */
+async function derivedLink(io: Io, bin: string, config: string): Promise<string> {
+  const { code, out } = await io.runPublic(bin, planMultisigLink({ config }).args);
+  const link = field(lastRecord(parseRecords(out), 'final'), 'link');
+  if (code !== 0 || link === undefined)
+    return refuse(`pear multisig link exited ${String(code)} and gave no link: nothing was done`);
+  return link;
 }
 
 async function multisig(io: Io, sub: string | undefined, rest: readonly string[]): Promise<number> {
@@ -173,27 +255,113 @@ async function multisig(io: Io, sub: string | undefined, rest: readonly string[]
       }),
     );
   if (sub === 'commit') {
-    const production = assertLink(need(p, '--production'), '--production');
+    const given = assertLink(need(p, '--production'), '--production');
     const plan = planCommit({
       config,
       source: need(p, '--source'),
-      production,
+      production: given,
       request: need(p, '--request'),
       responses: p.responses,
     });
-    if (p.execute) {
+    return act(io, p, plan, {
+      before: (production) => {
+        if (given !== production)
+          refuse(`--production is ${given}, but this source's production link is ${production}`);
+      },
       // The link the signers' keys derive must be the one typed: before anything is written.
-      refuseOnCi(io.env, plan.step);
-      const derived = await io.multisigLink(
-        await io.ensurePear(),
-        planMultisigLink({ config }).args,
-      );
-      if (derived !== production)
-        refuse(`this config derives ${derived}, not ${production}: nothing was committed`);
-    }
-    return act(io, p, plan);
+      confirmed: async (bin) => {
+        const derived = await derivedLink(io, bin, config);
+        if (derived !== given)
+          refuse(`this config derives ${derived}, not ${given}: nothing was committed`);
+      },
+      done: (out, production) => {
+        const made = committed(lastRecord(parseRecords(out), 'final')?.data, linkKeyOf(production));
+        io.print(`production verlink: ${made.verlink}`);
+      },
+    });
   }
   return refuse('multisig takes request, verify or commit');
+}
+
+/** Each signer, before `pear multisig sign`: see `signer.ts`. */
+async function verifyRequest(io: Io, rest: readonly string[]): Promise<number> {
+  const p = parseOptions(rest);
+  const { run, commit } = runAndCommit(p);
+  const config = needPath(p, '--config');
+  const verlink = assertVerlink(need(p, '--verlink'), '--verlink');
+  const request = need(p, '--request');
+  const work = needPath(p, '--work');
+  const signed = new Set<TargetName>();
+  for (const name of p.signedTargets) {
+    const t = RELEASE_TARGETS.find((x) => x.name === name);
+    if (t === undefined || t.platform === 'linux')
+      return refuse(`--signed-target ${name}: only a macOS or Windows target is signed`);
+    signed.add(t.name);
+  }
+  const source = `pear://${linkKeyOf(verlink)}`;
+  const dump = planDump({ verlink, dir: join(work, 'drive') });
+  const check = planVerifyRequest({ config, source, request });
+  if (!p.execute) {
+    io.print('DRY RUN (verify-request): nothing was run. It would:');
+    io.print(`  check run ${String(run)} on GitHub, and fetch what CI built at ${commit}`);
+    io.print(`  ${renderCommand(io.pearPath(), check.args)}`);
+    io.print(`  ${renderCommand(io.pearPath(), dump.args)}`);
+    io.print(
+      `  hash the five entries, compare them with CI's, and ask Pear about the request again`,
+    );
+    io.print(`To run it: add --execute, and type this link back: ${source}`);
+    return 0;
+  }
+  refuseOnCi(io.env, 'verify-request');
+  const production = requireProductionLink(io);
+  if (!existsSync(config)) return refuse(`${config} does not exist`);
+  if (existsSync(work) && readdirSync(work).length > 0)
+    return refuse(`${work} is not empty: use a fresh folder`);
+  await confirmLink(source, io.ask);
+  mkdirSync(work, { recursive: true });
+
+  // 1. What CI built, from GitHub, whatever the coordinator said.
+  const artifacts = join(work, 'artifacts');
+  await downloadRelease(io.api, run, commit, artifacts);
+  const built = await unpackAll(
+    artifacts,
+    RELEASE_PREFIX,
+    join(work, 'ci'),
+    productionRules(commit),
+  );
+
+  const bin = await io.ensurePear();
+  const derived = await derivedLink(io, bin, config);
+  if (derived !== production)
+    return refuse(`this config derives ${derived}, not the production link ${production}`);
+
+  // 2. The request, then the drive, then the request again.
+  const askPear = async (): Promise<string> => {
+    const { code, out } = await io.runPublic(bin, check.args);
+    if (code !== 0) return refuse(`Pear refused the request (exit ${String(code)}): do not sign`);
+    return assertRequestBinds(lastRecord(parseRecords(out), 'final')?.data, production, verlink);
+  };
+  const before = await askPear();
+  const fetched = await io.runPublic(bin, dump.args);
+  if (fetched.code !== 0)
+    return refuse(`could not fetch ${verlink} (exit ${String(fetched.code)}): do not sign`);
+  const rows = await compareDrive(
+    join(work, 'drive'),
+    built.version,
+    built.packages.map((x) => ({ target: x.target, app: x.app, digest: x.digest })),
+    signed,
+  );
+  if ((await askPear()) !== before)
+    return refuse('the drive changed during the check: do not sign');
+  for (const r of rows)
+    io.print(
+      `ok  ${r.target}  ${r.how === 'exact' ? "CI's bytes" : "CI's package, signed"}  ${r.digest}`,
+    );
+  io.print(
+    `This request releases exactly what CI built at ${commit}, version ${built.version}, to ${production}.`,
+  );
+  io.print('It is safe to run: pear multisig sign <request> <your key name>');
+  return 0;
 }
 
 /** How far ahead of this machine's clock a notice's date may be. */
@@ -203,17 +371,46 @@ const MAX_CLOCK_SKEW_S = 60;
 export async function runCli(argv: readonly string[], io: Io): Promise<number> {
   const [command, ...rest] = argv;
   switch (command ?? '') {
+    case 'download': {
+      const p = parseOptions(rest);
+      const { run, commit } = runAndCommit(p);
+      await downloadRelease(io.api, run, commit, needPath(p, '--artifacts'));
+      io.print(`five artifacts of run ${String(run)}, each equal to GitHub's digest`);
+      return 0;
+    }
     case 'check': {
       const p = parseOptions(rest);
-      const r = checkPackages(needPath(p, '--artifacts'));
-      for (const x of r.packages) io.print(`ok  ${x.target.name}  ${r.version}  ${x.path}`);
-      io.print(`five targets, version ${r.version}, each with the production root`);
+      const { run, commit } = runAndCommit(p);
+      const r = await checkRelease(io.api, run, commit, needPath(p, '--artifacts'));
+      for (const x of r.packages) io.print(`ok  ${x.target.name}  ${r.version}  ${x.digest}`);
+      io.print(
+        `five targets from run ${String(run)} on main at ${commit}, version ${r.version}, each with the production root`,
+      );
       return 0;
     }
     case 'assemble': {
       const p = parseOptions(rest);
-      const r = await assemble(needPath(p, '--artifacts'), needPath(p, '--out'));
-      io.print(`assembled ${String(r.targets.length)} targets, version ${r.version}`);
+      const { run, commit } = runAndCommit(p);
+      const r = await assemble(
+        io.api,
+        run,
+        commit,
+        needPath(p, '--artifacts'),
+        needPath(p, '--out'),
+      );
+      io.print(`assembled ${String(r.targets.length)} targets, version ${r.version}, ${r.commit}`);
+      return 0;
+    }
+    case 'record-signed': {
+      const p = parseOptions(rest);
+      const r = await recordSigned(
+        needPath(p, '--out'),
+        need(p, '--target'),
+        needPath(p, '--signed'),
+      );
+      io.print(`${r.target}: CI built ${r.before}`);
+      io.print(`${r.target}: signed    ${r.after} (${String(r.bytes)} bytes)`);
+      io.print('Only signatures differ. The root, version, commit and CPU were read again.');
       return 0;
     }
     case 'build': {
@@ -239,6 +436,9 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
     }
     case 'notice-draft': {
       const p = parseOptions(rest);
+      if (p.options.has('--commit'))
+        refuse('--commit is not taken here: the commit is the one the packages carry');
+      const production = requireProductionLink(io);
       const out = needPath(p, '--out');
       const d = readDigests(out);
       const at = p.options.get('--created-at');
@@ -250,16 +450,18 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
       const event = releaseNoticeDraft({
         version: d.version,
         verlink: need(p, '--verlink'),
-        commit: p.options.get('--commit'),
+        commit: d.commit,
         createdAt,
         artifacts: d.artifacts,
+        expectedLink: production,
       });
       writeFileSync(file, `${JSON.stringify(event, null, 2)}\n`, { flag: 'wx' });
       io.print(`${file} (UNSIGNED: the owner signs and publishes it)`);
       return 0;
     }
     case 'bundle-digest': {
-      // On the Mac that zips the bundle: what `assemble` compares the unpacked tree with.
+      // CI's reference for the bundle it built. Never to be remade from a signed bundle.
+      if (!onCi(io.env)) refuse('bundle-digest is the CI job’s own step');
       const p = parseOptions(rest);
       const digest = await digestOf(needPath(p, '--app'));
       writeFileSync(needPath(p, '--write'), `${digest}\n`);
@@ -268,12 +470,12 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
     }
     case 'verify-root': {
       const p = parseOptions(rest);
-      const root = bakedRootIn(
-        readFileSync(join(needPath(p, '--app'), ...STAGED.updateWorker.split('/')), 'utf8'),
-      );
+      const app = needPath(p, '--app');
+      const root = bakedRootIn(readFileSync(join(app, ...STAGED.updateWorker.split('/')), 'utf8'));
       assertReleaseRoot(root);
+      assertMainMatchesRoot(readFileSync(join(app, ...STAGED.main.split('/')), 'utf8'), root);
       io.print(
-        `the baked root is the production root: key ${root.pubkey}, ${String(root.relays.length)} relays, upgrade link ${root.upgrade ?? 'none'}`,
+        `the baked root is the production root and main's switch agrees: key ${root.pubkey}, ${String(root.relays.length)} relays, upgrade link ${root.upgrade ?? 'none'}`,
       );
       return 0;
     }
@@ -281,29 +483,37 @@ export async function runCli(argv: readonly string[], io: Io): Promise<number> {
       const p = parseOptions(rest);
       const deployment = join(needPath(p, '--out'), 'deployment');
       if (!existsSync(deployment)) refuse(`${deployment} is missing: run build first`);
-      return act(io, p, planStage({ link: need(p, '--link'), deployment }));
-    }
-    case 'provision': {
-      const p = parseOptions(rest);
       return act(
         io,
         p,
-        planProvision({
-          source: need(p, '--source'),
-          target: need(p, '--target'),
-          production: need(p, '--production'),
-        }),
+        planStage({ link: need(p, '--link'), deployment, production: io.productionLink() }),
       );
+    }
+    case 'provision': {
+      const p = parseOptions(rest);
+      const plan = planProvision({
+        source: need(p, '--source'),
+        target: need(p, '--target'),
+        production: need(p, '--production'),
+      });
+      return act(io, p, plan, {
+        before: (production) => {
+          if (linkKeyOf(need(p, '--production')) !== linkKeyOf(production))
+            refuse(`--production is not a version of this source's production link ${production}`);
+        },
+      });
     }
     case 'multisig':
       return multisig(io, rest[0], rest.slice(1));
+    case 'verify-request':
+      return verifyRequest(io, rest);
     case 'seed': {
       const p = parseOptions(rest);
       return act(io, p, planSeed({ link: need(p, '--link') }));
     }
     default:
       return refuse(
-        'usage: cli.ts <check|assemble|build|digest|notice-draft|verify-root|bundle-digest|stage|provision|multisig|seed> [options]',
+        'usage: cli.ts <download|check|assemble|record-signed|build|digest|notice-draft|verify-root|bundle-digest|stage|provision|multisig|verify-request|seed> [options]',
       );
   }
 }
@@ -338,9 +548,13 @@ export async function ensurePinnedPear(target: TargetName, dir: string): Promise
   return (await fetchPear(target, dir)).bin;
 }
 
+const KEEP_OUTPUT = 1024 * 1024;
+
 export const realIo: Io = {
   env: process.env,
   ask: askOnTerminal,
+  api: ghApi,
+  productionLink: () => releaseRoot().upgrade,
   print: (line) => {
     process.stdout.write(`${line}\n`);
   },
@@ -348,24 +562,17 @@ export const realIo: Io = {
   ensurePear: () => ensurePinnedPear(hostTarget(), toolsDir()),
   runPublic: (bin, args) =>
     new Promise((res) => {
-      const child = spawn(bin, [...args], { stdio: 'inherit' });
-      child.once('error', () => {
-        res(1);
-      });
-      child.once('exit', (code) => {
-        res(code ?? 1);
-      });
-    }),
-  multisigLink: (bin, args) =>
-    new Promise((res, rej) => {
-      const child = spawn(bin, [...args], { stdio: ['ignore', 'pipe', 'inherit'] });
+      const child = spawn(bin, [...args], { stdio: ['inherit', 'pipe', 'inherit'] });
       let out = '';
-      child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')));
-      child.once('error', rej);
-      child.once('exit', () => {
-        const m = /"link":"(pear:\/\/[a-z0-9]{52})"/.exec(out);
-        if (m?.[1] === undefined) rej(new ReleaseRefusal('pear multisig link printed no link'));
-        else res(m[1]);
+      child.stdout.on('data', (d: Buffer) => {
+        process.stdout.write(d);
+        out = (out + d.toString('utf8')).slice(-KEEP_OUTPUT);
+      });
+      child.once('error', () => {
+        res({ code: 1, out });
+      });
+      child.once('close', (code) => {
+        res({ code: code ?? 1, out });
       });
     }),
   runBuild: async (bin, out, args) => {

@@ -36,9 +36,11 @@ import { release as osRelease, version as osVersion } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { APP, MSIX, TARGETS } from '../../packaging/identity.ts';
+import { APP, MSIX, STAGED, TARGETS } from '../../packaging/identity.ts';
 import { PKG_DIR, REPO_ROOT } from '../../packaging/paths.ts';
+import { assertNoUpgradeLink } from '../../packaging/update-root.ts';
 import { makeAppx } from '../../packaging/windows-kit.ts';
+import { readPackaged } from '../release/inspect.ts';
 import { launch, readyProblems, type LaunchResult, type ReadyFields } from '../smoke.ts';
 import {
   deploymentPackageJson,
@@ -432,6 +434,8 @@ export async function run(o: Options): Promise<number> {
         report.notes.push(
           'Windows cannot hold the macOS bundles faithfully (symlinks), so the macOS entries of this deployment are stand-ins; the other four legs unpack them exactly.',
         );
+      // What this job installs and launches below must start no updater, read from its bytes.
+      assertNoUpgradeLink(readPackaged(out.get(o.target)?.path ?? '', STAGED.updateWorker));
       return out;
     });
 

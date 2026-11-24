@@ -9,11 +9,11 @@
  */
 import { createHash } from 'node:crypto';
 
-import { RELEASE_PUBKEY, releaseRoot } from '../../packaging/update-root.ts';
+import { RELEASE_PUBKEY } from '../../packaging/update-root.ts';
 import { MAX_ARTIFACTS } from '../../src/update/notice.ts';
 import { NOTICE_D, NOTICE_KIND } from '../../src/update/root.ts';
 import type { Digest } from './assemble.ts';
-import { assertVerlink, assertVersion, linkKeyOf, refuse } from './guards.ts';
+import { assertLink, assertVerlink, assertVersion, linkKeyOf, refuse } from './guards.ts';
 import { RELEASE_TARGETS } from './targets.ts';
 
 export interface UnsignedNotice {
@@ -33,6 +33,11 @@ export interface DraftInput {
   readonly commit?: string | undefined;
   readonly createdAt: number;
   readonly artifacts: readonly Digest[];
+  /**
+   * The `pear://<key>` link this notice must be a version of. The CLI passes the source's
+   * production link; a proof passes its own throwaway one. There is no way to leave it out.
+   */
+  readonly expectedLink: string;
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -67,10 +72,11 @@ export function noticeDraft(o: DraftInput): UnsignedNotice {
     if (!SHA256.test(a.sha256)) refuse(`${a.name}: the digest is not a sha256`);
     if (!Number.isSafeInteger(a.bytes) || a.bytes < 0) refuse(`${a.name}: bad size`);
   }
-  // Once the source has a production link, a notice for another link could only ever be held.
-  const production = releaseRoot().upgrade;
-  if (production !== null && linkKeyOf(verlink) !== linkKeyOf(production))
-    refuse(`${verlink} is not a version of the production link ${production}`);
+  // Any other link's notice could only ever be held, and would still raise every install's floor.
+  if (linkKeyOf(verlink) !== linkKeyOf(assertLink(o.expectedLink, 'the expected link')))
+    refuse(`${verlink} is not a version of ${o.expectedLink}`);
+  if (Number(verlink.slice('pear://'.length).split('.')[1]) === 0)
+    refuse(`${verlink} is an empty version: nothing has been committed there`);
   const sorted = [...o.artifacts].sort(byName);
   const content = sumsText(sorted);
   const tags: string[][] = [
