@@ -21,6 +21,9 @@
     },
     {
       "path": "shells/pear-v3"
+    },
+    {
+      "path": "shells/pear-v2"
     }
   ]
 }

@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src",
+    "scripts",
+    "proof",
+    "../../packages/worker/src/types",
+    "../../packages/renderer/src/errors.ts",
+    "../../packages/renderer/src/links.ts",
+    "../../packages/renderer/src/net/hosts.ts",
+    "../../packages/renderer/src/settings/defaults.ts",
+    "../../packages/renderer/src/settings/store.ts",
+    "../../packages/renderer/src/settings/validate.ts",
+    "../../packages/renderer/src/settings/webrtc-note.ts",
+    "../../packages/renderer/src/shell/offer.ts",
+    "../../packages/renderer/src/worker/pipe.ts",
+    "../../packages/renderer/scripts/build.ts",
+    "../../packages/renderer/scripts/csp-sri.d.ts",
+    "../../packages/renderer/scripts/nfx-lib.ts",
+    "../../packages/renderer/scripts/policy.ts",
+    "../../packages/renderer/e2e/helpers/relay.ts",
+    "../../packages/renderer/e2e/helpers/vp9-nfx.ts",
+    "../../vendor/nutflix-pear/packages/app-web/scripts/site.ts"
+  ],
+  "references": [
+    { "path": "../../vendor/nutflix-pear/packages/core" },
+    { "path": "../../vendor/nutflix-pear/packages/seeder" },
+    { "path": "../../vendor/nutflix-pear/packages/ui" },
+    { "path": "../../packages/worker/tsconfig.build.json" }
+  ]
+}

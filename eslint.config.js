@@ -74,6 +74,8 @@ export default tseslint.config(
       'vendor/**',
       // Spike harnesses (docs/spikes/): throwaway code in upstream's own style, run only in VMs.
       'spikes/**',
+      // The staged Pear app: generated, and read by `pear stage`.
+      'shells/pear-v2/out/**',
     ],
   },
   js.configs.recommended,
@@ -90,6 +92,7 @@ export default tseslint.config(
             'packages/*/vitest.netns.config.ts',
             'packages/*/vitest.publish.config.ts',
             'shells/*/vitest.config.ts',
+            'shells/*/vitest.proof.config.ts',
           ],
         },
         tsconfigRootDir: import.meta.dirname,
@@ -117,6 +120,22 @@ export default tseslint.config(
       'no-restricted-globals': [
         'error',
         { name: 'open', message: 'window.open is refused: links go through links.ts' },
+        { name: 'location', message: 'a remote URL never reaches navigation' },
+        { name: 'eval', message: 'no eval' },
+      ],
+      'no-eval': 'error',
+      'no-new-func': 'error',
+    },
+  },
+  {
+    // The same rules for the script the pinned `pear run` shell adds to that page.
+    name: 'shell-pear-v2/no-remote-html',
+    files: ['shells/pear-v2/src/page/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...REMOTE_HTML_SELECTORS],
+      'no-restricted-globals': [
+        'error',
+        { name: 'open', message: 'window.open is refused: links go through open-link.ts' },
         { name: 'location', message: 'a remote URL never reaches navigation' },
         { name: 'eval', message: 'no eval' },
       ],
