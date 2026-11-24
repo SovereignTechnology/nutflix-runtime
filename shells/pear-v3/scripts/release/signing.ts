@@ -91,7 +91,8 @@ export function sealedFilesOf(path: string): { infoPlist: string; resources: str
       infoPlist: `${app[1] ?? ''}/Info.plist`,
       resources: `${app[1] ?? ''}/_CodeSignature/CodeResources`,
     };
-  const framework = /^(.+\.framework\/Versions\/[^/]+)\/[^/]+$/.exec(path);
+  // A framework's own binary has the framework's name; other tools beside it seal nothing of it.
+  const framework = /^(.+\/([^/]+)\.framework\/Versions\/[^/]+)\/\2$/.exec(path);
   if (framework !== null)
     return {
       infoPlist: `${framework[1] ?? ''}/Resources/Info.plist`,

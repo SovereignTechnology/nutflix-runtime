@@ -131,7 +131,9 @@ every signer's `verify-request` hold every Mach-O in a signed bundle to it, re-s
   requirements, and both forms of the entitlements. A blob the directory does not bind is refused.
   This is what the kernel checks when the code runs, and the tool checks it on any OS. It was checked
   in a VM against real signatures: Pear 3.7.0's Developer ID-signed macOS binaries (both CPUs, a
-  changed byte refused) and every Mach-O of Electron 45.2.1's macOS release. It does not
+  changed byte refused), every Mach-O of Electron 45.2.1's macOS release, and every Mach-O of a
+  Developer ID-signed app bundle with an embedded framework, helper app and XPC services (a changed
+  `Info.plist` or resource seal refused). It does not
   check the resource seal's contents, the nested code it names, or an identity's CMS signature and
   its chain to Apple: on a Mac, `verify-request` also runs `codesign --verify --strict --deep`,
   which does; elsewhere it says plainly that this was not checked. While no Team ID is pinned there

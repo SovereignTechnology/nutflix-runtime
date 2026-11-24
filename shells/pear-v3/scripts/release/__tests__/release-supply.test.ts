@@ -74,7 +74,13 @@ import {
   compareDrive,
   type PearInOneHome,
 } from '../signer.ts';
-import { compareSigned, isBundleSignaturePath, isSignatureType, recordSigned } from '../signing.ts';
+import {
+  compareSigned,
+  isBundleSignaturePath,
+  isSignatureType,
+  recordSigned,
+  sealedFilesOf,
+} from '../signing.ts';
 import {
   expectedEntitlements,
   productionSigningPolicy,
@@ -1341,6 +1347,26 @@ describe('a signed package', () => {
         compareSigned(mac, unsigned, signed),
         /Contents\/Resources\/addon\/tool is not signed with the hardened runtime/,
       );
+    });
+
+    it('knows which files a bundle’s own executable seals', () => {
+      expect(sealedFilesOf('Contents/MacOS/Nutflix')).toEqual({
+        infoPlist: 'Contents/Info.plist',
+        resources: 'Contents/_CodeSignature/CodeResources',
+      });
+      expect(
+        sealedFilesOf('Contents/Frameworks/Nutflix Helper.app/Contents/MacOS/Nutflix Helper')
+          ?.infoPlist,
+      ).toBe('Contents/Frameworks/Nutflix Helper.app/Contents/Info.plist');
+      expect(
+        sealedFilesOf('Contents/Frameworks/Squirrel.framework/Versions/A/Squirrel')?.resources,
+      ).toBe('Contents/Frameworks/Squirrel.framework/Versions/A/_CodeSignature/CodeResources');
+      for (const tool of [
+        'Contents/Frameworks/Squirrel.framework/Versions/A/Resources/ShipIt',
+        'Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate',
+        'Contents/Resources/app/node_modules/bare-sidecar/prebuilds/darwin-arm64/bare',
+      ])
+        expect(sealedFilesOf(tool)).toBeNull();
     });
 
     it('exempts only a bundle’s or a framework’s own _CodeSignature', async () => {
