@@ -51,6 +51,9 @@ export const PROOF_FIELDS = [
   'fullscreenFromRealClick',
   'escLeavesFullscreen',
   'menuBarBackAfterEsc',
+  'httpWorkerPortReached',
+  'httpOtherPortRefused',
+  'httpFollowsWorker',
 ] as const;
 
 export type ProofField = (typeof PROOF_FIELDS)[number];

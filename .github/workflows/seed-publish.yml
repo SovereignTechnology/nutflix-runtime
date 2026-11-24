@@ -125,7 +125,9 @@ jobs:
           got=$(awk '{print $2}' "$RUNNER_TEMP/proofs" | LC_ALL=C sort | tr '\n' ' ')
           test "$got" = "$(printf '%s\n' $want | LC_ALL=C sort | tr '\n' ' ')"
       # The real window, in real Electron under Xvfb, driven by a script: it proves the window's
-      # confinement and its sender check. It is not a person using it, and it opens no native dialog.
+      # confinement and its sender check, and that main's guard on plain HTTP lets a page reach the
+      # worker's loopback ports and no other. It is not a person using it, and it opens no native
+      # dialog.
       - name: main's prompt window, in real Electron, inside it
         timeout-minutes: 5
         run: |

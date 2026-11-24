@@ -10,7 +10,9 @@
  * launcher passes the switch in that one case (`packaging/apprun.ts`) to reach this warning.
  *
  * The decision is pure: Electron's dialog and the filesystem arrive as `deps`, so the tests drive
- * every branch. `forget` (the `--forget-sandbox-choice` switch) is the revoke.
+ * every branch. Two things revoke the choice, and both delete the file (`consent-file.ts`): the
+ * `--forget-sandbox-choice` switch, and Settings while the sandbox is off (`app.sandbox.forget`,
+ * behind `FORGET_DIALOG`). Then the next start without the sandbox asks again.
  */
 import type { Fields } from './log.ts';
 
@@ -92,11 +94,33 @@ export const WARNING = {
     'Without the sandbox, a flaw in this app or in anything a stranger publishes (a title, a ' +
     'description, a video) can run code as you.\n\n' +
     'Quit is the safe choice. “Run anyway” is remembered on this install; a banner ' +
-    'stays on the window while the sandbox is off. Start the app with --forget-sandbox-choice ' +
-    'to forget it.',
+    'stays on the window while the sandbox is off. To forget it, use Settings, or start the app ' +
+    'with --forget-sandbox-choice.',
   buttons: ['Quit', 'Run anyway'],
 } as const;
 
 /** The banner's text (main injects it into the page while the sandbox is off). */
 export const BANNER_TEXT =
   'Chromium’s sandbox is OFF. A flaw in this app or in a published video could run code as you.';
+
+/** The answer to `FORGET_DIALOG` that forgets the choice. */
+export const FORGET_YES = 1;
+
+/**
+ * The native confirmation before Settings forgets the choice (`main-calls.ts`). Keeping the choice
+ * is the default (Enter, Escape and closing the box all keep it): a page cannot change anything by
+ * opening the box, only the user's click can.
+ */
+export const FORGET_DIALOG = {
+  type: 'question' as const,
+  title: 'Forget “Run anyway”?',
+  message: 'Warn again at the next start without the sandbox?',
+  detail:
+    'Nutflix forgets that you chose to run without Chromium’s sandbox. The next time it starts ' +
+    'without the sandbox, it warns you again, and Quit is the default.\n\nThis run stays as it ' +
+    'is: the sandbox is off until you quit.',
+  buttons: ['Keep the choice', 'Forget it'],
+  defaultId: 0,
+  cancelId: 0,
+  noLink: true,
+};
