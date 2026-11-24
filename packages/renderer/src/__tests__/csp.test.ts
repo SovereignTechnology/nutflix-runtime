@@ -7,6 +7,9 @@
  *   script-src  'wasm-unsafe-eval'  compiles nfx's WASM verifier; `eval` stays refused
  *   media-src   blob:               hls.js plays through a MediaSource, which is a `blob:` URL
  *   connect-src blob:               the library's `init` fetches the sha256-checked WASM bytes
+ *
+ * `http://127.0.0.1:*` is the outer bound only: in the desktop shell, main cancels every plain-HTTP
+ * request that is not to a port the worker serves (`shells/pear-v3/src/main/loopback.ts`).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

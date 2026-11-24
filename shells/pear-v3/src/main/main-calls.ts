@@ -13,6 +13,10 @@
  *     starts seeding it, after a native confirmation of what the WORKER says it will sign: the
  *     file, the whole key, the title, the tags and the start of the description. "No" deletes the
  *     draft. The key the user approved goes back with the request, and any other is refused.
+ *   - `app.sandbox.forget`: only while this run is without Chromium's sandbox. After a native
+ *     confirmation, the stored "Run anyway" is deleted (`sandbox-gate.ts`), so the next start
+ *     without the sandbox warns again. It takes no argument, and it can do nothing else: no path,
+ *     no other file, nothing that turns a protection off.
  *
  * And one surface no window can call: `account`, from the native Account menu (`account-menu.ts`).
  * It opens main's own prompt window (`prompt-window.ts`), which takes the passphrase or bunker URI
@@ -284,8 +288,20 @@ export interface MainCallDeps {
   ): Promise<boolean>;
   /** Main's own request to the worker. */
   worker(method: string, args: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+  /** The stored sandbox choice. Absent: `app.sandbox.forget` is refused, as it is with the sandbox on. */
+  readonly sandboxChoice?: SandboxChoice;
   /** Default: the clock. */
   now?(): number;
+}
+
+/** What `app.sandbox.forget` reaches (`main.ts` passes the real ones). */
+export interface SandboxChoice {
+  /** This run is without Chromium's sandbox. */
+  off(): boolean;
+  /** The native confirmation (`FORGET_DIALOG`): `true` only if the user chose to forget. */
+  confirmForget(windowId: number): Promise<boolean>;
+  /** Deletes the stored choice (none counts as forgotten). Rejects if it could not. */
+  forget(): Promise<void>;
 }
 
 const onlyKeys = (a: Record<string, unknown>, keys: readonly string[]): boolean =>
@@ -322,9 +338,15 @@ export class MainCalls {
   #dialogOpen = false;
   /** Until when (ms) each question stays unasked after a "no". */
   readonly #declined = new Map<string, number>();
+  #sandboxForgotten = false;
 
   constructor(d: MainCallDeps) {
     this.#d = d;
+  }
+
+  /** The stored sandbox choice was forgotten in this run (`app.sandbox.forget`). */
+  get sandboxChoiceForgotten(): boolean {
+    return this.#sandboxForgotten;
   }
 
   async answer(windowId: number, method: string, args: Record<string, unknown>): Promise<unknown> {
@@ -463,6 +485,32 @@ export class MainCalls {
           { event: shown.event, signer: shown.signer },
           SIGN_TIMEOUT_MS,
         );
+      }
+      case 'app.sandbox.forget': {
+        this.#noArgs(args);
+        const s = d.sandboxChoice;
+        if (s?.off() !== true)
+          throw new WorkerError(
+            'invalid-argument',
+            'the sandbox is on: there is no choice to forget',
+          );
+        // Forgotten once is forgotten for this run: nothing is asked again.
+        if (this.#sandboxForgotten) return { forgotten: true };
+        this.#notJustDeclined('sandbox');
+        if (!(await s.confirmForget(windowId))) {
+          this.#decline('sandbox');
+          return { forgotten: false };
+        }
+        try {
+          await s.forget();
+        } catch {
+          throw new WorkerError(
+            'io',
+            'the choice could not be deleted: quit, then start Nutflix with --forget-sandbox-choice',
+          );
+        }
+        this.#sandboxForgotten = true;
+        return { forgotten: true };
       }
       default:
         throw new WorkerError('invalid-argument', 'method not allowed');

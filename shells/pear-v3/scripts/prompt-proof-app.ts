@@ -21,7 +21,12 @@
  *   - the real window keeps the real Account menu on screen, its item opens the prompt, a real key
  *     event reaches main's shortcut before the page, and a page's synthetic one does not;
  *   - a real click can take the page to fullscreen, a real Esc leaves it and the menu bar is back.
- *     What the menu bar does during fullscreen is recorded in the log, not asserted.
+ *     What the menu bar does during fullscreen is recorded in the log, not asserted;
+ *   - the app's guard on plain HTTP (`loopback.ts`), in the app's session: a page's `fetch` and
+ *     `<video>` reach a port the worker serves, never another loopback port (that server sees no
+ *     request at all), and once the worker is gone and another took a new port, only the new port
+ *     passes. The page for this is served from loopback; what an `app://nutflix` page gets from a
+ *     worker port is recorded in the log, not asserted.
  *
  * The verdict is `prompt-proof-verdict.ts`: a failure is final, and the success line is printed only
  * when every check above ran and held. The menu item is clicked and the keys are sent by this
@@ -30,6 +35,8 @@
  */
 import { mkdtempSync, readFileSync, writeSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,6 +61,7 @@ import {
   wireAccountMenu,
   type AccountAction,
 } from '../src/main/account-menu.ts';
+import { WorkerPorts, installLoopbackGuard } from '../src/main/loopback.ts';
 import { MainCalls, PROMPT_DECLINED_WAIT_MS } from '../src/main/main-calls.ts';
 import {
   PROMPT_PARTITION,
@@ -282,6 +290,78 @@ async function observeFullscreen(win: BrowserWindow): Promise<{
   };
 }
 
+/** A loopback HTTP server that records the path of every request it gets. */
+async function countingServer(
+  body: string,
+  type: string,
+): Promise<{
+  readonly port: number;
+  readonly paths: string[];
+  close(): void;
+}> {
+  const paths: string[] = [];
+  const server = createServer((req, res) => {
+    paths.push(req.url ?? '');
+    res.writeHead(200, {
+      'content-type': type,
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return {
+    port: (server.address() as AddressInfo).port,
+    paths,
+    close: () => {
+      server.close();
+    },
+  };
+}
+
+const LOOP_TOKEN = 'a'.repeat(32);
+const LOOP_SID = 'b'.repeat(32);
+const fetchPath = `/${LOOP_TOKEN}`;
+const mediaPath = `/${LOOP_TOKEN}/${LOOP_SID}`;
+
+/**
+ * From the page: one `fetch` and one `<video>` load of `port`, as the app's page makes them. Each
+ * gives up after a few seconds, so that a request nothing answers cannot hold the proof.
+ */
+const httpProbe = (port: number): string => `(async () => {
+  const origin = 'http://127.0.0.1:${String(port)}';
+  const fetched = await fetch(origin + '${fetchPath}', {
+    mode: 'no-cors',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(5000),
+  }).then(
+    () => 'reached',
+    (e) => (e && e.name === 'TimeoutError' ? 'timeout' : 'refused'),
+  );
+  const media = await new Promise((r) => {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.preload = 'auto';
+    let over = false;
+    const done = (x) => {
+      if (over) return;
+      over = true;
+      v.removeAttribute('src');
+      v.load();
+      v.remove();
+      r(x);
+    };
+    v.addEventListener('loadedmetadata', () => done('loaded'));
+    v.addEventListener('error', () => done('error'));
+    setTimeout(() => done('timeout'), 3000);
+    v.src = origin + '${mediaPath}';
+    document.body.append(v);
+  });
+  return JSON.stringify({ fetched, media });
+})()`;
+
 async function run(v: ProofVerdict): Promise<void> {
   const ses = session.fromPartition(PROMPT_PARTITION, { cache: false });
   installPromptSession(ses, () => readFile(join(__dirname, 'prompt.html')));
@@ -290,6 +370,12 @@ async function run(v: ProofVerdict): Promise<void> {
   // The app's real window options, origin and permission policy, so that what hides or shows its
   // menu bar, and what lets a page go fullscreen, is what ships.
   installSessionPolicy(session.defaultSession);
+  // And its guard on plain HTTP, as `main.ts` installs it; checked at the end.
+  const ports = new WorkerPorts();
+  const refusedPorts: number[] = [];
+  installLoopbackGuard(session.defaultSession, ports, (_name, fields) => {
+    refusedPorts.push(Number(fields?.['port']));
+  });
   protocol.handle(
     APP_SCHEME,
     () =>
@@ -791,6 +877,85 @@ async function run(v: ProofVerdict): Promise<void> {
   );
   v.check('escLeavesFullscreen', fullscreen.leftByEsc);
   v.check('menuBarBackAfterEsc', fullscreen.menuBarBack, JSON.stringify(fullscreen.after));
+
+  // ---- the page's plain HTTP: the worker's ports, and nothing else (`loopback.ts`) -------------
+  const pageServer = await countingServer(
+    '<!doctype html><title>loopback</title><p>a page served from loopback</p>',
+    'text/html; charset=utf-8',
+  );
+  const workerServer = await countingServer('not a video', 'video/mp4');
+  const otherServer = await countingServer('a service the page must not reach', 'text/plain');
+  const nextServer = await countingServer('not a video', 'video/mp4');
+  try {
+    // What the gate learns from a worker's `nfx.play.open` answer. The proof's own page is served
+    // from loopback (so that no other rule of Chromium's can stand in for the guard), and its port
+    // is learned the same way.
+    ports.served(`http://127.0.0.1:${String(pageServer.port)}${fetchPath}`);
+    ports.served(`http://127.0.0.1:${String(workerServer.port)}${mediaPath}`);
+    ports.served(`http://127.0.0.1:${String(workerServer.port)}${fetchPath}`);
+
+    // What a page at the app's own origin gets from a worker port: evidence, not a check.
+    const fromApp = JSON.parse(
+      await inPage<string>(parent.webContents, httpProbe(workerServer.port)),
+    ) as Record<string, string>;
+    v.note('http-from-app-origin', { ...fromApp, serverSaw: [...workerServer.paths] });
+    workerServer.paths.length = 0;
+
+    const page = createMainWindow(BrowserWindow, join(__dirname, 'proof-preload.cjs'));
+    page.show();
+    await page.loadURL(`http://127.0.0.1:${String(pageServer.port)}/`);
+    const probe = async (port: number): Promise<Record<string, string>> =>
+      JSON.parse(await inPage<string>(page.webContents, httpProbe(port))) as Record<string, string>;
+
+    const toWorker = await probe(workerServer.port);
+    const toOther = await probe(otherServer.port);
+    v.note('http-guard', {
+      toWorker,
+      workerSaw: [...workerServer.paths],
+      toOther,
+      otherSaw: [...otherServer.paths],
+      refusedPorts: [...refusedPorts],
+    });
+    v.check(
+      'httpWorkerPortReached',
+      toWorker['fetched'] === 'reached' &&
+        workerServer.paths.includes(fetchPath) &&
+        workerServer.paths.includes(mediaPath),
+      `fetch ${String(toWorker['fetched'])}, the server saw ${workerServer.paths.join(' ')}`,
+    );
+    v.check(
+      'httpOtherPortRefused',
+      toOther['fetched'] === 'refused' &&
+        otherServer.paths.length === 0 &&
+        refusedPorts.filter((p) => p === otherServer.port).length >= 2,
+      `fetch ${String(toOther['fetched'])}, the server saw ${String(otherServer.paths.length)}`,
+    );
+
+    // The worker is gone, and the next one's server took a new port.
+    ports.reset();
+    ports.served(`http://127.0.0.1:${String(nextServer.port)}${mediaPath}`);
+    const workerBefore = workerServer.paths.length;
+    const toGone = await probe(workerServer.port);
+    const toNext = await probe(nextServer.port);
+    v.note('http-guard-after-restart', {
+      toGone,
+      goneSaw: workerServer.paths.length - workerBefore,
+      toNext,
+      nextSaw: [...nextServer.paths],
+    });
+    v.check(
+      'httpFollowsWorker',
+      toGone['fetched'] === 'refused' &&
+        workerServer.paths.length === workerBefore &&
+        toNext['fetched'] === 'reached' &&
+        nextServer.paths.includes(fetchPath) &&
+        nextServer.paths.includes(mediaPath),
+      `old ${String(toGone['fetched'])}, new ${String(toNext['fetched'])}`,
+    );
+    page.destroy();
+  } finally {
+    for (const s of [pageServer, workerServer, otherServer, nextServer]) s.close();
+  }
 }
 
 protocol.registerSchemesAsPrivileged(privilegedSchemes());
