@@ -8,7 +8,8 @@
  * maintainer's step, once the production `pear multisig` link exists.
  *
  * The TEST path (`package.ts test-build`) takes a root from a file, for CI's update proof. It is
- * refused unless the key is NOT the production key and every address is on loopback. A `launch`
+ * refused unless the key is NOT the production key and every address is on loopback (its DHT may
+ * instead be `null`, the public one, for the real-host proof, which CI never runs). A `launch`
  * root is the same with no link at all: what CI launches once the release build carries a real
  * link, because a build with a link never runs on a runner (`assertNoUpgradeLink`).
  *

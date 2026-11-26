@@ -206,6 +206,22 @@ describe('the trust root', () => {
     expect(() => parseTrustRoot(x)).toThrow(TrustRootError);
   });
 
+  it('takes a test root on the public DHT, its relays and playback proof still on loopback', () => {
+    const r = parseTrustRoot(testRoot({ dht: null, play: PLAY }));
+    expect(r.channel).toBe('test');
+    expect(r.dht).toBeNull();
+    expect(r.play).toEqual(PLAY);
+    expect(decodeBakedRoot(encodeBakedRoot(r))).toEqual(r);
+    // Only `null` means the public network: a public node, or no node at all, is still refused.
+    expect(() => parseTrustRoot(testRoot({ dht: null, relays: ['wss://relay.example.org'] }))).toThrow(
+      /a test relay must be ws:\/\/127\.0\.0\.1/,
+    );
+    expect(() =>
+      parseTrustRoot(testRoot({ dht: null, play: { ...PLAY, relays: ['wss://relay.example.org'] } })),
+    ).toThrow(/a play relay must be ws:\/\/127\.0\.0\.1/);
+    expect(() => parseTrustRoot(testRoot({ dht: [] }))).toThrow(TrustRootError);
+  });
+
   it('takes a playback proof in a test root only, and keeps it through the baked constant', () => {
     const r = parseTrustRoot(testRoot({ play: PLAY }));
     expect(r.play).toEqual(PLAY);

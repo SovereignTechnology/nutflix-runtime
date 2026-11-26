@@ -9,7 +9,10 @@
  *   - `release`: `wss://` relays, the public DHT (no bootstrap field). `upgrade` stays `null`, and
  *     the app starts no updater at all, until a real upgrade link exists.
  *   - `test`: a throwaway key, relays and DHT on 127.0.0.1 only. Only the package step's
- *     `test-build` command can make one, and it refuses the production key.
+ *     `test-build` command can make one, and it refuses the production key. Its `dht` may also be
+ *     `null`, HyperDHT's public bootstrap, as a release root's is: the real-host proof
+ *     (`scripts/realhost/`), whose installed app must reach a seeder on another network. Its relays
+ *     stay on 127.0.0.1 either way; the proof carries them to that network itself.
  *   - `launch`: a throwaway key and a relay on 127.0.0.1, and NO link, so no updater runs. It is
  *     what CI launches once the release build carries a real link (a build with a link is never
  *     launched on a runner). `test-build` makes it too.
@@ -34,7 +37,10 @@ export interface TrustRoot {
   readonly relays: readonly string[];
   /** The `pear://<key>` link the app follows; `null` means no updater runs. */
   readonly upgrade: string | null;
-  /** `test` only: the private DHT's `127.0.0.1:<port>` nodes. */
+  /**
+   * `test` only: the private DHT's `127.0.0.1:<port>` nodes, or `null` for the public one (as on
+   * every other channel). No other node is ever named.
+   */
   readonly dht: readonly string[] | null;
   /** `test` only: the updater's delay for an append after the boot window, ms. */
   readonly delayMs: number | null;
@@ -127,9 +133,12 @@ export function parseTrustRoot(x: unknown): TrustRoot {
     if (r['delayMs'] !== null) return refuse('a launch build has no updater delay');
     if (hasPlay) return refuse('a launch build opens no video by itself');
   } else {
-    dht = stringList(r['dht'], 'dht', 16);
-    if (dht.some((n) => !LOOPBACK_NODE.test(n)))
-      return refuse('a test DHT node must be 127.0.0.1:<port>');
+    // `null`: HyperDHT's public bootstrap (the real-host proof). Any node it names is on loopback.
+    if (r['dht'] !== null) {
+      dht = stringList(r['dht'], 'dht', 16);
+      if (dht.some((n) => !LOOPBACK_NODE.test(n)))
+        return refuse('a test DHT node must be 127.0.0.1:<port>');
+    }
     const d = r['delayMs'];
     if (typeof d !== 'number' || !Number.isInteger(d) || d < 0 || d > 60_000)
       return refuse('a test delay must be 0 to 60000 ms');
