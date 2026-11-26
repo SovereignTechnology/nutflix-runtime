@@ -177,10 +177,12 @@ export function announceLoop(node: DHT, topic: Buffer, keyPair: KeyPair): () => 
       say(`announce: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+  // Read through a call: the flag changes from outside this loop, between its awaits.
+  const stopped = (): boolean => state.stopped;
   void (async () => {
-    while (!state.stopped) {
+    while (!stopped()) {
       await once();
-      for (let i = 0; i < 60 && !state.stopped; i++) await sleep(5000);
+      for (let i = 0; i < 60 && !stopped(); i++) await sleep(5000);
     }
   })();
   return () => {
@@ -480,10 +482,12 @@ export class PublicPear {
       read: () => readFileSync(logFile, 'utf8'),
       exited: () => st.done,
       stop: async () => {
-        if (st.done) return;
+        // Read through a call: `exit` sets it while this waits.
+        const done = (): boolean => st.done;
+        if (done()) return;
         killTreeOf(child.pid);
         await Promise.race([exited, sleep(10_000)]);
-        if (!st.done) {
+        if (!done()) {
           killTreeOf(child.pid, true);
           await Promise.race([exited, sleep(5_000)]);
         }
