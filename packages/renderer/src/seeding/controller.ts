@@ -87,6 +87,11 @@ export class SeedPublish {
   #timer: unknown = null;
   #round: Promise<number> | null = null;
   #seeding: SeedingStatusWire = { watched: false, videos: [], listening: [] };
+  /**
+   * Whether `#seeding` came from the worker. Until it has, `watched: false` above is only a
+   * placeholder, never the user's switch: the switch lives in the worker and outlives this page.
+   */
+  #read = false;
   #stopped = false;
   /**
    * Packaged, and not signed yet (a locked key, a bunker nobody answered): publishing the same
@@ -172,26 +177,32 @@ export class SeedPublish {
     return s;
   }
 
-  /** A play started. With the switch on, the worker stores and seeds the video. */
+  /**
+   * A play started. With the switch on, the worker stores and seeds the video. The first play
+   * after a launch or a reload asks the worker for the switch first: nothing may have read it yet.
+   */
   onPlay(play: {
     readonly sid: string;
     readonly video: NfxVideo;
     readonly peers: readonly NfxHyperdhtEndpointWire[];
   }): void {
-    if (!this.#seeding.watched) return;
-    const manifest = toWire(play.video.event) as unknown as SignedEventWire;
-    void this.#o.worker
-      .call(
-        'seeding.watch',
-        { sid: play.sid, manifest, peers: [...play.peers] },
-        { timeoutMs: WATCH_TIMEOUT_MS },
-      )
-      .then(() => this.refreshSeeding())
+    void (this.#read ? Promise.resolve(this.#seeding) : this.refreshSeeding())
+      .then(async (s) => {
+        if (!s.watched) return;
+        const manifest = toWire(play.video.event) as unknown as SignedEventWire;
+        await this.#o.worker.call(
+          'seeding.watch',
+          { sid: play.sid, manifest, peers: [...play.peers] },
+          { timeoutMs: WATCH_TIMEOUT_MS },
+        );
+        await this.refreshSeeding();
+      })
       .catch(() => undefined);
   }
 
   #adopt(s: SeedingStatusWire): void {
     this.#seeding = s;
+    this.#read = true;
     if (this.#stopped) return;
     if (s.videos.some((v) => v.served)) {
       if (this.#timer === null) {
