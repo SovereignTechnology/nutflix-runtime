@@ -517,7 +517,8 @@ is imported from there unchanged. The MSIX settings and the Windows SDK lookup a
 
 - **No asar** (above). Keeping main and the renderer in an archive with the integrity fuses means
   patching where `bare-sidecar` finds `bare`, or loading `pear-runtime` from outside the archive.
-- **Bundle id** `xyz.sovit.nutflix.runtime`, **MSIX identity** `SovereignTechnology.Nutflix` and
+- **App id** `pro.sovtech.NutflixRuntime` (bundle id; AppStream and Flatpak id), **MSIX identity**
+  `SovereignTechnology.NutflixRuntime` and
   **publisher** `CN=Sovereign Technology (TEST)`: the publisher must equal the signing certificate's
   subject and then never change.
 - **Turning updates on** takes: a `pear multisig` production link, set as `RELEASE_UPGRADE_LINK`; each

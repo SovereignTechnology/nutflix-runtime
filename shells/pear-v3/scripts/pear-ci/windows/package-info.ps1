@@ -1,6 +1,6 @@
 # What Windows says about an installed package, and whether a running process belongs to it.
 #
-#   package-info.ps1 -Name SovereignTechnology.Nutflix                 prints PACKAGE=<json> or PACKAGE=NONE
+#   package-info.ps1 -Name SovereignTechnology.NutflixRuntime          prints PACKAGE=<json> or PACKAGE=NONE
 #   package-info.ps1 -Name ... -ProcessId n                            also PROCESS_PACKAGE=<full name> | NONE
 #   package-info.ps1 -Name ... -Remove                                 removes the package
 param(
