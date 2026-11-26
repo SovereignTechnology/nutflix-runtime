@@ -48,7 +48,13 @@ set +e
 npx --no-install tsc -b --verbose 2>&1 | tee /tmp/realhost-build.log | grep --line-buffered -E "Building project|error TS"
 rc=${PIPESTATUS[0]}
 set -e
-[ "$rc" = 0 ] || { echo "[guest] tsc -b: exit $rc"; grep -A3 "error TS" /tmp/realhost-build.log | head -80; exit 1; }
+if [ "$rc" != 0 ]; then
+  echo "[guest] tsc -b: exit $rc"
+  grep -A3 "error TS" /tmp/realhost-build.log | head -80
+  # The harness runs on Node's type stripping: its own type errors are reported, not fatal, outside
+  # `check`. Any other error is.
+  if [ "$side" = check ] || grep "error TS" /tmp/realhost-build.log | grep -qv "scripts/realhost/"; then exit 1; fi
+fi
 echo "[guest] built; memory available $(free -m | awk '/^Mem:/ {print $7}') MiB"
 
 case "$side" in
