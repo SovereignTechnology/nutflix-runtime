@@ -36,7 +36,7 @@ esac
 docker build -q -t "$image" - <<EOF
 FROM $base
 RUN apt-get update -qq \\
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb xauth \\
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb \\
     libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libxtst6 libnotify4 \\
   && rm -rf /var/lib/apt/lists/*
 EOF
@@ -47,17 +47,36 @@ trap 'rm -rf -- "$work"' EXIT
 printf '%s\n' '{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["kexec_load"],"action":"SCMP_ACT_ERRNO"}]}' \
   >"$work/allow-userns.json"
 
-# smoke.ts <mode> in a fresh container. Any options before the mode go to `docker run`.
+# Inside: an Xvfb of the container's own, then the smoke. Not `xvfb-run`: it waits for Xvfb's
+# "ready" signal, and Xvfb sends none to a parent that is process 1, as a container's first
+# process is, so it waited for good.
+# shellcheck disable=SC2016 # expanded by the container's shell
+inner='Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp -ac >/tmp/xvfb.log 2>&1 &
+x=$!
+for _ in $(seq 1 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+[ -S /tmp/.X11-unix/X99 ] || { echo "Xvfb did not start:"; cat /tmp/xvfb.log; exit 1; }
+DISPLAY=:99 node shells/pear-v3/scripts/smoke.ts "$0" --file /nutflix/Nutflix.AppImage --timeout 180
+rc=$?
+kill "$x" 2>/dev/null
+exit "$rc"'
+
+# smoke.ts <mode> in a fresh container, stopped after 7 minutes whatever it is doing. Any options
+# before the mode go to `docker run`.
 in_container() {
   local mode=${*: -1}
   local opts=("${@:1:$#-1}")
+  local name="nutflix-$mode-$$"
+  local rc=0
   echo "== $mode${opts[*]:+ (${opts[*]})}"
-  docker run --rm --network none --user "$(id -u):$(id -g)" --shm-size 1g \
-    -v "$repo:$repo:ro" -v "$node_dir:$node_dir:ro" -v "$file:/nutflix/Nutflix.AppImage:ro" \
-    -e HOME=/tmp -e PATH="$node_dir/bin:/usr/bin:/bin" -w "$repo" \
-    "${opts[@]}" "$image" \
-    xvfb-run -a node shells/pear-v3/scripts/smoke.ts "$mode" \
-    --file /nutflix/Nutflix.AppImage --timeout 180
+  timeout 420 docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
+    --shm-size 1g -v "$repo:$repo:ro" -v "$node_dir:$node_dir:ro" \
+    -v "$file:/nutflix/Nutflix.AppImage:ro" -e HOME=/tmp -e PATH="$node_dir/bin:/usr/bin:/bin" \
+    -w "$repo" "${opts[@]}" "$image" sh -c "$inner" "$mode" || rc=$?
+  if [ "$rc" = 124 ]; then
+    echo "$mode: no verdict in 420 s" >&2
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  fi
+  return "$rc"
 }
 
 failed=0

@@ -34,7 +34,8 @@ export function fromProcStatus(renderer: string, browser: string): RendererSandb
   if (r.mode !== '2') return 'absent';
   const b = seccomp(browser);
   if (b === null) return 'unknown';
-  if (r.filters !== null && b.filters !== null) return r.filters > b.filters ? 'enforced' : 'absent';
+  if (r.filters !== null && b.filters !== null)
+    return r.filters > b.filters ? 'enforced' : 'absent';
   return b.mode === '0' ? 'enforced' : 'unknown';
 }
 
