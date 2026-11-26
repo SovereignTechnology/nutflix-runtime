@@ -50,7 +50,7 @@ running keeps serving whatever CLI talks to it, so stop any other one first: `pe
 | 2   | owner       | Write `pear.json` with the public keys, a quorum and a namespace (below). The link is derived from all three: changing any of them is a different link. Give every signer the same file.                                                                                                                                              |
 | 3   | owner       | `pear multisig link --config pear.json` prints the **production link**.                                                                                                                                                                                                                                                               |
 | 4   | owner       | Set `RELEASE_UPGRADE_LINK` to it, in a reviewed commit ([The day the link is set](#the-day-the-link-is-set)).                                                                                                                                                                                                                         |
-| 5   | owner       | In nutflix-pear, set `RUNTIME_PRODUCTION_LINK` to the same link, in a reviewed commit, and move this repository's `vendor/nutflix-pear` submodule to a commit that has it. Until then its publish script refuses this app's notices.                                                                                                  |
+| 5   | owner       | In nutflix-pear, set `RUNTIME_PRODUCTION_LINK` to the same link, in a reviewed commit, and move this repository's `vendor/nutflix-pear` submodule to a commit that has it. Until then its publish script refuses this app's notices. This needs `vendor/nutflix-pear` at or after `8a22082`, which has the `nutflix-runtime` notices and that constant. The commit this tree pins, `edd769c`, is older: its `release-publish.mjs` and `release-verify.mjs` take no `--d nutflix-runtime`, so steps 20 and 21 are refused until the submodule moves. |
 | 6   | owner       | Once there is an Apple Developer account and a Windows code-signing certificate: pin them in `scripts/release/signing-policy.ts` (`APPLE_TEAM_ID`, `WINDOWS_SIGNER`), in a reviewed commit. **Until `APPLE_TEAM_ID` is pinned, `multisig commit` and `notice-draft` refuse every release** ([Releasing macOS ad hoc](#releasing-macos-ad-hoc)), **and until `WINDOWS_SIGNER` is pinned, they refuse every release too**, with no way out ([Windows is never released unsigned](#windows-is-never-released-unsigned)). Until then a signer accepts only an ad-hoc macOS signature and no signed `.msix` ([What a signature may say](#what-a-signature-may-say)), and `verify-request` refuses every request. |
 
 ```json
@@ -82,7 +82,10 @@ from that source starts no updater, so nothing released from it could ever be up
 | 4   | tool  | `release assemble --run <run id> --commit <sha> --artifacts artifacts --out rel`                                         |
 
 `release-<target>` artifacts exist only for a push to `main` of a source with a production link. A
-pull request's build never produces one, and `check` refuses any other run.
+pull request's build never produces one, and `check` refuses any other run. GitHub keeps them for 3
+days (`retention-days: 3` in `ci.yml`). `download`, `check`, `assemble` and each signer's
+`verify-request` (step 14) refuse an expired artifact, so every signer's check has to run within 3
+days of the CI run.
 
 `check` refuses unless all five packages are there, are the artifacts GitHub holds for that run, are
 one version, carry the commit you named, hold exactly the production root, and are built for their
@@ -358,8 +361,11 @@ report). It does not exercise a core that grows or forks during a check.
 ### The notice
 
 Installed apps hold the new build until a notice names it, so do this right after the commit. Run
-these from the root of this repository, with the submodule at a commit that has nutflix-pear's
-`nutflix-runtime` support and `RUNTIME_PRODUCTION_LINK` set (step 5 of "Once"), after `npm run build`.
+these from the root of this repository, after `npm run build`. Steps 20 and 21 need
+`vendor/nutflix-pear` at or after `8a22082`, which has nutflix-pear's `nutflix-runtime` notices
+(`--d nutflix-runtime`, the relay list and the rule below), with `RUNTIME_PRODUCTION_LINK` set
+(step 5 of "Once"). The commit this tree pins, `edd769c`, is older and refuses both steps: "--d
+takes one of nutflix-desktop, nfx".
 
 | #   | Who   | Command                                                                                                                                           |
 | --- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -379,13 +385,17 @@ signer to sign it, shows you what it is about to publish, and sends it only afte
 wss://relay.nutflix.xyz   wss://relay.primal.net   wss://relay.ditto.pub
 ```
 
+That list is `RUNTIME_RELEASE_RELAYS` in `release-publish.mjs`, the relays the app reads
+(`RELEASE_NOTICE_RELAYS`). The pinned `edd769c` has neither it nor the rule below.
+
 **Expect `relay.nutflix.xyz` to refuse it.** Its public NIP-11 document lists kinds
 38504, 20464, 5 and 25050, with `restricted_writes`, and the relay software answers any other kind
 `blocked: out of scope`. Nothing has been published to test this. One relay is enough for an app to
 apply an update, so the notice still works through the other two, but it then rests on those two.
 Until that relay carries kind 30071, or is taken out of `RELEASE_NOTICE_RELAYS`, a `FAILED` line for
 it is expected. **Step 20 exits with an error unless both `relay.primal.net` and `relay.ditto.pub`
-accepted the notice.** Run it again with `rel/release-event.json` to retry.
+accepted the notice** (`RUNTIME_REQUIRED_RELAYS`). Run it again with `rel/release-event.json` to
+retry.
 
 ## The day the link is set
 

@@ -267,8 +267,11 @@ Forge, flips the fuses, and checks the result (`packaging/layout.ts`). Everythin
 `shells/pear-v3/out/` and the run prints `ARTIFACT <kind> <path>` lines.
 
 - **Linux:** the in-repo maker (`packaging/maker-appimage.ts`, after nutflix-pear's): `mksquashfs`
-  plus the type-2 runtime of AppImage/type2-runtime `20251108`, which CI downloads and the maker
-  refuses unless it equals its sha256 pin (the same two pins as nutflix-pear's).
+  plus this repository's patched build of the AppImage/type2-runtime `20251108` type-2 runtime (the
+  prerelease `appimage-runtime-20251108-nutflix.1`, see
+  [`packaging/appimage-runtime/`](packaging/appimage-runtime/README.md)), which CI downloads from
+  this repository's releases and the maker refuses unless it equals its sha256 pin. The two pins are
+  this repository's own: nutflix-pear pins the upstream runtime.
 - **macOS:** Forge's package step; the `.app` gets an ad-hoc signature (`codesign -s -`: no
   certificate) because an Apple-silicon Mac refuses a bundle that does not match its signature.
 - **Windows:** `@electron-forge/maker-msix`, `sign: false`. The manifest is the maker's own template
@@ -303,8 +306,8 @@ than 1.29.4 (`smoke.ts bare`).
    on macOS and Windows). Every build prints this line; no switch makes it
    print. The line must also show the WebRTC IP policy as Chromium reports it for this window
    (`default_public_interface_only`) and that the renderer's whole WebRTC player probe passed: the
-   pinned nfx library loaded through `app:` under the real policy, and its WASM verifier started.
-   It says too whether `MediaSource` takes VP9 or H.264 in MP4;
+   pinned nutflix (formerly nfx) library loaded through `app:` under the real policy, and its WASM
+   verifier started. It says too whether `MediaSource` takes VP9 or H.264 in MP4;
 4. with `--no-sandbox`, the warning comes first and no window opens;
 5. every launch says `updates: off`: a package made for release starts no updater.
 
@@ -437,7 +440,7 @@ playlists as they are and every init and segment with each byte flipped.
 | Must be true | Measured how |
 | --- | --- |
 | the progressive stream plays | the `<video>`'s source is the worker's `http://127.0.0.1` stream; media time advances at least 4 s while watched for 6 s; Chromium counts at least 75 frames meanwhile (`getVideoPlaybackQuality`) and 100 decoded in all; 320x240; no media error |
-| nfx's web player plays | the same, with the source a MediaSource (`blob:`) that the player fills from the worker's origin |
+| nutflix's web player plays | the same, with the source a MediaSource (`blob:`) that the player fills from the worker's origin |
 | the bytes were sha256-checked | the liar sent at least one file wrong and whole (so the app had all of it to check), and every file it sent wrong was sent again, later and whole, by the honest seeder; and the video still played |
 | the seeder saw the app | the honest seeder was dialed (its firewall records each watcher key; nothing else on the private DHT dials it) and sent the init and segments whole |
 | nothing left loopback | main counts every request of the window's session from the moment the proof's settings are stored to the end of the run (the loopback guard's observer, which decides nothing): zero to anything but `127.0.0.1`, the app's files and `blob:`. The first page load, with the renderer's defaults, does ask for the default relays: the sinkhole sends those names to loopback and the tripwire counts zero packets to their real addresses. The observer does not see the worker's own traffic or WebRTC's ICE; the tripwire does, for the public addresses it watches |
@@ -491,7 +494,9 @@ The AppImage carries this repository's patched type-2 runtime
 - With FUSE usable, it mounts as usual. It is static, so it needs a `fusermount` helper (the `fuse3`
   package gives one) and not `libfuse.so.2`.
 - With no usable FUSE, it extracts to a private per-user cache and runs from there. The first start
-  is slower; the app then shows a notice, once per version, to install `fuse3`.
+  is slower; the app then shows a notice, once per version, to install `fuse3`. The build pinned
+  today, `nutflix.1`, can fail to start on this path with some argument counts. `nutflix.2` fixes
+  that and is not pinned yet (see the runtime's README).
 - The sandbox needs unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not
   setuid. CI runs the AppImage twice with Ubuntu 24.04's restriction still on (it must reach the
   warning, and after "Run anyway" it must run with the sandbox off), then lifts the restriction on
@@ -501,11 +506,15 @@ The AppImage carries this repository's patched type-2 runtime
 
 | Path | What it is |
 | --- | --- |
-| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `csp.ts`, `loopback.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `worker-proc.ts`, `sandbox-gate.ts`, `consent-file.ts`, `external-links.ts`, `page-probe.ts`, `log.ts`, and `play-proof.ts` (test builds only) |
+| `src/main/` | main: `main.ts`, `window.ts`, `security.ts`, `schemes.ts`, `csp.ts`, `loopback.ts`, `app-protocol.ts`, `rpc-gate.ts`, `main-calls.ts`, `account-menu.ts`, `prompt-window.ts`, `worker-proc.ts`, `update-proc.ts`, `sandbox-gate.ts`, `sandbox-proof.ts`, `consent-file.ts`, `fuse-notice.ts`, `external-links.ts`, `page-probe.ts`, `log.ts`, and `play-proof.ts` (test builds only; every other build gets `play-proof-off.ts`) |
 | `src/preload/preload.ts` | the preload |
-| `src/update/` | the update gate: `gate.ts`, `notice.ts`, `root.ts`, `relays.ts`, `hash.ts`, and its Bare entry `update-worker.ts` |
-| `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check |
+| `src/prompt/`, `src/shared/ids.ts` | the prompt window's page and preload; the IPC channel names |
+| `src/update/` | the update gate: `gate.ts`, `notice.ts`, `root.ts`, `relays.ts`, `hash.ts`, `status.ts`, `swarm.ts`, and its Bare entry `update-worker.ts` (with `bare-text.ts`) |
+| `packaging/` | stage, Forge config, fuses, the AppImage maker, layout check, and the patched AppImage runtime ([`appimage-runtime/`](packaging/appimage-runtime/README.md)) |
 | `scripts/package.ts`, `scripts/smoke.ts`, `scripts/processes.ts` | the packaging driver; the launcher CI runs, and how it waits for every process the app started |
+| `scripts/release/` | the release tool and its CI proofs ([`docs/release.md`](../../docs/release.md)) |
+| `scripts/pear-install.ts`, `scripts/pear-ci/` | the install job |
+| `scripts/prompt-proof*.ts` | the Electron proof of the prompt window and the loopback guard |
 
 Adapted from nutflix-pear (the submodule's pinned commit): `window.ts`, `security.ts`, `csp.ts`,
 `app-protocol.ts`, `schemes.ts` from `app-desktop/src/main/`; `fuses.ts`, `maker-appimage.ts`,
@@ -521,8 +530,10 @@ is imported from there unchanged. The MSIX settings and the Windows SDK lookup a
   **publisher** `CN=Sovereign Technology (TEST)`: the publisher must equal the signing certificate's
   subject and then never change.
 - **Turning updates on** takes: a `pear multisig` production link, set as `RELEASE_UPGRADE_LINK`; each
-  release notice signed with the SovTech key; and `nutflix-runtime` added to `RELEASE_D_TAGS` in
-  nutflix-pear's release scripts, whose artifact-name rules must also learn this app's names.
+  release notice signed with the SovTech key; and the `vendor/nutflix-pear` submodule at or after
+  nutflix-pear `8a22082`, whose release scripts know `nutflix-runtime` and this app's artifact
+  names, with `RUNTIME_PRODUCTION_LINK` set there to the same link. The commit pinned today,
+  `edd769c`, is older and takes no `--d nutflix-runtime`.
   [`docs/release.md`](../../docs/release.md) is the runbook, step by step, and says which steps are
   the tool's (`scripts/release/`) and which are the owner's.
 - The MSIX manifest gets `packageManagement`, `unvirtualizedResources` and write virtualization off

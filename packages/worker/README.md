@@ -9,8 +9,8 @@ The Bare worker: nutflix-runtime's data plane ([ADR 0001](../../docs/decisions/0
 - It serves the renderer two loopback endpoints:
   - a **progressive range server**: one rendition as one fMP4, for a plain `<video>` (the
     fallback path);
-  - an **NFX origin**: NFX-05 §6 paths for nfx's web player (hls.js, p2p-media-loader and
-    `nfx_wasm`), given to it as `origins: [originUrl]`.
+  - an **NFX origin**: NFX-05 §6 paths for the nutflix (formerly nfx) web player (hls.js,
+    p2p-media-loader and `nfx_wasm`), given to it as `origins: [originUrl]`.
 
 The host, which is a Pear shell's main process, talks to it over one framed duplex: `Bare.IPC`,
 which both `pear-runtime`'s `run()` and `bare-sidecar` provide.
@@ -39,7 +39,7 @@ which both `pear-runtime`'s `run()` and `bare-sidecar` provide.
 | `src/net/dht-node.ts` | The one HyperDHT node | `worker/net/peer-node.ts` and the own-DHT part of `worker/nfx/watching.ts` |
 | `src/net/no-local-addresses.ts` | No local addresses to any peer, but on a node bound to 127.0.0.1; also exported as `./no-local-addresses` for shape (a)'s updater | new |
 | `src/keys.ts` | The Corestore-derived seeder key pairs `nfx:<ns>:seeder`, and the watcher's random key pairs, one per network and run, never stored | the seeder name of `worker/nfx/seeding.ts`; nutflix-pear derived the watcher pair too |
-| `src/adapters/bare.ts`, `src/runtime.ts` | bare-fs, bare-path and bare-http1, loaded lazily | `worker/adapters/bare.ts` and `worker/runtime.ts`, cut down |
+| `src/adapters/bare-data.ts`, `src/adapters/bare.ts`, `src/runtime.ts` | The data plane on bare-fs, bare-path and bare-http1 (the last loaded on first use), which shape (b) loads alone; `bare.ts` adds the `system`: ffmpeg through bare-subprocess with a minimal environment (bare-env), a 0600 file writer and a relay socket on bare-ws | `worker/adapters/bare.ts` and `worker/runtime.ts`, cut down |
 | `src/log.ts`, `src/crypto.ts`, `src/bare-globals.ts` | A redacting logger as events; libsodium sha256 and randomness; `TextEncoder` and `TextDecoder` for Bare | `worker/log.ts`, `worker/crypto.ts`, `worker/bare-globals.ts` |
 
 The package exports its host-side modules for the shells and the tests: `.` (the protocol, framing
@@ -48,7 +48,9 @@ Bare entry), and `./no-local-addresses` and `./rename-retry` (neither loads a mo
 updater uses both).
 
 Its tests (`src/__tests__/`) run under Node with injected dependencies: node:http, `nodeFs`,
-and a hyperdht testnet on loopback. They include the ported nutflix-pear tests:
+and a hyperdht testnet on loopback. One, `bare.integration.test.ts`, runs the built `dist/main.js`
+under the real Bare runtime (`bare-sidecar`'s `bare`), so `npm run build` comes first. They include
+the ported nutflix-pear tests:
 - `framing.test.ts` and `codec.test.ts`;
 - `watch.test.ts` (from `nfx-watch.test.ts`);
 - `fallback-fetcher.test.ts`;
@@ -113,7 +115,7 @@ Error codes:
 
 | Method | Arguments | Result |
 |---|---|---|
-| `init` | `{ v: 1, storage, bootstrap?, diskCapBytes?, logLevel? }` | `{ v: 1 }`, followed by a `ready` event |
+| `init` | `{ v: 1, storage, bootstrap?, diskCapBytes?, logLevel?, localKey?, watchOnly? }` | `{ v: 1 }`, followed by a `ready` event |
 | `status` | `{}` | `{ dht, playSessions, storedVideos, listening }` |
 | `nfx.play.open` | `{ sid, video, root, segs, peers, renditions?, held?, prefetchSeconds?, progressive?, origin? }` | `{ progressiveUrl, originUrl, rendition, renditions }` |
 | `nfx.play.close` | `{ sid }` | `null` (idempotent) |
@@ -159,6 +161,11 @@ Every other request fails `not-ready` until `init` has answered. A second `init`
   local address (`src/net/no-local-addresses.ts`).
 - **`diskCapBytes`** caps the store. Without it there is no cap.
 - **`logLevel`** is the least severe level sent as `log` events. The default is `info`.
+- **`localKey`** says whether this run may use a passphrase-sealed key. Only `true` allows it;
+  absent means no (see "The signer").
+- **`watchOnly`**, when `true`, is shape (b): nothing stored is served, no listener opens at `init`
+  or later, and `nfx.seed.start`, `seeding.watch`, `seeding.resume` and `seeding.set` with
+  `watched: true` fail `unsupported-input`.
 
 At start, the worker listens again for the videos it may serve (see "Seeding"). With none, it
 starts no DHT node.
@@ -302,7 +309,8 @@ Other outcomes:
 - If it is stored with another root, it fails `exists`. A start of the same video already
   running is joined.
 
-Every stored video is seeded. Each network (namespace) has its own listener:
+A stored video is seeded only while `seeding.json` says it may be served (see "Seeding"), and a
+watch-only worker serves none. Each network (namespace) with a video to serve has its own listener:
 - its key pair is Corestore's `nfx:<namespace>:seeder`;
 - it serves only that network's videos.
 
@@ -331,6 +339,7 @@ that is down. The host signs and publishes the beacon.
 | `ready` | `v` | after `init` answered |
 | `status` | `status` (as the `status` method) | whenever a field of it changed |
 | `nfx.seed` | `video`, `state` (`fetching`, `seeding`, `failed`, `stopped`), `done?`, `total?`, `error?` | progress of a seed |
+| `studio.progress` | `stage` (`probing`, `encoding`, `thumbnails`, `packaging`, `storing`), `rendition?`, `percent?` | progress of a `studio.publish` |
 | `log` | `level`, `msg` | one redacted log line, at most 2048 characters |
 
 ### Security notes
