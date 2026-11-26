@@ -60,8 +60,12 @@ echo "[guest] built; memory available $(free -m | awk '/^Mem:/ {print $7}') MiB"
 case "$side" in
   check)
     files="shells/pear-v3/scripts/realhost shells/pear-v3/src/update/root.ts shells/pear-v3/src/__tests__/update-gate.test.ts shells/pear-v3/packaging/update-root.ts"
+    # The formatter's changes, as a patch to apply where the branch is edited.
     # shellcheck disable=SC2086
-    npx --no-install prettier --check $files || true
+    npx --no-install prettier --write $files >/dev/null || true
+    echo "[guest] prettier patch begins"
+    git diff -- $files
+    echo "[guest] prettier patch ends"
     # shellcheck disable=SC2086
     npx --no-install eslint $files || true
     npx --no-install vitest run shells/pear-v3/src/__tests__/update-gate.test.ts 2>&1 | tail -25

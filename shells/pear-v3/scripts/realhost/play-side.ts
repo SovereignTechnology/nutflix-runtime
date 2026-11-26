@@ -20,8 +20,9 @@
  * It finds the seeding machine's tunnel on the `--nonce` topic (`topicOf`), then reads the link and
  * the staged build's sha256 from that relay's `INFO_PATH`, waiting up to `--wait-min` for both.
  */
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join, resolve } from 'node:path';
 
@@ -201,8 +202,29 @@ async function main(): Promise<number> {
 
     // ---- the installed app plays, then seeds ------------------------------------------------------------
     let heldMs = 0;
-    const r = await launch(dest, SANDBOX_OFF ? ['--no-sandbox'] : [], 'ready', 900, {
-      env: isolatedEnv(home),
+    // With no FUSE the AppImage's runtime extracts and runs it. Given ANY argument it then fails
+    // ("Failed to run (null): Bad address", exit 127): type2-runtime's `char* new_argv[argc]`
+    // has no room for the NULL after every argument it keeps (upstream runtime.c, the
+    // extract-and-run branch the nutflix fallback takes). So where `--no-sandbox` must be passed,
+    // one start with no argument extracts it, and the extraction's own AppRun is started with the
+    // environment the runtime gives it.
+    let exe = dest;
+    let env = isolatedEnv(home);
+    if (SANDBOX_OFF) {
+      const first = spawnSync(dest, [], { env, timeout: 120_000, encoding: 'utf8' });
+      const cache = join(home, '.cache', 'nutflix-runtime');
+      const dirs = existsSync(cache)
+        ? readdirSync(cache).filter((d) => /^appimage-[0-9a-f]{32}$/.test(d))
+        : [];
+      say(`first start with no argument: exit ${String(first.status)}; extractions ${JSON.stringify(dirs)}`);
+      if (dirs.length !== 1) throw new Error('no single extraction of the installed AppImage');
+      const appdir = join(cache, dirs[0] ?? '');
+      exe = join(appdir, 'AppRun');
+      env = { ...env, APPIMAGE: dest, APPDIR: appdir, ARGV0: dest, NUTFLIX_APPIMAGE_NO_FUSE: '1' };
+      summary['startedAs'] = "the installed AppImage's own extraction, AppRun --no-sandbox";
+    }
+    const r = await launch(exe, SANDBOX_OFF ? ['--no-sandbox'] : [], 'ready', 900, {
+      env,
       sandbox: SANDBOX_OFF ? 'off' : 'on',
       updates: 'on',
       waitFor: 'play-proof-done',
