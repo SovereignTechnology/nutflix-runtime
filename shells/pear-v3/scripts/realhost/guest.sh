@@ -42,8 +42,14 @@ fi
 echo "[guest] nutflix-pear at $pin ($(git -C vendor/nutflix-pear describe --tags 2>/dev/null || echo untagged))"
 
 npm ci --ignore-scripts --no-audit --no-fund --loglevel=error
-if ! npm run build >/tmp/realhost-build.log 2>&1; then tail -60 /tmp/realhost-build.log; exit 1; fi
-echo "[guest] built"
+echo "[guest] memory: $(free -m | awk '/^Mem:/ {print $2" MiB total, "$7" MiB available"}'); swap $(free -m | awk '/^Swap:/ {print $2}') MiB"
+# `npm run build` is `tsc -b`; --verbose names each project as it goes (the log keeps moving).
+set +e
+npx --no-install tsc -b --verbose 2>&1 | tee /tmp/realhost-build.log | grep --line-buffered -E "Building project|error TS"
+rc=${PIPESTATUS[0]}
+set -e
+[ "$rc" = 0 ] || { echo "[guest] tsc -b: exit $rc"; grep -A3 "error TS" /tmp/realhost-build.log | head -80; exit 1; }
+echo "[guest] built; memory available $(free -m | awk '/^Mem:/ {print $7}') MiB"
 
 case "$side" in
   check)
