@@ -60,6 +60,13 @@ const NONCE = arg('nonce');
 const WAIT_MS = Number(arg('wait-min', '30')) * 60_000;
 /** A dry run on ONE machine (`guest.sh both`): the relay is already on this loopback, no tunnel. */
 const LOCAL = argv.includes('--local');
+/**
+ * This machine lets no unprivileged process make a user namespace (`guest.sh` tried `unshare -U`):
+ * Chromium's sandbox cannot start here. The app then runs as a user who chose "Run anyway" does:
+ * its stored choice (`src/main/sandbox-gate.ts`, as `smoke.ts stock-consented` writes it) and
+ * `--no-sandbox`, sandbox off, with its banner.
+ */
+const SANDBOX_OFF = argv.includes('--sandbox-off');
 
 /** GET `path` on the seeding machine's relay, through the tunnel: its JSON, or null. */
 function getJson<T>(path: string): Promise<T | null> {
@@ -181,11 +188,22 @@ async function main(): Promise<number> {
     const worker = join(home, '.config', 'nutflix-runtime', 'worker');
     mkdirSync(worker, { recursive: true });
     writeFileSync(join(worker, 'seeding.json'), `${JSON.stringify({ v: 1, watched: true, videos: {} })}\n`);
+    if (SANDBOX_OFF) {
+      const choice = { v: 1, choice: 'run-anyway', at: new Date().toISOString() };
+      writeFileSync(
+        join(home, '.config', 'nutflix-runtime', 'sandbox-consent.json'),
+        `${JSON.stringify(choice)}\n`,
+        { mode: 0o600 },
+      );
+      say('no user namespaces here: the app runs with its stored "Run anyway" choice, sandbox off');
+    }
+    summary['sandbox'] = SANDBOX_OFF ? 'off (stored Run anyway; this machine has no user namespaces)' : 'on';
 
     // ---- the installed app plays, then seeds ------------------------------------------------------------
     let heldMs = 0;
-    const r = await launch(dest, [], 'ready', 900, {
+    const r = await launch(dest, SANDBOX_OFF ? ['--no-sandbox'] : [], 'ready', 900, {
       env: isolatedEnv(home),
+      sandbox: SANDBOX_OFF ? 'off' : 'on',
       updates: 'on',
       waitFor: 'play-proof-done',
       collect: ['play-proof', 'play-proof-done'],

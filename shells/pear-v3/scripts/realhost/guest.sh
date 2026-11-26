@@ -83,11 +83,13 @@ case "$side" in
     seedpid=$!
     sysctl -w kernel.unprivileged_userns_clone=1 >/dev/null 2>&1 || true
     id rh >/dev/null 2>&1 || useradd -m -s /bin/bash rh
+    sbx=
+    runuser -u rh -- unshare -U -n -p -f true 2>/dev/null || sbx=--sandbox-off
     chmod -R o+rX "$REPO" 2>/dev/null || true
     d=$REPO
     while [ "$d" != / ]; do chmod o+x "$d" 2>/dev/null || true; d=$(dirname "$d"); done
     runuser -u rh -- env HOME=/home/rh TMPDIR=/tmp PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
-      node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost --local "$@" || true
+      node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost --local $sbx "$@" || true
     wait "$seedpid" || true
     sed 's/^/[seed] /' /tmp/realhost-seed.log | grep -v 'waiting:' | tail -40
     ;;
@@ -97,11 +99,16 @@ case "$side" in
     sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || true
     echo "[guest] userns: max_user_namespaces=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo ?)"
     id rh >/dev/null 2>&1 || useradd -m -s /bin/bash rh
+    sbx=
+    if ! runuser -u rh -- unshare -U -n -p -f true 2>/dev/null; then
+      echo "[guest] an unprivileged user cannot make a user namespace here: Chromium's sandbox cannot start"
+      sbx=--sandbox-off
+    fi
     chmod -R o+rX "$REPO" 2>/dev/null || true
     d=$REPO
     while [ "$d" != / ]; do chmod o+x "$d" 2>/dev/null || true; d=$(dirname "$d"); done
     runuser -u rh -- env HOME=/home/rh TMPDIR=/tmp PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
-      node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost "$@"
+      node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost $sbx "$@"
     ;;
   *)
     echo "seed or play" >&2
