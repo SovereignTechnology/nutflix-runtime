@@ -62,10 +62,13 @@ case "$side" in
     files="shells/pear-v3/scripts/realhost shells/pear-v3/src/update/root.ts shells/pear-v3/src/__tests__/update-gate.test.ts shells/pear-v3/packaging/update-root.ts"
     # The formatter's changes, as a patch to apply where the branch is edited.
     # shellcheck disable=SC2086
-    npx --no-install prettier --write $files >/dev/null || true
-    echo "[guest] prettier patch begins"
-    git diff -- $files
-    echo "[guest] prettier patch ends"
+    npx --no-install prettier --check $files 2>&1 | tail -12 || true
+    # shellcheck disable=SC2086
+    npx --no-install prettier --write $files >/dev/null 2>&1 || true
+    # The formatted files, for the branch (this repository's own code, nothing else).
+    # shellcheck disable=SC2086
+    echo "[guest] formatted begins $(tar -cz $files | base64 -w0)"
+    echo "[guest] formatted ends"
     # shellcheck disable=SC2086
     npx --no-install eslint $files || true
     npx --no-install vitest run shells/pear-v3/src/__tests__/update-gate.test.ts 2>&1 | tail -25
