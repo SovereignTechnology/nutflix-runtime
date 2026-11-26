@@ -12,22 +12,29 @@
  *              link below, `dht: null` (the public DHT) and `play` (that relay, that video)
  *   link       `pear touch`, `pear build`, `pear stage`, `pear seed`: a throwaway link on the
  *              public DHT, which the other machine installs from
- *   reverse    once the installed app on Y has played and publishes its own beacon (it seeds what
+ *   test 3     once the installed app on Y has played and publishes its own beacon (it seeds what
  *              it watched), both seeders here stop, and a FRESH fetcher (nutflix-pear's `dialNfx`
  *              and `FilesClient`, a new node and key, nothing stored) fetches the whole clip from
- *              the endpoint that beacon names: it can only come from Y
+ *              the endpoint that beacon names: it can only come from Y. Its verdict is `T3`
+ *   test 4     shape (b): `shells/pear-v2/proof/realhost.ts prepare` (in the background, from the
+ *              start) makes a throwaway Pear v2.6.5 line and a throwaway v2 app link on the public
+ *              DHT; after test 3, two new seeders (honest and lying again) serve the same clip, and
+ *              Y `pear run`s that link and plays it. X's verdict is `T4` (the seeders' records)
  *
- * Prints `REALHOST_*` lines for the orchestrator (public keys, a link, a digest: no address).
+ * Prints `REALHOST_*` lines for the orchestrator (public keys, a link, a digest: no address). Exits
+ * 0 only when every test it ran passed on this side (`--no-t4`: test 4 is not run).
  *
  *   node shells/pear-v3/scripts/realhost/seed-side.ts --work <dir> --nonce <hex> [--wait-min 60]
+ *        [--no-t4]
  *
  * The playing machine finds this one by `--nonce` (`topicOf`): the tunnel is announced on that
  * topic from the start, and the relay's `INFO_PATH` names the link once it is seeded.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 
 import DHT from 'hyperdht';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -73,6 +80,7 @@ import {
   field,
   hex,
   lastRecord,
+  minutesArg,
   natFacts,
   parseRecords,
   publicNode,
@@ -95,8 +103,10 @@ const arg = (name: string, dflt?: string): string => {
   return v;
 };
 const WORK = resolve(arg('work'));
-const WAIT_MS = Number(arg('wait-min', '60')) * 60_000;
+const WAIT_MS = minutesArg(arg('wait-min', '60'), 'wait-min');
 const NONCE = arg('nonce');
+/** Test 4 (shape b) is on unless `--no-t4` says it is not run. */
+const T4 = !argv.includes('--no-t4');
 
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 const isMedia = (role: Role | undefined): boolean => role === 'init' || role === 'segment';
@@ -193,32 +203,44 @@ function runNode(args: readonly string[], cwd: string): Promise<number | null> {
   });
 }
 
-/** The reverse direction: a fresh fetcher, the whole clip, from the one endpoint `beacon` names. */
-async function fetchFromRuntime(
-  clip: Clip,
-  creator: string,
-  beacon: NostrEvent,
-): Promise<Record<string, unknown>> {
-  const parsed = parseBeacon(beacon, Math.floor(Date.now() / 1000));
-  if (!parsed.ok)
-    return { ok: false, why: `the app's beacon does not parse: ${parsed.error.reason}` };
+/** A beacon of this clip by this creator, with a HyperDHT endpoint bound to its seeder. */
+interface AppBeacon {
+  readonly seeder: string;
+  readonly peer: string;
+  readonly createdAt: number;
+  /** The endpoint types it names, counted (the proof prints nothing else of its content). */
+  readonly endpointTypes: Record<string, number>;
+}
+
+/** `e` as such a beacon, or why not. Its content is read through `parseBeacon` alone. */
+function appBeaconOf(e: NostrEvent, clip: Clip, creator: string): AppBeacon | string {
+  const parsed = parseBeacon(e, Math.floor(Date.now() / 1000));
+  if (!parsed.ok) return `does not parse: ${parsed.error.reason}`;
   const b = parsed.value;
   const addr = VideoAddr.parse(clip.video);
-  if (!addr.ok) return { ok: false, why: 'the clip address' };
+  if (!addr.ok) return 'the clip address';
   if (b.creator !== creator || b.content.video.toString() !== clip.video)
-    return { ok: false, why: "the app's beacon names another video" };
+    return 'names another video';
   const ep = b.content.endpoints.find(
-    (e) =>
-      e.t === 'hyperdht' &&
-      verifyHyperdhtBind(e.peer, e.bind, b.seeder, addr.value.namespace.toString()),
+    (x) =>
+      x.t === 'hyperdht' &&
+      verifyHyperdhtBind(x.peer, x.bind, b.seeder, addr.value.namespace.toString()),
   );
-  if (ep?.t !== 'hyperdht')
-    return { ok: false, why: "the app's beacon names no verified hyperdht endpoint" };
+  if (ep?.t !== 'hyperdht') return 'names no verified hyperdht endpoint';
+  const endpointTypes: Record<string, number> = {};
+  for (const x of b.content.endpoints) endpointTypes[x.t] = (endpointTypes[x.t] ?? 0) + 1;
+  return { seeder: b.seeder, peer: ep.peer, createdAt: e.created_at, endpointTypes };
+}
+
+/** The reverse direction: a fresh fetcher, the whole clip, from the one endpoint `b` names. */
+async function fetchFromRuntime(clip: Clip, b: AppBeacon): Promise<Record<string, unknown>> {
+  const addr = VideoAddr.parse(clip.video);
+  if (!addr.ok) return { ok: false, why: 'the clip address' };
   const node = await publicNode();
   say(`fresh fetcher node: nat ${JSON.stringify(natFacts(node))}`);
   const keyPair = DHT.keyPair();
   const t = Date.now();
-  const dialed = await dialNfx(node, Buffer.from(ep.peer, 'hex'), {
+  const dialed = await dialNfx(node, Buffer.from(b.peer, 'hex'), {
     keyPair,
     crypto: nodeCrypto,
     timeoutMs: 90_000,
@@ -287,8 +309,58 @@ async function fetchFromRuntime(
     totalMs: Date.now() - t,
     remote,
     appSeeder: b.seeder,
-    appPeer: ep.peer,
+    appPeer: b.peer,
     failed: failed.slice(0, 8),
+  };
+}
+
+/** The v2 link's maker (`shells/pear-v2/proof/realhost.ts prepare`), in the background. */
+function startV2(): {
+  result: Promise<Record<string, unknown>>;
+  stop(): Promise<void>;
+} {
+  const script = join(PKG_DIR, '..', 'pear-v2', 'proof', 'realhost.ts');
+  const child: ChildProcess = spawn(
+    process.execPath,
+    [script, 'prepare', '--work', join(WORK, 'v2')],
+    { cwd: join(PKG_DIR, '..', '..'), stdio: ['pipe', 'pipe', 'inherit'] },
+  );
+  const exited = new Promise<void>((r) => {
+    child.once('exit', () => {
+      r();
+    });
+    child.once('error', () => {
+      r();
+    });
+  });
+  const result = new Promise<Record<string, unknown>>((r) => {
+    if (child.stdout === null) {
+      r({ error: 'no output' });
+      return;
+    }
+    const lines = createInterface({ input: child.stdout });
+    lines.on('line', (l) => {
+      if (l.startsWith('REALHOST_V2 ')) {
+        try {
+          r(JSON.parse(l.slice('REALHOST_V2 '.length)) as Record<string, unknown>);
+        } catch {
+          r({ error: 'an unreadable REALHOST_V2 line' });
+        }
+      } else process.stdout.write(`${l}\n`);
+    });
+    void exited.then(() => {
+      r({ error: 'the v2 maker exited without a link' });
+    });
+  });
+  return {
+    result,
+    stop: async () => {
+      if (child.exitCode !== null) return;
+      child.stdin?.end();
+      await Promise.race([exited, sleep(120_000)]);
+      // A no-op if it has exited meanwhile.
+      child.kill('SIGKILL');
+    },
   };
 }
 
@@ -296,14 +368,20 @@ async function main(): Promise<number> {
   mkdirSync(WORK, { recursive: true });
   const summary: Record<string, unknown> = {};
   const order = { n: 0 };
-  let honest: PublicSeeder | undefined;
-  let liar: PublicSeeder | undefined;
+  // The seeders the relay's beacons name now (test 1, then test 4's own pair).
+  const live: { honest: PublicSeeder | undefined; liar: PublicSeeder | undefined } = {
+    honest: undefined,
+    liar: undefined,
+  };
+  const closed: PublicSeeder[] = [];
   let relay: RealhostRelay | undefined;
   let tunnel: Awaited<ReturnType<typeof tunnelServer>> | undefined;
   let ctl: DHT | undefined;
   let stopAnnounce: (() => void) | undefined;
   let seed: ReturnType<PublicPear['start']> | undefined;
   let pear: PublicPear | undefined;
+  let v2: ReturnType<typeof startV2> | undefined;
+  const verdicts: Record<string, string> = {};
   try {
     // ---- the clip, the keys, the relay ----------------------------------------------------------
     writeClip(join(WORK, 'clip'));
@@ -313,6 +391,7 @@ async function main(): Promise<number> {
     const addr = `38504:${creator.pubkey}:${clip.video}`;
     const rel = await RealhostRelay.start(RELAY_PORT);
     relay = rel;
+    rel.state = { reverseDone: false, t4: T4 ? 'preparing' : 'off' };
     const at = Math.floor(Date.now() / 1000) - 3600;
     rel.store(
       creator.sign({
@@ -349,16 +428,47 @@ async function main(): Promise<number> {
         }),
       });
     };
-    let seedersUp = true;
     rel.beacons = () => {
-      if (!seedersUp || honest === undefined || liar === undefined) return [];
+      const { honest, liar } = live;
+      if (honest === undefined || liar === undefined) return [];
       const now = Math.floor(Date.now() / 1000);
       return [beaconOf(honest, now - 1), beaconOf(liar, now)];
     };
+    const closeLive = async (): Promise<void> => {
+      const { honest, liar } = live;
+      live.honest = undefined;
+      live.liar = undefined;
+      for (const x of [honest, liar])
+        if (x !== undefined) {
+          await x.close();
+          closed.push(x);
+        }
+    };
+    const ownKeys = (): Set<string> =>
+      new Set(
+        [...closed, live.honest, live.liar].filter((x) => x !== undefined).map((x) => x.key.pubkey),
+      );
+    const records = (h: PublicSeeder, l: PublicSeeder): Record<string, unknown> => ({
+      honest: {
+        dialers: h.log.dialers.size,
+        filesWhole: h.log.served.filter(complete).length,
+        bytes: h.log.bytes,
+        remotes: [...h.remotes.values()],
+      },
+      liar: {
+        dialers: l.log.dialers.size,
+        badWhole: l.log.served.filter((x) => x.bad && complete(x)).length,
+        bytes: l.log.bytes,
+        remotes: [...l.remotes.values()],
+      },
+      problems: seederProblems(h.log, l.log, clip.roles),
+    });
 
     // ---- the seeders and the tunnel, on the public DHT -----------------------------------------------
-    honest = await startSeeder('honest', clip, false, order);
-    liar = await startSeeder('liar', clip, true, order);
+    const honest = await startSeeder('honest', clip, false, order);
+    const liar = await startSeeder('liar', clip, true, order);
+    live.honest = honest;
+    live.liar = liar;
     ctl = await publicNode();
     tunnel = await tunnelServer(ctl, RELAY_PORT);
     stopAnnounce = announceLoop(ctl, topicOf(NONCE), tunnel.keyPair);
@@ -468,17 +578,24 @@ async function main(): Promise<number> {
     process.stdout.write(`REALHOST_TUNNEL ${tunnel.key}\n`);
     process.stdout.write(`REALHOST_APP_SHA256 ${appSha}\n`);
     process.stdout.write('REALHOST_READY\n');
-    rel.info = { link, appSha256: appSha };
+    rel.info = { link, appSha256: appSha, addr };
 
-    // ---- wait for the app on the other machine ------------------------------------------------------
+    // Test 4's link, made while test 1 runs: Pear v2's own fetch, copy and stage take a while.
+    if (T4) v2 = startV2();
+
+    // ---- test 1: wait for the app on the other machine ---------------------------------------------
     const deadline = Date.now() + WAIT_MS;
-    const appBeacon = (): NostrEvent | undefined =>
-      [...rel.published]
-        .reverse()
-        .find(
-          (e) =>
-            e.kind === 20464 && e.pubkey !== honest?.key.pubkey && e.pubkey !== liar?.key.pubkey,
-        );
+    const appBeacon = (): AppBeacon | undefined => {
+      const own = ownKeys();
+      let best: AppBeacon | undefined;
+      for (const e of rel.published) {
+        if (e.kind !== 20464 || own.has(e.pubkey)) continue;
+        const b = appBeaconOf(e, clip, creator.pubkey);
+        if (typeof b !== 'string' && (best === undefined || b.createdAt >= best.createdAt))
+          best = b;
+      }
+      return best;
+    };
     let lastBeat = 0;
     let playedAt = 0;
     while (Date.now() < deadline) {
@@ -490,52 +607,105 @@ async function main(): Promise<number> {
       if (Date.now() - lastBeat > 20_000) {
         lastBeat = Date.now();
         say(
-          `waiting: tunnel ${String(tunnel.stats.connections)} conn; honest ${String(h.dialers.size)} dialer(s), ${String(h.served.filter(complete).length)} files whole, ${String(h.bytes)} B; liar ${String(liar.log.served.filter((x) => x.bad && complete(x)).length)} bad whole; app beacons ${String(rel.published.length)}; pear seed ${s.exited() ? 'EXITED' : 'up'}`,
+          `waiting: tunnel ${String(tunnel.stats.connections)} conn; honest ${String(h.dialers.size)} dialer(s), ${String(h.served.filter(complete).length)} files whole, ${String(h.bytes)} B; liar ${String(liar.log.served.filter((x) => x.bad && complete(x)).length)} bad whole; beacons published ${String(rel.published.length)}; pear seed ${s.exited() ? 'EXITED' : 'up'}`,
         );
       }
-      const b = appBeacon();
       // The app plays first; its beacon comes once it serves what it stored (every 60 s).
-      if (b !== undefined && playedAt !== 0 && Date.now() - playedAt > 20_000) break;
+      if (appBeacon() !== undefined && playedAt !== 0 && Date.now() - playedAt > 20_000) break;
+      // The app on Y has stopped (or never ran): nothing more is coming from it.
+      if (rel.marks.includes('t1-failed') || rel.marks.includes('t1-ended')) break;
       await sleep(2000);
     }
-    const playedProblems = seederProblems(honest.log, liar.log, clip.roles);
-    summary['seederX'] = {
-      honest: {
-        dialers: honest.log.dialers.size,
-        filesWhole: honest.log.served.filter(complete).length,
-        bytes: honest.log.bytes,
-        remotes: [...honest.remotes.values()],
-      },
-      liar: {
-        dialers: liar.log.dialers.size,
-        badWhole: liar.log.served.filter((x) => x.bad && complete(x)).length,
-        bytes: liar.log.bytes,
-        remotes: [...liar.remotes.values()],
-      },
-      problems: playedProblems,
-      tunnel: tunnel.stats,
-    };
-    say(`test 1, X's records: ${JSON.stringify(summary['seederX'])}`);
+    summary['seederX'] = { ...records(honest, liar), tunnel: tunnel.stats };
+    const t1Problems = seederProblems(honest.log, liar.log, clip.roles);
+    verdicts['T1'] = t1Problems.length === 0 ? 'PASS' : 'FAIL';
+    say(`test 1, X's records: ${verdicts['T1']} ${JSON.stringify(summary['seederX'])}`);
 
-    // ---- the reverse direction -------------------------------------------------------------------
+    // ---- test 3: the reverse direction ------------------------------------------------------------
     const b = appBeacon();
+    const rejected = rel.published
+      .filter((e) => !ownKeys().has(e.pubkey))
+      .map((e) => appBeaconOf(e, clip, creator.pubkey))
+      .filter((x) => typeof x === 'string');
     if (b === undefined) {
-      summary['reverse'] = { ok: false, why: 'the app published no beacon in time' };
+      summary['T3'] = {
+        verdict: 'FAIL',
+        problems: [
+          'no beacon of this clip with a verified hyperdht endpoint came from the app in time',
+        ],
+        otherBeacons: rejected.length,
+        rejectedBecause: [...new Set(rejected)].slice(0, 4),
+      };
     } else {
       say(
-        `the app's beacon: ${JSON.stringify({ kind: b.kind, seeder: b.pubkey, content: JSON.parse(b.content) as unknown })}`,
+        `the app's beacon: ${JSON.stringify({ seeder: b.seeder, peer: b.peer, endpointTypes: b.endpointTypes })}`,
       );
-      seedersUp = false;
-      await honest.close();
-      await liar.close();
+      await closeLive();
       say('both seeders here are closed; their beacons are gone from the relay');
       const servedBefore = honest.log.served.length + liar.log.served.length;
       await sleep(5000);
-      summary['reverse'] = await fetchFromRuntime(clip, creator.pubkey, b);
-      summary['reverse_seedersXServedAfterClose'] =
-        honest.log.served.length + liar.log.served.length - servedBefore;
+      const reverse = await fetchFromRuntime(clip, b);
+      const servedAfter = honest.log.served.length + liar.log.served.length - servedBefore;
+      const remote = reverse['remote'] as AddrFacts | undefined;
+      const why: string[] = [];
+      if (reverse['ok'] !== true)
+        why.push(`the fetch: ${typeof reverse['why'] === 'string' ? reverse['why'] : 'failed'}`);
+      if (servedAfter !== 0)
+        why.push(`X's own seeders served ${String(servedAfter)} files after closing`);
+      if (remote?.known !== true) why.push('the remote end of the dial is unknown');
+      else if (remote.isThisMachine === true) why.push('the remote end is this machine');
+      summary['T3'] = {
+        ...reverse,
+        verdict: why.length === 0 ? 'PASS' : 'FAIL',
+        problems: why,
+        seedersXServedAfterClose: servedAfter,
+      };
     }
-    say(`test 3: ${JSON.stringify(summary['reverse'])}`);
+    verdicts['T3'] = (summary['T3'] as { verdict: string }).verdict;
+    rel.state = { ...rel.state, reverseDone: true };
+    say(`test 3: ${JSON.stringify(summary['T3'])}`);
+
+    // ---- test 4: shape (b), the same clip from two new seeders -------------------------------------
+    if (v2 !== undefined) {
+      await closeLive();
+      const made: Record<string, unknown> = await Promise.race([
+        v2.result,
+        sleep(Math.max(0, deadline - Date.now())).then((): Record<string, unknown> => ({
+          error: 'not ready in time',
+        })),
+      ]);
+      if (typeof made['verlink'] !== 'string' || typeof made['line'] !== 'object') {
+        summary['T4'] = { verdict: 'FAIL', problems: [`the v2 link: ${String(made['error'])}`] };
+        rel.state = { ...rel.state, t4: 'failed' };
+      } else {
+        const h4 = await startSeeder('honest-4', clip, false, order);
+        const l4 = await startSeeder('liar-4', clip, true, order);
+        live.honest = h4;
+        live.liar = l4;
+        rel.info = { ...rel.info, v2: { line: made['line'], verlink: made['verlink'] } };
+        rel.state = { ...rel.state, t4: 'ready' };
+        say(`test 4: v2 link ${made['verlink']} seeded; two new seeders up`);
+        let beat4 = 0;
+        while (Date.now() < deadline && !rel.marks.includes('t4-done')) {
+          if (Date.now() - beat4 > 30_000) {
+            beat4 = Date.now();
+            say(
+              `test 4 waiting: honest ${String(h4.log.dialers.size)} dialer(s), ${String(h4.log.served.filter(complete).length)} files whole; liar ${String(l4.log.served.filter((x) => x.bad && complete(x)).length)} bad whole`,
+            );
+          }
+          await sleep(2000);
+        }
+        const rec = records(h4, l4);
+        const problems = rec['problems'] as string[];
+        summary['T4'] = { ...rec, verdict: problems.length === 0 ? 'PASS' : 'FAIL' };
+      }
+      verdicts['T4'] = (summary['T4'] as { verdict: string }).verdict;
+      say(`test 4, X's records: ${JSON.stringify(summary['T4'])}`);
+    }
+
+    // ---- the playing machine says when it is done (test 2 needs nothing here) ----------------------
+    while (Date.now() < deadline && !rel.marks.includes('finished')) await sleep(2000);
+    summary['marks'] = rel.marks;
   } catch (e) {
     summary['error'] = e instanceof Error ? (e.stack ?? e.message) : String(e);
     say(`FAIL ${String(summary['error'])}`);
@@ -545,20 +715,22 @@ async function main(): Promise<number> {
       say('done: telling the playing machine (status), 90 s');
       await sleep(90_000);
     }
+    await v2?.stop();
     await seed?.stop();
     if (pear !== undefined) {
       const sc = await pear.run('sidecar-shutdown', ['sidecar', 'shutdown'], 90);
       say(`pear seed stopped; sidecar shutdown: exit ${String(sc.code)}`);
     }
-    await honest?.close();
-    await liar?.close();
+    for (const x of [live.honest, live.liar]) await x?.close();
     stopAnnounce?.();
     await tunnel?.close().catch(() => undefined);
     await ctl?.destroy().catch(() => undefined);
     await relay?.close().catch(() => undefined);
+    summary['verdicts'] = verdicts;
     process.stdout.write(`REALHOST_SEED_SUMMARY ${JSON.stringify(summary)}\n`);
   }
-  return summary['error'] === undefined ? 0 : 1;
+  const failed = Object.values(verdicts).some((v) => v !== 'PASS');
+  return summary['error'] === undefined && !failed && verdicts['T1'] !== undefined ? 0 : 1;
 }
 
 process.exitCode = await main();

@@ -32,8 +32,11 @@ export const RELAY_PORT = 47123;
 export const RELAY_URL = `ws://127.0.0.1:${String(RELAY_PORT)}`;
 /** The HTTP path on the relay's port that tells the playing machine the proof is over. */
 export const STATUS_PATH = '/realhost-status';
-/** And what to install: `{ info: { link, appSha256 } }` once it is seeded, `{ info: null }` before. */
+/** And what to install: `{ info: { link, appSha256, addr, … } }` once it is seeded, `{ info: null }` before. */
 export const INFO_PATH = '/realhost-info';
+/** `GET MARK_PATH/<word>`: the playing machine tells the seeding one where it is (`marks`). */
+export const MARK_PATH = '/realhost-mark/';
+const MARK_WORD = /^[a-z0-9-]{1,32}$/;
 
 const t0 = Date.now();
 export const secs = (): number => Math.round((Date.now() - t0) / 1000);
@@ -41,6 +44,14 @@ export const say = (line: string): void => {
   process.stdout.write(`[${String(secs()).padStart(5)} s] ${line}\n`);
 };
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** A `--<name> <minutes>` value as ms: a finite number above 0 and at most a day, or it throws. */
+export function minutesArg(text: string, name: string): number {
+  const n = Number(text);
+  if (!Number.isFinite(n) || n <= 0 || n > 24 * 60)
+    throw new Error(`--${name} must be a number of minutes above 0 (got ${JSON.stringify(text)})`);
+  return n * 60_000;
+}
 
 // ---- addresses, as facts --------------------------------------------------------------------------
 
@@ -206,8 +217,14 @@ export async function tunnelClient(
 ): Promise<{ stats: TunnelStats; close(): Promise<void> }> {
   const stats: TunnelStats = { connections: 0, remotes: [] };
   const remote = Buffer.from(key, 'hex');
+  // Every forwarded connection, so that a close does not wait on one that stays open.
+  const open = new Set<Duplex>();
   const server: Server = createNetServer((tcp) => {
     stats.connections += 1;
+    open.add(tcp);
+    tcp.once('close', () => {
+      open.delete(tcp);
+    });
     const socket = node.connect(remote);
     socket.once('open', () => {
       const raw = (socket as unknown as { rawStream?: { remoteHost?: string } }).rawStream;
@@ -226,6 +243,8 @@ export async function tunnelClient(
         server.close(() => {
           r();
         });
+        for (const c of open) c.destroy();
+        open.clear();
       }),
   };
 }
@@ -256,6 +275,34 @@ function matches(f: Filter, ev: NostrEvent): boolean {
   return true;
 }
 
+const strings = (x: unknown): boolean =>
+  Array.isArray(x) && (x as unknown[]).every((v) => typeof v === 'string');
+const numbers = (x: unknown): boolean =>
+  Array.isArray(x) && (x as unknown[]).every((v) => typeof v === 'number');
+const count = (x: unknown): boolean => typeof x === 'number' && Number.isFinite(x) && x >= 0;
+
+/** `x` as the filters of a `REQ`, every field `matches` reads of the right type, or null. */
+export function parseFilters(x: readonly unknown[]): Filter[] | null {
+  if (x.length === 0 || x.length > 16) return null;
+  for (const f of x) {
+    if (typeof f !== 'object' || f === null || Array.isArray(f)) return null;
+    for (const [k, v] of Object.entries(f as Record<string, unknown>)) {
+      const ok =
+        k === 'ids' || k === 'authors'
+          ? strings(v)
+          : k === 'kinds'
+            ? numbers(v)
+            : k === 'since' || k === 'until' || k === 'limit'
+              ? count(v)
+              : k.startsWith('#')
+                ? strings(v)
+                : true;
+      if (!ok) return null;
+    }
+  }
+  return x as Filter[];
+}
+
 /** Kinds a client may publish here: a seeder's beacon (NFX-03), nothing else. */
 const ACCEPTED_KINDS = new Set([20464]);
 
@@ -279,9 +326,13 @@ export class RealhostRelay {
   /** Beacons clients published, in order. */
   readonly published: NostrEvent[] = [];
   readonly reqs: Filter[][] = [];
+  /** What GET `STATUS_PATH` answers besides `done`: where the seeding machine is. */
+  state: Record<string, string | boolean> = {};
   done = false;
   /** What the playing machine needs once the link is seeded: GET `INFO_PATH`. */
-  info: Record<string, string> | null = null;
+  info: Record<string, unknown> | null = null;
+  /** The words the playing machine sent to `MARK_PATH`, in order. */
+  readonly marks: string[] = [];
   beacons: () => readonly NostrEvent[] = () => [];
 
   readonly beaconEveryMs: number;
@@ -297,7 +348,18 @@ export class RealhostRelay {
       if (req.url === STATUS_PATH || req.url === INFO_PATH) {
         res
           .writeHead(200, { ...headers, 'content-type': 'application/json' })
-          .end(JSON.stringify(req.url === STATUS_PATH ? { done: this.done } : { info: this.info }));
+          .end(
+            JSON.stringify(
+              req.url === STATUS_PATH ? { ...this.state, done: this.done } : { info: this.info },
+            ),
+          );
+        return;
+      }
+      if (req.url?.startsWith(MARK_PATH) === true) {
+        const word = req.url.slice(MARK_PATH.length);
+        const ok = MARK_WORD.test(word) && this.marks.length < 64;
+        if (ok) this.marks.push(word);
+        res.writeHead(ok ? 200 : 400, headers).end(ok ? 'ok' : 'no');
         return;
       }
       if ((req.headers.accept ?? '').includes('application/nostr+json')) {
@@ -351,7 +413,11 @@ export class RealhostRelay {
     if (!Array.isArray(msg)) return;
     const [type, a, ...rest] = msg as unknown[];
     if (type === 'REQ' && typeof a === 'string') {
-      const filters = rest as Filter[];
+      const filters = parseFilters(rest);
+      if (filters === null) {
+        this.#send(ws, ['CLOSED', a, 'invalid: a filter of the wrong shape']);
+        return;
+      }
       this.reqs.push(filters);
       for (const f of filters) {
         const hits = this.#stored
@@ -447,13 +513,25 @@ export class PublicPear {
         resolve(null);
       });
     });
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTreeOf(child.pid);
-    }, timeoutS * 1000);
-    const code = await exited;
-    clearTimeout(timer);
+    // On the deadline: SIGTERM, then SIGKILL after a grace, and the wait ends either way.
+    const timeout: { hit: boolean; timer?: NodeJS.Timeout } = { hit: false };
+    const deadline = new Promise<null>((resolve) => {
+      timeout.timer = setTimeout(() => {
+        timeout.hit = true;
+        killTreeOf(child.pid);
+        void Promise.race([exited, sleep(10_000)]).then(async () => {
+          if (child.exitCode === null && child.signalCode === null) {
+            killTreeOf(child.pid, true);
+            await Promise.race([exited, sleep(5_000)]);
+          }
+          resolve(null);
+        });
+      }, timeoutS * 1000);
+    });
+    const code = await Promise.race([exited, deadline]);
+    clearTimeout(timeout.timer);
+    const timedOut = timeout.hit;
+    if (timedOut) appendFileSync(logFile, `timed out after ${String(timeoutS)} s\n`);
     closeSync(fd);
     const out = readFileSync(logFile, 'utf8');
     return { code, timedOut, out, records: parseRecordsOf(out), ms: Date.now() - started };

@@ -1,48 +1,49 @@
 /**
  * The real-host proof, on the PLAYING machine (Y), another network than `seed-side.ts`'s. Never on
- * a CI runner: it joins the public HyperDHT. Run it as a user that is not root (Chromium's sandbox
- * stays on, as the ready line must say).
+ * a CI runner: it joins the public HyperDHT. Run it as a user that is not root.
  *
  *   tunnel     127.0.0.1:RELAY_PORT here becomes the seeding machine's relay, over HyperDHT
  *   install    `pear install <link>` from the PUBLIC DHT, into a home of its own; the installed
  *              AppImage must be, byte for byte, the build the seeding machine staged
+ *   sandbox    where this machine lets no unprivileged process make the user namespaces Chromium's
+ *              sandbox needs (`--sandbox-off`: a container's seccomp filter), the installed AppImage,
+ *              started as a user starts it, must reach the sandbox warning by itself (AppRun's
+ *              probe), and, with "Run anyway" stored, run with the sandbox off and say so
  *   seeding    the switch "Seed what you watch" is set in the worker's own file (`seeding.json`,
  *              `watched: true`), as main writes it after the user confirms the native dialog: this
  *              proof has no one to press that button
- *   play       the INSTALLED app, as installed: its test root's `play` opens the video and plays it
- *              on both paths (`src/main/play-proof.ts`); what passes is `pear-ci/playback.ts`'s
- *              `playProblems`, on the app's own measurements
- *   reverse    the app keeps running (it now seeds what it watched and publishes its beacon to the
- *              same relay) until the seeding machine says it is done, or 15 minutes
+ *   test 1     the INSTALLED app, started as installed (with an argument where the sandbox is off):
+ *              its test root's `play` opens the video and plays it on both paths
+ *              (`src/main/play-proof.ts`); what passes is `smoke.ts`'s `launch` on the ready line
+ *              and `pear-ci/playback.ts`'s `playProblems` on the app's own measurements
+ *   test 3     the app keeps running (it now seeds what it watched and publishes its beacon to the
+ *              same relay) until the seeding machine has fetched the clip back from it, or 15 min
+ *   test 4     shape (b): the seeding machine's throwaway Pear v2.6.5 line and v2 app link, run
+ *              here with `pear run` (`shells/pear-v2/proof/realhost.ts play`), the same clip
  *
  *   node shells/pear-v3/scripts/realhost/play-side.ts --work <dir> --nonce <hex> [--wait-min 30]
+ *        [--sandbox-off] [--no-t4]
  *
  * It finds the seeding machine's tunnel on the `--nonce` topic (`topicOf`), then reads the link and
- * the staged build's sha256 from that relay's `INFO_PATH`, waiting up to `--wait-min` for both.
+ * the staged build's sha256 from that relay's `INFO_PATH`, waiting up to `--wait-min` for both. It
+ * exits 0 only when every test it ran played.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 
 import { CLIP_HEIGHT, CLIP_WIDTH, playProblems } from '../pear-ci/playback.ts';
-import {
-  FAILURE_EVENTS,
-  eventFields,
-  eventName,
-  launch,
-  parseReadyLine,
-  readyProblems,
-  stop,
-  stopLine,
-  type LaunchResult,
-  type ReadyFields,
-} from '../smoke.ts';
+import { PKG_DIR } from '../../packaging/paths.ts';
+import { launch, stopLine, type LaunchResult } from '../smoke.ts';
 import {
   INFO_PATH,
+  MARK_PATH,
   PublicPear,
   RELAY_PORT,
+  RELAY_URL,
   STATUS_PATH,
   lookupTunnel,
   topicOf,
@@ -50,6 +51,7 @@ import {
   field,
   isolatedEnv,
   lastRecord,
+  minutesArg,
   natFacts,
   publicNode,
   say,
@@ -69,16 +71,17 @@ const arg = (name: string, dflt?: string): string => {
 };
 const WORK = resolve(arg('work'));
 const NONCE = arg('nonce');
-const WAIT_MS = Number(arg('wait-min', '30')) * 60_000;
+const WAIT_MS = minutesArg(arg('wait-min', '30'), 'wait-min');
 /** A dry run on ONE machine (`guest.sh both`): the relay is already on this loopback, no tunnel. */
 const LOCAL = argv.includes('--local');
 /**
- * This machine lets no unprivileged process make a user namespace (`guest.sh` tried `unshare -U`):
- * Chromium's sandbox cannot start here. The app then runs as a user who chose "Run anyway" does:
- * its stored choice (`src/main/sandbox-gate.ts`, as `smoke.ts stock-consented` writes it) and
- * `--no-sandbox`, sandbox off, with its banner.
+ * This machine lets no unprivileged process make a user namespace (`guest.sh` tried `unshare`):
+ * Chromium's sandbox cannot start here, and the app must find that out by itself.
  */
 const SANDBOX_OFF = argv.includes('--sandbox-off');
+/** Test 4 (shape b) is on unless `--no-t4` says it is not run. */
+const T4 = !argv.includes('--no-t4');
+const CLIP = { width: CLIP_WIDTH, height: CLIP_HEIGHT };
 
 /** GET `path` on the seeding machine's relay, through the tunnel: its JSON, or null. */
 function getJson<T>(path: string): Promise<T | null> {
@@ -93,6 +96,13 @@ function getJson<T>(path: string): Promise<T | null> {
           r(null);
         }
       });
+      // A tunnel that drops mid-body: the retry path, not a hang (a later call is a no-op).
+      res.on('error', () => {
+        r(null);
+      });
+      res.on('close', () => {
+        r(null);
+      });
     });
     req.on('error', () => {
       r(null);
@@ -105,114 +115,105 @@ function getJson<T>(path: string): Promise<T | null> {
   });
 }
 
-/**
- * `smoke.ts`'s `launch`, for a machine whose sandbox the app was told is off: its verdict holds the
- * ready line to `readyProblems(.., 'off', 'on')`, and a container's own seccomp filter makes the
- * renderer read as `enforced` there (`sandbox-proof.ts` reads `/proc/<pid>/status`). Here every
- * ready field is reported, that one is not a verdict, and the rest are.
- */
-async function runApp(
-  exe: string,
-  args: readonly string[],
-  env: NodeJS.ProcessEnv,
-  timeoutS: number,
-  onDone: () => Promise<void>,
-): Promise<LaunchResult> {
-  const started = Date.now();
-  const tail: string[] = [];
-  const child = spawn(exe, [...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-  const exited = new Promise<number | null>((r) => {
-    child.once('exit', (c) => {
-      r(c);
-    });
-  });
-  const st: { gone: boolean; ready: ReadyFields | null; failure: string | null } = {
-    gone: false,
-    ready: null,
-    failure: null,
-  };
-  void exited.then(() => {
-    st.gone = true;
-  });
-  const events: string[] = [];
-  const collected: { name: string; fields: Record<string, unknown> }[] = [];
-  const updates: Record<string, unknown>[] = [];
-  let buf = '';
-  child.stderr.on('data', (c: Buffer) => {
-    for (const l of c.toString('utf8').split(/\r?\n/))
-      if (l !== '') tail.push(`err ${l.slice(0, 300)}`);
-    if (tail.length > 300) tail.splice(0, tail.length - 300);
-  });
-  child.stdout.on('data', (c: Buffer) => {
-    buf += c.toString('utf8');
-    for (let i = buf.indexOf('\n'); i !== -1; i = buf.indexOf('\n')) {
-      const line = buf.slice(0, i).replace(/\r$/, '');
-      buf = buf.slice(i + 1);
-      tail.push(`out ${line.slice(0, 300)}`);
-      const f = parseReadyLine(line);
-      if (f !== null) {
-        st.ready = f;
-        continue;
-      }
-      const name = eventName(line);
-      if (name === null) continue;
-      events.push(name);
-      const fields = eventFields(line) ?? {};
-      if (name === 'update') updates.push(fields);
-      if (name === 'play-proof' || name === 'play-proof-done') {
-        collected.push({ name, fields });
-        say(`${name} ${JSON.stringify(fields)}`);
-      }
-      if ((FAILURE_EVENTS as readonly string[]).includes(name))
-        st.failure ??= `the app reported ${name} ${JSON.stringify(fields)}`;
-    }
-  });
-  const deadline = started + timeoutS * 1000;
-  let reason = '';
-  for (;;) {
-    if (st.failure !== null) {
-      reason = st.failure;
-      break;
-    }
-    if (st.gone) {
-      reason = 'the app exited';
-      break;
-    }
-    if (events.includes('play-proof-done')) break;
-    if (Date.now() > deadline) {
-      reason = `no play-proof-done in ${String(timeoutS)} s`;
-      break;
-    }
-    await sleep(250);
-  }
-  const readyNow = st.ready;
-  const bad = readyNow === null ? ['no ready line'] : readyProblems(readyNow, 'off', 'on');
-  say(`ready ${JSON.stringify(readyNow)}; against a sandbox-off launch: ${JSON.stringify(bad)}`);
-  const verdictBad = bad.filter((b) => !b.startsWith('rendererSandbox:'));
-  if (reason === '' && verdictBad.length > 0)
-    reason = `the ready line is wrong: ${verdictBad.join('; ')}`;
-  if (reason === '' && !st.gone) await onDone();
-  const stopped = await stop(child, exited);
-  return {
-    ok: reason === '',
-    reason: reason === '' ? 'ready, played' : reason,
-    tail,
-    ms: Date.now() - started,
-    ready: readyNow,
-    events,
-    teardown: [],
-    updates,
-    collected,
-    stopped,
-  };
+interface Status {
+  readonly done: boolean;
+  readonly reverseDone?: boolean;
+  readonly t4?: string;
 }
 
-/** The seeding machine's word: `{ done }`, or null when it does not answer. */
-const status = (): Promise<{ done: boolean } | null> => getJson<{ done: boolean }>(STATUS_PATH);
+/** The seeding machine's word, or null when it does not answer. */
+const status = (): Promise<Status | null> => getJson<Status>(STATUS_PATH);
+/** Tells the seeding machine where this one is. */
+const mark = async (word: string): Promise<void> => {
+  await getJson<unknown>(`${MARK_PATH}${word}`);
+};
+
+interface Info {
+  link: string;
+  appSha256: string;
+  addr: string;
+  v2?: { line: { key: string; fork: number; length: number }; verlink: string };
+}
+const info = async (): Promise<Info | null> =>
+  (await getJson<{ info: Info | null }>(INFO_PATH))?.info ?? null;
+
+/** Every ready field the sandbox decides, as the app printed it. */
+const sandboxFields = (r: LaunchResult): Record<string, unknown> => ({
+  sandbox: r.ready?.sandbox,
+  rendererSandbox: r.ready?.rendererSandbox,
+});
+
+/** Test 4, by `shells/pear-v2/proof/realhost.ts play`: its summary line, or why there is none. */
+async function playV2(v2: NonNullable<Info['v2']>, addr: string): Promise<Record<string, unknown>> {
+  const script = join(PKG_DIR, '..', 'pear-v2', 'proof', 'realhost.ts');
+  const child = spawn(
+    process.execPath,
+    [
+      script,
+      'play',
+      '--work',
+      join(WORK, 'v2'),
+      '--line',
+      `${v2.line.key}:${String(v2.line.fork)}:${String(v2.line.length)}`,
+      '--verlink',
+      v2.verlink,
+      '--addr',
+      addr,
+      '--relay',
+      RELAY_URL,
+    ],
+    { cwd: join(PKG_DIR, '..', '..'), stdio: ['ignore', 'pipe', 'inherit'] },
+  );
+  const got: { summary: Record<string, unknown> | null } = { summary: null };
+  createInterface({ input: child.stdout }).on('line', (l) => {
+    if (l.startsWith('REALHOST_V2_PLAY ')) {
+      try {
+        got.summary = JSON.parse(l.slice('REALHOST_V2_PLAY '.length)) as Record<string, unknown>;
+      } catch {
+        got.summary = { error: 'an unreadable REALHOST_V2_PLAY line' };
+      }
+    } else process.stdout.write(`${l}\n`);
+  });
+  const code = await Promise.race([
+    new Promise<number | null>((r) => {
+      child.once('exit', r);
+      child.once('error', () => {
+        r(null);
+      });
+    }),
+    sleep(45 * 60_000).then(() => {
+      child.kill('SIGTERM');
+      return 'timeout' as const;
+    }),
+  ]);
+  return got.summary ?? { error: `no summary (exit ${String(code)})` };
+}
+
+/** What test 4 must show, on this side: the v2 runtime, from the line, playing the clip. */
+function v2Problems(s: Record<string, unknown>): string[] {
+  if (typeof s['error'] === 'string') return [`v2: ${s['error']}`];
+  const rt = (s['runtime'] ?? {}) as Record<string, unknown>;
+  const out: string[] = [];
+  if (rt['pear'] !== '2.6.5') out.push(`v2: Pear ${String(rt['pear'])}, not 2.6.5`);
+  if (rt['platformIsTheLine'] !== true) out.push('v2: the platform is not the seeding line');
+  if (rt['linkIsTheVerlink'] !== true) out.push('v2: the app runs another link');
+  const p = (s['play'] ?? {}) as Record<string, unknown>;
+  const ws = p['workerStatus'] as { listening?: number } | null | undefined;
+  if (ws?.listening !== 0)
+    out.push(`v2: the worker listens (${JSON.stringify(ws)}): not watch only`);
+  // The v2 window's network list is 127.0.0.1 alone (`shells/pear-v2/README.md`): not counted here.
+  out.push(
+    ...playProblems({ ...p, stage: 'measured', offLoopback: 0 }, 'progressive', CLIP).map(
+      (x) => `v2 ${x}`,
+    ),
+  );
+  return out;
+}
 
 async function main(): Promise<number> {
   mkdirSync(WORK, { recursive: true });
   const summary: Record<string, unknown> = {};
+  const verdicts: Record<string, string> = {};
   const node = await publicNode();
   summary['natY'] = natFacts(node);
   say(`this machine on the public DHT: ${JSON.stringify(summary['natY'])}`);
@@ -223,13 +224,12 @@ async function main(): Promise<number> {
     // ---- the seeding machine: its tunnel on the topic, then its relay through it ------------------
     const t = Date.now();
     const topic = topicOf(NONCE);
-    let info: { link: string; appSha256: string } | null = null;
+    let got: Info | null = null;
     let beat = 0;
-    while (info === null) {
+    while (got === null) {
       if (Date.now() > deadline) throw new Error('the seeding machine never named a seeded link');
       if (LOCAL && (await status()) !== null) {
-        const got = await getJson<{ info: { link: string; appSha256: string } | null }>(INFO_PATH);
-        info = got?.info ?? null;
+        got = await info();
       } else if (!LOCAL && tunnel === undefined) {
         const keys = await lookupTunnel(node, topic).catch(() => []);
         if (keys.length > 1)
@@ -245,11 +245,8 @@ async function main(): Promise<number> {
           await c.close();
         }
       }
-      if (tunnel !== undefined) {
-        const got = await getJson<{ info: { link: string; appSha256: string } | null }>(INFO_PATH);
-        info = got?.info ?? null;
-      }
-      if (info === null) {
+      if (tunnel !== undefined) got = await info();
+      if (got === null) {
         if (Date.now() - beat > 30_000) {
           beat = Date.now();
           say(
@@ -259,163 +256,221 @@ async function main(): Promise<number> {
         await sleep(5000);
       }
     }
-    const LINK = info.link;
-    const APP_SHA = info.appSha256;
-    if (!/^pear:\/\/[a-z0-9]{52}$/.test(LINK) || !/^[0-9a-f]{64}$/.test(APP_SHA))
-      throw new Error('the seeding machine named no link or digest of the right shape');
+    const { link: LINK, appSha256: APP_SHA, addr: ADDR } = got;
+    if (
+      !/^pear:\/\/[a-z0-9]{52}$/.test(LINK) ||
+      !/^[0-9a-f]{64}$/.test(APP_SHA) ||
+      !/^38504:[0-9a-f]{64}:nfx:testnet:1:[a-z0-9-]{1,64}$/.test(ADDR)
+    )
+      throw new Error('the seeding machine named no link, digest or address of the right shape');
     say(
       `link ${LINK}; staged AppImage sha256 ${APP_SHA}; tunnel remotes ${JSON.stringify(tunnel?.stats.remotes)}`,
     );
     summary['link'] = LINK;
 
-    // ---- pear install, from the public DHT ---------------------------------------------------------
-    const fetched = await fetchPear('linux-x64', join(WORK, 'tools'));
-    say(`pear CLI ${fetched.asset} sha256 ${fetched.sha256} (pinned, checked)`);
-    const home = join(WORK, 'home');
-    pear = new PublicPear(fetched.bin, home, join(WORK, 'logs'));
-    for (const d of [join('.local', 'bin'), join('.local', 'share', 'applications')])
-      mkdirSync(join(home, d), { recursive: true });
-    let last: Awaited<ReturnType<PublicPear['run']>> | undefined;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      last = await pear.run(
-        `install-${String(attempt)}`,
-        ['install', '--json', '--timeout', '300', LINK],
-        900,
-      );
-      say(
-        `pear install attempt ${String(attempt)}: exit ${String(last.code)}, ${String(last.ms)} ms`,
-      );
-      if (last.code === 0 && succeeded(last.records)) break;
-      say(tail(last.out, 8));
-    }
-    if (last?.code !== 0 || !succeeded(last.records))
-      throw new Error(
-        `pear install: ${failureMessage(last?.records ?? []) ?? tail(last?.out ?? '', 6)}`,
-      );
-    const dest = field(lastRecord(last.records, 'app'), 'dest');
-    const peers = last.records.filter((r) => r.tag === 'stats').map((r) => r.data['peers']);
-    if (dest === undefined || !existsSync(dest))
-      throw new Error(`pear install says ${String(dest)}`);
-    const got = createHash('sha256').update(readFileSync(dest)).digest('hex');
-    summary['install'] = {
-      ms: last.ms,
-      peersSeen: peers.slice(-1),
-      sha256MatchesStaged: got === APP_SHA,
-    };
-    say(`installed: ${JSON.stringify(summary['install'])}`);
-    if (got !== APP_SHA) throw new Error('the installed AppImage is not the staged build');
+    // ---- test 1 ----------------------------------------------------------------------------------
+    try {
+      // pear install, from the public DHT
+      const fetched = await fetchPear('linux-x64', join(WORK, 'tools'));
+      say(`pear CLI ${fetched.asset} sha256 ${fetched.sha256} (pinned, checked)`);
+      const home = join(WORK, 'home');
+      pear = new PublicPear(fetched.bin, home, join(WORK, 'logs'));
+      for (const d of [join('.local', 'bin'), join('.local', 'share', 'applications')])
+        mkdirSync(join(home, d), { recursive: true });
+      let last: Awaited<ReturnType<PublicPear['run']>> | undefined;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        last = await pear.run(
+          `install-${String(attempt)}`,
+          ['install', '--json', '--timeout', '300', LINK],
+          900,
+        );
+        say(
+          `pear install attempt ${String(attempt)}: exit ${String(last.code)}, ${String(last.ms)} ms${last.timedOut ? ', timed out' : ''}`,
+        );
+        if (last.code === 0 && succeeded(last.records)) break;
+        say(tail(last.out, 8));
+      }
+      if (last?.code !== 0 || !succeeded(last.records))
+        throw new Error(
+          `pear install: ${failureMessage(last?.records ?? []) ?? tail(last?.out ?? '', 6)}`,
+        );
+      const dest = field(lastRecord(last.records, 'app'), 'dest');
+      const peers = last.records.filter((r) => r.tag === 'stats').map((r) => r.data['peers']);
+      if (dest === undefined || !existsSync(dest))
+        throw new Error(`pear install says ${String(dest)}`);
+      accessSync(dest, constants.X_OK);
+      const sha = createHash('sha256').update(readFileSync(dest)).digest('hex');
+      summary['install'] = {
+        ms: last.ms,
+        peersSeen: peers.slice(-1),
+        sha256MatchesStaged: sha === APP_SHA,
+      };
+      say(`installed: ${JSON.stringify(summary['install'])}`);
+      if (sha !== APP_SHA) throw new Error('the installed AppImage is not the staged build');
+      const env = isolatedEnv(home);
+      const config = join(home, '.config', 'nutflix-runtime');
+      const consent = join(config, 'sandbox-consent.json');
 
-    // ---- the switch, as main stores it after the native confirmation --------------------------------
-    const worker = join(home, '.config', 'nutflix-runtime', 'worker');
-    mkdirSync(worker, { recursive: true });
-    writeFileSync(
-      join(worker, 'seeding.json'),
-      `${JSON.stringify({ v: 1, watched: true, videos: {} })}\n`,
-    );
-    if (SANDBOX_OFF) {
-      const choice = { v: 1, choice: 'run-anyway', at: new Date().toISOString() };
+      // Where the sandbox cannot start: the warning, by itself, with nothing stored.
+      if (SANDBOX_OFF) {
+        const w = await launch(dest, [], 'warning', 240, { env });
+        summary['sandboxWarning'] = {
+          ok: w.ok,
+          reason: w.reason,
+          events: w.events,
+          stop: stopLine(w.stopped),
+        };
+        say(
+          `no user namespaces here; started as installed: ${JSON.stringify(summary['sandboxWarning'])}`,
+        );
+        if (!w.ok) say(w.tail.slice(-30).join('\n'));
+      }
+
+      // The switch, as main stores it after the native confirmation; "Run anyway", as stored.
+      const worker = join(config, 'worker');
+      mkdirSync(worker, { recursive: true });
       writeFileSync(
-        join(home, '.config', 'nutflix-runtime', 'sandbox-consent.json'),
-        `${JSON.stringify(choice)}\n`,
-        { mode: 0o600 },
+        join(worker, 'seeding.json'),
+        `${JSON.stringify({ v: 1, watched: true, videos: {} })}\n`,
       );
-      say('no user namespaces here: the app runs with its stored "Run anyway" choice, sandbox off');
-    }
-    summary['sandbox'] = SANDBOX_OFF
-      ? 'off (stored Run anyway; this machine has no user namespaces)'
-      : 'on';
+      if (SANDBOX_OFF) {
+        const choice = { v: 1, choice: 'run-anyway', at: new Date().toISOString() };
+        writeFileSync(consent, `${JSON.stringify(choice)}\n`, { mode: 0o600 });
+      }
 
-    // ---- the installed app plays, then seeds ------------------------------------------------------------
-    let heldMs = 0;
-    // With no FUSE the AppImage's runtime extracts and runs it. Given ANY argument it then fails
-    // ("Failed to run (null): Bad address", exit 127): type2-runtime's `char* new_argv[argc]`
-    // has no room for the NULL after every argument it keeps (upstream runtime.c, the
-    // extract-and-run branch the nutflix fallback takes). So where `--no-sandbox` must be passed,
-    // one start with no argument extracts it, and the extraction's own AppRun is started with the
-    // environment the runtime gives it.
-    let exe = dest;
-    let env = isolatedEnv(home);
-    if (SANDBOX_OFF) {
-      const first = spawnSync(dest, [], { env, timeout: 120_000, encoding: 'utf8' });
-      const cache = join(home, '.cache', 'nutflix-runtime');
-      const dirs = existsSync(cache)
-        ? readdirSync(cache).filter((d) => /^appimage-[0-9a-f]{32}$/.test(d))
-        : [];
+      // The app plays, then seeds until the seeding machine has fetched the clip back (test 3).
+      let heldMs = 0;
+      const hold = async (): Promise<void> => {
+        const until = Date.now() + 15 * 60_000;
+        const from = Date.now();
+        let b = 0;
+        for (;;) {
+          const s = await status();
+          if (s?.done === true || s?.reverseDone === true || Date.now() > until) break;
+          if (Date.now() - b > 30_000) {
+            b = Date.now();
+            say(
+              `seeding; waiting for the seeding machine's fetch (${String(Math.round((Date.now() - from) / 1000))} s)`,
+            );
+          }
+          await sleep(5000);
+        }
+        heldMs = Date.now() - from;
+      };
+      // Where the sandbox is off, with an argument: the runtime hands AppRun its arguments.
+      const args = SANDBOX_OFF ? ['--no-sandbox'] : [];
+      const r = await launch(dest, args, 'ready', 900, {
+        env,
+        sandbox: SANDBOX_OFF ? 'off' : 'on',
+        updates: 'on',
+        waitFor: 'play-proof-done',
+        collect: ['play-proof', 'play-proof-done'],
+        onReady: hold,
+      });
+      for (const e of r.collected) say(`${e.name} ${JSON.stringify(e.fields)}`);
       say(
-        `first start with no argument: exit ${String(first.status)}; extractions ${JSON.stringify(dirs)}`,
+        `launch ${JSON.stringify(args)}: ${r.ok ? 'ok' : 'FAIL'} ${r.reason}; events ${r.events.join(', ')}; teardown ${r.teardown.join(', ')}; held ${String(heldMs)} ms; stop: ${stopLine(r.stopped)}`,
       );
-      if (dirs.length !== 1) throw new Error('no single extraction of the installed AppImage');
-      const appdir = join(cache, dirs[0] ?? '');
-      exe = join(appdir, 'AppRun');
-      env = { ...env, APPIMAGE: dest, APPDIR: appdir, ARGV0: dest, NUTFLIX_APPIMAGE_NO_FUSE: '1' };
-      summary['startedAs'] = "the installed AppImage's own extraction, AppRun --no-sandbox";
-    }
-    const hold = async (): Promise<void> => {
-      // The app is still running: it seeds what it watched. Keep it until X has fetched it back.
-      const until = Date.now() + 15 * 60_000;
-      const from = Date.now();
-      let beat = 0;
-      for (;;) {
-        const s = await status();
-        if (s?.done === true || Date.now() > until) break;
-        if (Date.now() - beat > 30_000) {
-          beat = Date.now();
-          say(
-            `seeding; waiting for the seeding machine to finish (${String(Math.round((Date.now() - from) / 1000))} s)`,
+      if (!r.ok) say(r.tail.slice(-60).join('\n'));
+      const byPath = (p: string): Record<string, unknown> | undefined =>
+        r.collected.find((e) => e.name === 'play-proof' && e.fields['path'] === p)?.fields;
+      const problems = [
+        ...playProblems(byPath('progressive'), 'progressive', CLIP),
+        ...playProblems(byPath('webrtc'), 'webrtc', CLIP),
+      ];
+      const warned = (summary['sandboxWarning'] as { ok?: boolean } | undefined)?.ok;
+      if (SANDBOX_OFF && warned !== true)
+        problems.push('the installed AppImage did not reach the sandbox warning by itself');
+      if (!r.ok) problems.push(`launch: ${r.reason}`);
+
+      // The command the warning names, as a user types it: an argument again, and the choice goes.
+      if (SANDBOX_OFF) {
+        const f = spawnSync(dest, ['--forget-sandbox-choice'], {
+          env,
+          timeout: 120_000,
+          encoding: 'utf8',
+        });
+        summary['forgetSwitch'] = {
+          exit: f.status,
+          forgottenEvent: f.stdout.includes('sandbox-choice-forgotten'),
+          consentGone: !existsSync(consent),
+        };
+        say(`--forget-sandbox-choice: ${JSON.stringify(summary['forgetSwitch'])}`);
+        if (f.status !== 0 || existsSync(consent))
+          problems.push(
+            '--forget-sandbox-choice, as the warning names it, did not forget the choice',
           );
+      }
+      summary['T1'] = {
+        verdict: problems.length === 0 ? 'PASS' : 'FAIL',
+        problems,
+        launchOk: r.ok,
+        reason: r.reason,
+        args,
+        ready: r.ready,
+        sandboxFields: sandboxFields(r),
+        progressive: byPath('progressive'),
+        webrtc: byPath('webrtc'),
+        done: r.collected.find((e) => e.name === 'play-proof-done')?.fields,
+        events: r.events,
+        teardown: r.teardown,
+        heldForReverseMs: heldMs,
+        updates: r.updates.slice(-3),
+      };
+    } catch (e) {
+      summary['T1'] = {
+        verdict: 'FAIL',
+        problems: [e instanceof Error ? e.message.slice(0, 600) : String(e)],
+      };
+    }
+    verdicts['T1'] = (summary['T1'] as { verdict: string }).verdict;
+    say(`test 1 on Y: ${JSON.stringify(summary['T1'])}`);
+    // The app is stopped: no beacon of it is coming any more.
+    await mark(verdicts['T1'] === 'PASS' ? 't1-ended' : 't1-failed');
+
+    // ---- test 4: shape (b) ----------------------------------------------------------------------
+    if (T4) {
+      let s = await status();
+      let b4 = 0;
+      while (Date.now() < deadline && s?.t4 !== 'ready' && s?.t4 !== 'failed' && s?.done !== true) {
+        if (Date.now() - b4 > 30_000) {
+          b4 = Date.now();
+          say(`test 4: waiting for the seeding machine's v2 link (${String(s?.t4)})`);
         }
         await sleep(5000);
+        s = await status();
       }
-      heldMs = Date.now() - from;
-    };
-    const r = SANDBOX_OFF
-      ? await runApp(exe, ['--no-sandbox'], env, 900, hold)
-      : await launch(exe, [], 'ready', 900, {
-          env,
-          updates: 'on',
-          waitFor: 'play-proof-done',
-          collect: ['play-proof', 'play-proof-done'],
-          onReady: hold,
-        });
-    for (const e of r.collected) say(`${e.name} ${JSON.stringify(e.fields)}`);
-    say(
-      `launch: ${r.ok ? 'ok' : 'FAIL'} ${r.reason}; events ${r.events.join(', ')}; held ${String(heldMs)} ms; stop: ${stopLine(r.stopped)}`,
-    );
-    if (!r.ok) say(r.tail.slice(-60).join('\n'));
-    const byPath = (p: string): Record<string, unknown> | undefined =>
-      r.collected.find((e) => e.name === 'play-proof' && e.fields['path'] === p)?.fields;
-    const clip = { width: CLIP_WIDTH, height: CLIP_HEIGHT };
-    const problems = [
-      ...playProblems(byPath('progressive'), 'progressive', clip),
-      ...playProblems(byPath('webrtc'), 'webrtc', clip),
-    ];
-    summary['play'] = {
-      launchOk: r.ok,
-      reason: r.reason,
-      ready: r.ready,
-      progressive: byPath('progressive'),
-      webrtc: byPath('webrtc'),
-      done: r.collected.find((e) => e.name === 'play-proof-done')?.fields,
-      problems,
-      heldForReverseMs: heldMs,
-      updates: r.updates.slice(-3),
-    };
-    say(
-      `test 1 on Y: ${problems.length === 0 && r.ok ? 'PLAYED' : 'NOT PLAYED'} ${JSON.stringify(problems)}`,
-    );
+      const now = await info();
+      if (s?.t4 !== 'ready' || now?.v2 === undefined) {
+        summary['T4'] = {
+          verdict: 'FAIL',
+          problems: [`no v2 link: the seeding machine says ${String(s?.t4)}`],
+        };
+      } else {
+        const v = await playV2(now.v2, ADDR);
+        const problems = v2Problems(v);
+        summary['T4'] = { verdict: problems.length === 0 ? 'PASS' : 'FAIL', problems, ...v };
+      }
+      await mark('t4-done');
+      verdicts['T4'] = (summary['T4'] as { verdict: string }).verdict;
+      say(`test 4 on Y: ${JSON.stringify(summary['T4'])}`);
+    }
   } catch (e) {
     summary['error'] = e instanceof Error ? (e.stack ?? e.message) : String(e);
     say(`FAIL ${String(summary['error'])}`);
   } finally {
+    await mark('finished').catch(() => undefined);
     if (pear !== undefined) {
       const sc = await pear.run('sidecar-shutdown', ['sidecar', 'shutdown'], 90);
       say(`sidecar shutdown: exit ${String(sc.code)}`);
     }
     await tunnel?.close().catch(() => undefined);
     await node.destroy().catch(() => undefined);
+    summary['verdicts'] = verdicts;
     process.stdout.write(`REALHOST_PLAY_SUMMARY ${JSON.stringify(summary)}\n`);
   }
-  return summary['error'] === undefined ? 0 : 1;
+  const failed = Object.values(verdicts).some((v) => v !== 'PASS');
+  return summary['error'] === undefined && !failed && verdicts['T1'] !== undefined ? 0 : 1;
 }
 
 process.exitCode = await main();
