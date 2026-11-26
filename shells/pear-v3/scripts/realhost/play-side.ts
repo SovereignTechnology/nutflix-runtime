@@ -20,14 +20,25 @@
  * It finds the seeding machine's tunnel on the `--nonce` topic (`topicOf`), then reads the link and
  * the staged build's sha256 from that relay's `INFO_PATH`, waiting up to `--wait-min` for both.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join, resolve } from 'node:path';
 
 import { CLIP_HEIGHT, CLIP_WIDTH, playProblems } from '../pear-ci/playback.ts';
-import { launch, stopLine } from '../smoke.ts';
+import {
+  FAILURE_EVENTS,
+  eventFields,
+  eventName,
+  launch,
+  parseReadyLine,
+  readyProblems,
+  stop,
+  stopLine,
+  type LaunchResult,
+  type ReadyFields,
+} from '../smoke.ts';
 import {
   INFO_PATH,
   PublicPear,
@@ -95,6 +106,104 @@ function getJson<T>(path: string): Promise<T | null> {
     });
     req.end();
   });
+}
+
+/**
+ * `smoke.ts`'s `launch`, for a machine whose sandbox the app was told is off: its verdict holds the
+ * ready line to `readyProblems(.., 'off', 'on')`, and a container's own seccomp filter makes the
+ * renderer read as `enforced` there (`sandbox-proof.ts` reads `/proc/<pid>/status`). Here every
+ * ready field is reported, that one is not a verdict, and the rest are.
+ */
+async function runApp(
+  exe: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  timeoutS: number,
+  onDone: () => Promise<void>,
+): Promise<LaunchResult> {
+  const started = Date.now();
+  const tail: string[] = [];
+  const child = spawn(exe, [...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const exited = new Promise<number | null>((r) => {
+    child.once('exit', (c) => {
+      r(c);
+    });
+  });
+  let gone = false;
+  void exited.then(() => {
+    gone = true;
+  });
+  const events: string[] = [];
+  const collected: { name: string; fields: Record<string, unknown> }[] = [];
+  const updates: Record<string, unknown>[] = [];
+  let ready: ReadyFields | null = null;
+  let failure: string | null = null;
+  let buf = '';
+  child.stderr.on('data', (c: Buffer) => {
+    for (const l of c.toString('utf8').split(/\r?\n/)) if (l !== '') tail.push(`err ${l.slice(0, 300)}`);
+    if (tail.length > 300) tail.splice(0, tail.length - 300);
+  });
+  child.stdout.on('data', (c: Buffer) => {
+    buf += c.toString('utf8');
+    for (let i = buf.indexOf('\n'); i !== -1; i = buf.indexOf('\n')) {
+      const line = buf.slice(0, i).replace(/\r$/, '');
+      buf = buf.slice(i + 1);
+      tail.push(`out ${line.slice(0, 300)}`);
+      const f = parseReadyLine(line);
+      if (f !== null) {
+        ready = f;
+        continue;
+      }
+      const name = eventName(line);
+      if (name === null) continue;
+      events.push(name);
+      const fields = eventFields(line) ?? {};
+      if (name === 'update') updates.push(fields);
+      if (name === 'play-proof' || name === 'play-proof-done') {
+        collected.push({ name, fields });
+        say(`${name} ${JSON.stringify(fields)}`);
+      }
+      if ((FAILURE_EVENTS as readonly string[]).includes(name))
+        failure ??= `the app reported ${name} ${JSON.stringify(fields)}`;
+    }
+  });
+  const deadline = started + timeoutS * 1000;
+  let reason = '';
+  for (;;) {
+    if (failure !== null) {
+      reason = failure;
+      break;
+    }
+    if (gone) {
+      reason = 'the app exited';
+      break;
+    }
+    if (events.includes('play-proof-done')) break;
+    if (Date.now() > deadline) {
+      reason = `no play-proof-done in ${String(timeoutS)} s`;
+      break;
+    }
+    await sleep(250);
+  }
+  const readyNow = ready as ReadyFields | null;
+  const bad = readyNow === null ? ['no ready line'] : readyProblems(readyNow, 'off', 'on');
+  say(`ready ${JSON.stringify(readyNow)}; against a sandbox-off launch: ${JSON.stringify(bad)}`);
+  const verdictBad = bad.filter((b) => !b.startsWith('rendererSandbox:'));
+  if (reason === '' && verdictBad.length > 0) reason = `the ready line is wrong: ${verdictBad.join('; ')}`;
+  if (reason === '' && !gone) await onDone();
+  const stopped = await stop(child, exited);
+  return {
+    ok: reason === '',
+    reason: reason === '' ? 'ready, played' : reason,
+    tail,
+    ms: Date.now() - started,
+    ready: readyNow,
+    events,
+    teardown: [],
+    updates,
+    collected,
+    stopped,
+  };
 }
 
 /** The seeding machine's word: `{ done }`, or null when it does not answer. */
@@ -223,29 +332,31 @@ async function main(): Promise<number> {
       env = { ...env, APPIMAGE: dest, APPDIR: appdir, ARGV0: dest, NUTFLIX_APPIMAGE_NO_FUSE: '1' };
       summary['startedAs'] = "the installed AppImage's own extraction, AppRun --no-sandbox";
     }
-    const r = await launch(exe, SANDBOX_OFF ? ['--no-sandbox'] : [], 'ready', 900, {
-      env,
-      sandbox: SANDBOX_OFF ? 'off' : 'on',
-      updates: 'on',
-      waitFor: 'play-proof-done',
-      collect: ['play-proof', 'play-proof-done'],
-      onReady: async () => {
-        // The app is still running: it seeds what it watched. Keep it until X has fetched it back.
-        const until = Date.now() + 15 * 60_000;
-        const from = Date.now();
-        let beat = 0;
-        for (;;) {
-          const s = await status();
-          if (s?.done === true || Date.now() > until) break;
-          if (Date.now() - beat > 30_000) {
-            beat = Date.now();
-            say(`seeding; waiting for the seeding machine to finish (${String(Math.round((Date.now() - from) / 1000))} s)`);
-          }
-          await sleep(5000);
+    const hold = async (): Promise<void> => {
+      // The app is still running: it seeds what it watched. Keep it until X has fetched it back.
+      const until = Date.now() + 15 * 60_000;
+      const from = Date.now();
+      let beat = 0;
+      for (;;) {
+        const s = await status();
+        if (s?.done === true || Date.now() > until) break;
+        if (Date.now() - beat > 30_000) {
+          beat = Date.now();
+          say(`seeding; waiting for the seeding machine to finish (${String(Math.round((Date.now() - from) / 1000))} s)`);
         }
-        heldMs = Date.now() - from;
-      },
-    });
+        await sleep(5000);
+      }
+      heldMs = Date.now() - from;
+    };
+    const r = SANDBOX_OFF
+      ? await runApp(exe, ['--no-sandbox'], env, 900, hold)
+      : await launch(exe, [], 'ready', 900, {
+          env,
+          updates: 'on',
+          waitFor: 'play-proof-done',
+          collect: ['play-proof', 'play-proof-done'],
+          onReady: hold,
+        });
     for (const e of r.collected) say(`${e.name} ${JSON.stringify(e.fields)}`);
     say(`launch: ${r.ok ? 'ok' : 'FAIL'} ${r.reason}; events ${r.events.join(', ')}; held ${String(heldMs)} ms; stop: ${stopLine(r.stopped)}`);
     if (!r.ok) say(r.tail.slice(-60).join('\n'));
