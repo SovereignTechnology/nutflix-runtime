@@ -71,6 +71,23 @@ printf '%s\n' "$out" | grep -Fxq 'ARG=two words' || fail "no fusermount: argumen
 [ "$(stat -c %a "$d")" = 700 ] || fail "the extraction is not private"
 pass "no fusermount: runs from a private extraction, with the notice"
 
+# AppRun's argument list, at every length from none to five, odd and even: upstream's copy of the
+# list had room for the NULL at its end only when it removed a switch, and whether the overrun broke
+# the start depended on the stack's alignment, so a single count can pass by luck.
+sample=(one 'two words' '' '--flag=x' 'pear://x?a=1&b=2')
+for n in 0 1 2 3 4 5; do
+  args=("${sample[@]:0:n}")
+  rc=0
+  out=$(env -i PATH="$nofuse" XDG_CACHE_HOME="$c" "$img" "${args[@]}" 2>&1) || rc=$?
+  [ "$rc" = 0 ] || fail "no FUSE, $n arguments: exit $rc: $(printf '%s\n' "$out" | tail -3)"
+  [ "$(field "$out" APPDIR)" = "$d" ] || fail "no FUSE, $n arguments: APPDIR is $(field "$out" APPDIR)"
+  [ "$(field "$out" ARGC)" = "$n" ] || fail "no FUSE, $n arguments: AppRun got $(field "$out" ARGC)"
+  got=$(printf '%s\n' "$out" | sed -n 's/^ARG=//p')
+  want=$(printf '%s\n' "${args[@]}")
+  [ "$got" = "$want" ] || fail "no FUSE, $n arguments: the arguments changed"
+done
+pass "no fusermount: AppRun gets every argument intact, from none to five"
+
 inode=$(stat -c %i "$d/AppRun")
 env -i PATH="$nofuse" XDG_CACHE_HOME="$c" "$img" >/dev/null
 [ "$(stat -c %i "$d/AppRun")" = "$inode" ] || fail "the second start extracted again"
@@ -90,6 +107,15 @@ out=$(env -i PATH="$nofuse" XDG_CACHE_HOME="$T/c3" "$img" --appimage-extract-and
 [ -z "$(field "$out" NO_FUSE)" ] || fail "explicit: notice set"
 [ "$(field "$out" ARGC)" = 1 ] || fail "explicit: the switch reached the app"
 pass "--appimage-extract-and-run is private too"
+
+# Asked for by the environment rather than the switch, so nothing is removed from the list either.
+rc=0
+out=$(env -i PATH=/usr/bin:/bin XDG_CACHE_HOME="$T/c6" APPIMAGE_EXTRACT_AND_RUN=1 "$img" one 2>&1) || rc=$?
+[ "$rc" = 0 ] || fail "APPIMAGE_EXTRACT_AND_RUN, one argument: exit $rc: $(printf '%s\n' "$out" | tail -3)"
+[ "$(field "$out" APPDIR)" = "$T/c6/nutflix-runtime/appimage-$md5" ] || fail "APPIMAGE_EXTRACT_AND_RUN: wrong directory"
+[ -z "$(field "$out" NO_FUSE)" ] || fail "APPIMAGE_EXTRACT_AND_RUN: notice set"
+[ "$(field "$out" ARGC)" = 1 ] && [ "$(field "$out" ARG)" = one ] || fail "APPIMAGE_EXTRACT_AND_RUN: the argument changed"
+pass "APPIMAGE_EXTRACT_AND_RUN keeps the arguments too"
 
 # What upstream would run: a same-size AppRun, already there under the predictable name.
 planted="/tmp/appimage_extracted_$md5"
