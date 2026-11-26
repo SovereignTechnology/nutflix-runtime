@@ -52,17 +52,17 @@ export interface RuntimePin {
  * build closed, never open.
  */
 export const APPIMAGE_RUNTIME_RELEASE =
-  'https://github.com/SovereignTechnology/nutflix-runtime/releases/tag/appimage-runtime-20251108-nutflix.1';
+  'https://github.com/SovereignTechnology/nutflix-runtime/releases/tag/appimage-runtime-20251108-nutflix.2';
 export const APPIMAGE_RUNTIME_DOWNLOAD =
-  'https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1';
+  'https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.2';
 export const APPIMAGE_RUNTIMES: Readonly<Record<string, RuntimePin>> = {
   x64: {
     asset: 'runtime-x86_64',
-    sha256: '677b21d04b9e93546c3e46c987786b380045254946aa50c296c77c0cc6b31ae7',
+    sha256: 'e7e68188d7f5645024fbc0f705caf20b9b460b2caea2371c8f57557a5311bbc3',
   },
   arm64: {
     asset: 'runtime-aarch64',
-    sha256: '8abc1189793f09720c2befe9edae7a73d00aa448300a99cb052c16d91c0bb8cd',
+    sha256: '350c9dbc73b30c2cef75d59724ac730935321b7c33d7c5d83e1d279369336325',
   },
 };
 
