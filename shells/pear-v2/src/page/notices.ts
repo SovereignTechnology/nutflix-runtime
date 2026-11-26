@@ -3,7 +3,10 @@
  * `textContent`. The label stays on screen for as long as the window is open, and doubles as the
  * title bar, because the runtime opens a frameless window.
  */
-import { WEBRTC_NOTE_ID } from '../../../../packages/renderer/src/settings/webrtc-note.js';
+import {
+  ORIGINS_NOTE_ID,
+  WEBRTC_NOTE_ID,
+} from '../../../../packages/renderer/src/settings/webrtc-note.js';
 
 export const LABEL_ID = 'nutflix-legacy-label';
 export const LEGACY_NOTE_ID = 'nutflix-legacy-webrtc-note';
@@ -78,9 +81,10 @@ export function installLabel(
 }
 
 /**
- * Keeps one text-only `<p>` under the WebRTC switch in Settings, after the renderer's own status
- * line if it has one. The renderer keeps its line directly after the switch's row, so this one
- * follows it and the two never fight over the same place.
+ * Keeps one text-only `<p>` under the WebRTC switch in Settings, after the renderer's own lines
+ * if it has any (its status, then the HTTPS hosts, which this shape never shows). The renderer
+ * keeps its lines directly after the switch's row, so this one follows them and they never fight
+ * over the same place.
  */
 export function installWebRtcWarning(root: HTMLElement): () => void {
   const doc = root.ownerDocument;
@@ -101,8 +105,11 @@ export function installWebRtcWarning(root: HTMLElement): () => void {
       note.setAttribute('role', 'note');
       note.textContent = WEBRTC_LEGACY_NOTE;
     }
-    const next = row.nextElementSibling;
-    const anchor = next !== null && next.id === WEBRTC_NOTE_ID ? next : row;
+    let anchor: Element = row;
+    for (const id of [WEBRTC_NOTE_ID, ORIGINS_NOTE_ID]) {
+      const next = anchor.nextElementSibling;
+      if (next !== null && next.id === id) anchor = next;
+    }
     if (anchor.nextElementSibling !== note) anchor.after(note);
   };
   const observer = new view.MutationObserver(render);

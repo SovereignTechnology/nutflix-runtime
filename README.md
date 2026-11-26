@@ -13,6 +13,10 @@ from a `pear://` link and updates itself from that same link. There is no downlo
   desktop apps, over HyperDHT (NFX-12) natively in the app's Bare worker.
 - **Trade video with web browsers and nfxd** over WebRTC, signaled over Nostr (NFX-10 §6). This
   runs in the app's Chromium window, and is the same player as the web client.
+- **Play videos only nfxd serves**, from the HTTPS origins its beacons name, through that same
+  player in the window (with WebRTC on or off; off means no peer connection). Those hosts see the
+  viewer's IP address and which videos it plays, as any seeder does; Settings says so. The Bare
+  worker stays HyperDHT-only.
 - **Fall back to HyperDHT alone** where the runtime has no WebRTC, WebAssembly or Media Source
   Extensions.
 - **Seed what it plays, and publish** new videos from the app.

@@ -1,7 +1,8 @@
 # @nutflix-runtime/renderer
 
 The Chromium renderer ([ADR 0001](../../docs/decisions/0001-a-pear-native-nutflix.md) §3): the Nutflix
-UI, playing free NFX videos that the [worker](../worker/README.md) fetches over HyperDHT.
+UI, playing free NFX videos that the [worker](../worker/README.md) fetches over HyperDHT, and videos
+that seeders serve over HTTPS, as nfxd does, through nfx's web player.
 
 - **The UI** is nutflix-pear's `@sovit/ui` `Shell` (from the submodule, not edited), over a
   `NetworkAdapter` of this package's own: `RuntimeNetworkAdapter`. It offers Home (the Network and
@@ -20,14 +21,32 @@ UI, playing free NFX videos that the [worker](../worker/README.md) fetches over 
   NIP-11-aware search (`RelaySearchSupport`) and live beacon watch (`NfxBeaconWatch`: beacons are
   ephemeral, so they need a live subscription). The default relays are the desktop app's:
   `wss://relay.nutflix.xyz` (the scoped relay) first, then four public read relays.
-- **Playback** (ADR decision 4). The `t: 'hyperdht'` endpoints of verified beacons go to the
-  worker's `nfx.play.open`, and then one of two paths plays:
+- **Playback** (ADR decision 4 and its amendment of 2026-11-26). Verified beacons name two kinds
+  of source this app uses (`src/adapter/endpoints.ts`): `t: 'hyperdht'` endpoints, which go to the
+  worker's `nfx.play.open`, and `t: 'https'` origins (NFX-05 §6), which only nfx's web player
+  fetches, here in the page: the worker fetches no `https`. nfxd names an `https` origin and no
+  HyperDHT endpoint, so its videos play from those origins and the mesh. A play waits for a seeder
+  that names either one it can use. Then:
   - **The WebRTC player**, when the probe passed and the viewer has not switched WebRTC off: nfx's
-    web player (hls.js, p2p-media-loader, `nfx_wasm`) with the worker's loopback origin as its one
-    origin, and a mesh signaled over Nostr (NFX-10 §6) that reaches browsers and
+    web player (hls.js, p2p-media-loader, `nfx_wasm`), with its origins in this order: the
+    worker's loopback origin, when the worker can serve the video (a HyperDHT seeder, or its own
+    store), then the beacons' `https` origins. The library takes every file from the first that
+    holds a rendition. Beside it, a mesh signaled over Nostr (NFX-10 §6) reaches browsers and
     `nfxd --mesh-relay`. If it fails to start or stops with a fatal error, the same `<video>` goes
-    on from the worker's progressive stream.
-  - **The hyper-only path:** `progressiveUrl` in a plain `<video>`.
+    on from the worker's progressive stream; a play with no worker session has none, and says so.
+  - **WebRTC off:** `progressiveUrl` in a plain `<video>`, over HyperDHT alone, as before. A video
+    the worker cannot serve plays through nfx's web player from the beacons' `https` origins with
+    no signaling, so with no mesh: the library then builds plain hls.js and makes no peer
+    connection at all. The page still fetches from those hosts.
+  - **No web player** (the probe failed): the progressive path alone. A video only `https`
+    origins serve fails with a message that says so, not as "nobody is seeding".
+  - **Shape (b)** (the `pear run` window, whose network list is loopback alone) never fetches
+    beacon origins (`beaconOrigins: false`): such a video fails the same way, saying the window
+    does not fetch from HTTPS hosts.
+
+  "Seed what you watch" works on a play the worker has a session for. A video only `https`
+  origins serve, and that the worker does not hold, has none, so it is not stored and re-seeded
+  here: that would need the worker to take a session with no source.
 
   Leaving the page closes the session.
 - **The capability probe** (`src/probe.ts`) checks `RTCPeerConnection`, `MediaSource`, and that
@@ -70,9 +89,9 @@ cannot read or open: only the native Account menu opens it, and this page only p
   redirects, checked, sniffed, and shown as a `blob:`.
 - **The policy** is the first element of `index.html`'s `<head>` (tested by `csp.test.ts`): no
   inline script, no `eval`, no inline style; `media-src` is the worker's loopback server and
-  `blob:`; `connect-src` is `wss:` relays, `https:` (the viewer's relays' NIP-11 documents and
-  signed images: the hosts are the viewer's, and each is checked by `isPublicHost`), loopback and
-  `blob:`. What the WebRTC player added, and why:
+  `blob:`; `connect-src` is `wss:` relays, `https:` (the viewer's relays' NIP-11 documents, signed
+  images, and the origins beacons name for nfx's web player; each host is checked by
+  `isPublicHost`), loopback and `blob:`. What the WebRTC player added, and why:
   - `script-src 'wasm-unsafe-eval'`: compiles nfx's WASM verifier. JavaScript `eval` stays refused.
   - `media-src blob:`: hls.js plays through a `MediaSource`, whose URL is a `blob:`.
   - `connect-src blob:`: the library's `init` fetches the WASM from a URL, so it is handed a `blob:`
@@ -92,6 +111,14 @@ cannot read or open: only the native Account menu opens it, and this page only p
   address while WebRTC is on, and the relays learn which videos' rooms it is in. Settings says so
   beside the switch. Two viewers on one LAN do not connect directly, because their host candidates
   are mDNS names, which the filter drops.
+- **Beacon origins** (`https`, with WebRTC on or off): the host a beacon names sees the viewer's IP
+  address and which video it plays, as any seeder does, and Settings says so beside the switch.
+  Beacons come from any key, so the rules are the web app's: `https:` only, no user-info, query
+  or fragment, a public host by what the URL says, at most 4 per beacon and 8 in all. A page
+  cannot see where a name resolves, so a name that resolves to a private address is not caught
+  here; such a host gets the library's plain `GET`s, whose answers it cannot read without CORS and
+  which are checked against the hash list anyway. A hostile origin can also answer a segment with
+  more bytes than it should: the player refuses them, after downloading them.
 
 ## The pinned library
 
@@ -106,9 +133,9 @@ Nothing is loaded from a CDN.
 |---|---|---|
 | `src/main.tsx`, `src/entry.ts` | `startRenderer`, and the page's script | `main.tsx`, adapted |
 | `src/adapter/adapter.ts` | `RuntimeNetworkAdapter` | `adapter/web-adapter.ts`, `playNfx` rewritten for the worker |
-| `src/adapter/endpoints.ts` | the verified `hyperdht` endpoints of beacons | `adapter/endpoints.ts`, for `https` origins |
+| `src/adapter/endpoints.ts` | the verified `hyperdht` endpoints and the usable `https` origins of beacons | `adapter/endpoints.ts`, without its fallback origin |
 | `src/adapter/session.ts` | one hyper-only play: a `url` source, closed through the worker | new |
-| `src/adapter/webrtc-session.ts` | one play through nfx's player, with the runtime fallback | `adapter/session.ts`, adapted |
+| `src/adapter/webrtc-session.ts` | one play through nfx's player (the worker's origin, then the beacons'), with the runtime fallback; what it measured, on the `<video>` | `adapter/session.ts`, adapted |
 | `src/player/*` | the library's API as used here; its loader (sha256, SRI, `init`) | `nfx-lib.ts`, `site/entry.ts` |
 | `src/adapter/{images,address,wallet}.ts`, `src/net/*`, `src/shell/routes.ts` | signed images, NFX addresses, no wallet, bounded HTTP, hosts, hash routes | the same files, renamed |
 | `src/settings/*` | defaults (the desktop app's), the checks, Web Storage, what WebRTC's settings mean and the line Settings shows; the sandbox section (`sandbox-choice.ts`, new) | `settings/*`, trimmed |
@@ -119,7 +146,8 @@ Nothing is loaded from a CDN.
 
 ## Tests
 
-`npm test` runs the unit tests (jsdom, and node where a file says so). `npm run test:e2e` builds
+`npm test` runs the unit tests (jsdom, and node where a file says so); `nfxd-play.test.ts` holds the
+plays from `https` origins. `npm run test:e2e` builds
 the bundle and runs `e2e/renderer.e2e.ts`: headless Chromium, a real worker on a loopback hyperdht
 testnet fed by nutflix-pear's own `listenNfx`, a local relay, and a VP9 clip made by ffmpeg
 (`FFMPEG`; `CHROMIUM` picks a browser; `NUTFLIX_E2E_NO_SANDBOX=1` where Chromium cannot sandbox,

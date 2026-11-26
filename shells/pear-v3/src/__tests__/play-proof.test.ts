@@ -14,6 +14,7 @@ import {
   CLICK_PLAY_CODE,
   HAS_PLAY_CODE,
   HOME_CODE,
+  MEASURED_CODE,
   MOUNTED_CODE,
   NFX_NETWORK,
   OffLoopback,
@@ -21,6 +22,7 @@ import {
   SETTINGS_KEY,
   UNANSWERED_STUN,
   isOffLoopback,
+  parseMeasured,
   parseSample,
   readSettingsCode,
   runPlayProof,
@@ -130,8 +132,31 @@ describe('a reading of the page', () => {
   });
 });
 
+describe('what the web player measured', () => {
+  it('is taken as fixed words and whole numbers, -1 for not counted', () => {
+    const good = { from: 'https', httpBytes: 1_000, p2pBytes: 2_000, peers: 1 };
+    expect(parseMeasured(good)).toEqual(good);
+    expect(parseMeasured({ from: 'worker', httpBytes: -1, p2pBytes: -1, peers: -1 })).toEqual({
+      from: 'worker',
+      httpBytes: -1,
+      p2pBytes: -1,
+      peers: -1,
+    });
+  });
+
+  it.each([
+    ['null', null],
+    ['a URL for an origin', { from: 'https://evil.example/', httpBytes: 1, p2pBytes: 1, peers: 1 }],
+    ['a fraction', { from: 'https', httpBytes: 1.5, p2pBytes: 1, peers: 1 }],
+    ['NaN', { from: 'https', httpBytes: Number.NaN, p2pBytes: 1, peers: 1 }],
+    ['below -1', { from: 'https', httpBytes: -2, p2pBytes: 1, peers: 1 }],
+  ])('reads %s as nothing measured', (_n, x) => {
+    expect(parseMeasured(x)).toEqual({ from: 'none', httpBytes: -1, p2pBytes: -1, peers: -1 });
+  });
+});
+
 /** The page as the proof sees it: a clock it moves by sleeping, and a video that plays when pressed. */
-function fakePage(o: { button?: boolean } = {}): {
+function fakePage(o: { button?: boolean; measured?: unknown } = {}): {
   page: PlayProofPage;
   clock: { t: number };
   loads: string[];
@@ -170,6 +195,7 @@ function fakePage(o: { button?: boolean } = {}): {
         return Promise.resolve(true);
       }
       if (code === readSettingsCode()) return Promise.resolve(stored);
+      if (code === MEASURED_CODE && o.measured !== undefined) return Promise.resolve(o.measured);
       if (code === MOUNTED_CODE) return Promise.resolve(true);
       if (code === HAS_PLAY_CODE)
         return Promise.resolve(o.button !== false && hash === watchHash(PLAY));
@@ -213,7 +239,7 @@ function fakePage(o: { button?: boolean } = {}): {
 
 describe('the run', () => {
   const run = async (
-    o: { button?: boolean } = {},
+    o: { button?: boolean; measured?: unknown } = {},
   ): Promise<{
     logs: [string, Fields][];
     f: ReturnType<typeof fakePage>;
@@ -269,6 +295,23 @@ describe('the run', () => {
     expect(f.loads).toEqual([APP_URL, APP_URL]);
     expect(f.gestures).toEqual([true, true]);
     expect(f.stored()).toBe(settingsFor(PLAY, 'webrtc'));
+  });
+
+  it('reports where the web player’s bytes came from, and nothing measured when the page says nothing', async () => {
+    const quiet = await run();
+    for (const [, m] of quiet.logs.slice(0, 2))
+      expect(m).toMatchObject({ from: 'none', httpBytes: -1, p2pBytes: -1, peers: -1 });
+    const { logs } = await run({
+      measured: { from: 'worker', httpBytes: 4_096, p2pBytes: 0, peers: 0 },
+    });
+    expect(logs[1]?.[1]).toMatchObject({
+      path: 'webrtc',
+      stage: 'measured',
+      from: 'worker',
+      httpBytes: 4_096,
+      p2pBytes: 0,
+      peers: 0,
+    });
   });
 
   it('says where it stopped when there is nothing to press, and still ends', async () => {

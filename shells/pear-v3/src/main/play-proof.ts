@@ -13,7 +13,11 @@
  *   3. presses "Play — free";
  *   4. measures the `<video>`: its media time, Chromium's own frame counts
  *      (`getVideoPlaybackQuality()`), its size and error, and what it plays from (the worker's
- *      progressive stream, or a MediaSource fed by nfx's web player).
+ *      progressive stream, or a MediaSource fed by nfx's web player); and, for the web player,
+ *      what the renderer read from the library's `stats()` (`packages/renderer/src/adapter/
+ *      webrtc-session.ts`, `report`): the origin it plays from (the worker's or an `https` one a
+ *      beacon named) and the mesh's segment bytes over HTTP and from WebRTC peers. The library
+ *      counts bytes only with the mesh on; with it off they read `-1`.
  *
  * It runs once per installed copy (main keeps a marker in the user-data directory, made before the
  * first play), so the later launches of the same build in the install job are left alone. It prints
@@ -137,6 +141,52 @@ export const SAMPLE_CODE =
   " visible: document.visibilityState === 'visible' }; })()";
 
 export type Source = 'progressive' | 'mse' | 'none' | 'other';
+
+/** What nfx's web player measured, read off the `<video>`'s dataset once the play was watched. */
+export const MEASURED_CODE =
+  "(() => { const v = document.querySelector('video'); if (v === null) return null;" +
+  ' const d = v.dataset;' +
+  " return { from: d.nfxFrom ?? 'none', httpBytes: Number(d.nfxHttpBytes ?? '-1')," +
+  " p2pBytes: Number(d.nfxP2pBytes ?? '-1'), peers: Number(d.nfxPeers ?? '-1') }; })()";
+
+export type MeasuredFrom = 'worker' | 'https' | 'other' | 'none';
+
+export interface Measured {
+  /** The origin the web player played from; `none`: no web player (or nothing reported). */
+  readonly from: MeasuredFrom;
+  /** Segment bytes over HTTP from that origin, `-1` when not counted (the mesh off). */
+  readonly httpBytes: number;
+  /** Segment bytes from WebRTC peers, `-1` when not counted. */
+  readonly p2pBytes: number;
+  readonly peers: number;
+}
+
+const NOTHING_MEASURED: Measured = Object.freeze({
+  from: 'none',
+  httpBytes: -1,
+  p2pBytes: -1,
+  peers: -1,
+});
+
+/** A measurement as main will print it: fixed words and whole numbers only, else nothing. */
+export function parseMeasured(x: unknown): Measured {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return NOTHING_MEASURED;
+  const o = x as Record<string, unknown>;
+  const from = o['from'];
+  const n = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isSafeInteger(v) && v >= -1 ? v : null;
+  const httpBytes = n(o['httpBytes']);
+  const p2pBytes = n(o['p2pBytes']);
+  const peers = n(o['peers']);
+  if (
+    (from !== 'worker' && from !== 'https' && from !== 'other' && from !== 'none') ||
+    httpBytes === null ||
+    p2pBytes === null ||
+    peers === null
+  )
+    return NOTHING_MEASURED;
+  return { from, httpBytes, p2pBytes, peers };
+}
 
 export interface Sample {
   readonly t: number;
@@ -314,10 +364,15 @@ async function playOnce(play: PlayProof, path: PlayPath, d: PlayProofDeps): Prom
     last = s;
     if (s.error !== 0 || s.ended) break;
   }
+  const measured = parseMeasured(await d.page.run(MEASURED_CODE).catch(() => null));
   return {
     path,
     stage: 'measured',
     source: last.source,
+    from: measured.from,
+    httpBytes: measured.httpBytes,
+    p2pBytes: measured.p2pBytes,
+    peers: measured.peers,
     t0: round(first.t),
     t1: round(last.t),
     advanced: round(last.t - first.t),

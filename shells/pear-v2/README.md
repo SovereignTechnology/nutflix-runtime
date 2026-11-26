@@ -81,6 +81,11 @@ with the release line (ADR 0001 amendment, item 1).
   `http://127.0.0.1` alone, because decoding a stranger's image here needs no click and has no
   sandbox around it. So thumbnails are blank and NIP-11 search hints are not read. Relays still
   work: the runtime's filter does not cover WebSockets.
+- **Play a video only nfxd serves.** Shape (a) plays such a video from the `https` origins its
+  beacons name (ADR 0001, amendment of 2026-11-26). This window may not fetch from them, so the
+  renderer runs here with `beaconOrigins: false`: it never asks for them, and such a video fails
+  with a message that says this window does not fetch from HTTPS hosts. Videos a HyperDHT seeder
+  serves play as before.
 
 ### WebRTC is off by default
 

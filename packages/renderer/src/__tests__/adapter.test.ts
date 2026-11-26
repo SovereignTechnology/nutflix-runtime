@@ -264,9 +264,13 @@ describe('playNfx: beacons → HyperDHT endpoints → the worker', () => {
     const { addr } = await playable(r);
     put(r.relays, [SCOPED], beacon(new Key(), addr, [https('https://seed.example/o')]));
     r.worker.openFails = 'no-seeders';
-    expect(await code(r.adapter.playNfx(addr))).toBe('no-seeders');
+    // With no web player here, an HTTPS origin cannot be used, and the failure says so
+    // (`nfxd-play.test.ts`) rather than that nobody seeds the video.
+    expect(await code(r.adapter.playNfx(addr))).toBe('unsupported');
     expect(r.worker.opens).toHaveLength(1);
     expect(r.worker.opens[0]?.peers).toEqual([]);
+    r.worker.openFails = null;
+    expect(await code(r.adapter.playNfx(addr))).toBe('resolved');
   });
 
   it('ignores beacons for another video, a paid one, and another creator’s copy', async () => {
