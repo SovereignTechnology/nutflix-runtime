@@ -46,7 +46,8 @@ that seeders serve over HTTPS, as nfxd does, through nfx's web player.
 
   "Seed what you watch" works on a play the worker has a session for. A video only `https`
   origins serve, and that the worker does not hold, has none, so it is not stored and re-seeded
-  here: that would need the worker to take a session with no source.
+  here: that would need the worker to take a session with no source
+  ([#39](https://github.com/SovereignTechnology/nutflix-runtime/issues/39)).
 
   Leaving the page closes the session.
 - **The capability probe** (`src/probe.ts`) checks `RTCPeerConnection`, `MediaSource`, and that
@@ -114,11 +115,16 @@ cannot read or open: only the native Account menu opens it, and this page only p
 - **Beacon origins** (`https`, with WebRTC on or off): the host a beacon names sees the viewer's IP
   address and which video it plays, as any seeder does, and Settings says so beside the switch.
   Beacons come from any key, so the rules are the web app's: `https:` only, no user-info, query
-  or fragment, a public host by what the URL says, at most 4 per beacon and 8 in all. A page
-  cannot see where a name resolves, so a name that resolves to a private address is not caught
-  here; such a host gets the library's plain `GET`s, whose answers it cannot read without CORS and
-  which are checked against the hash list anyway. A hostile origin can also answer a segment with
-  more bytes than it should: the player refuses them, after downloading them.
+  or fragment, a public host by what the URL says, at most 4 per beacon and 8 in all. The player
+  follows redirects, so shape (a)'s main also cancels every `https:` request of the window to an
+  IP literal that is not public or to `localhost`, `*.localhost` or `*.local`, a redirect's
+  target included (`shells/pear-v3/src/main/loopback.ts`, by this package's own `publicIpLiteral`
+  and `isAlwaysLocalName`). Known limits:
+  - **Any other name that resolves to a private address is not caught**, here or in main:
+    neither sees where a name resolves. Such a host gets the library's plain `GET`s, whose answers it cannot
+    read without CORS and which are checked against the hash list anyway.
+  - **A hostile origin can answer a segment with more bytes than it should:** the player refuses
+    them, after downloading them.
 
 ## The pinned library
 

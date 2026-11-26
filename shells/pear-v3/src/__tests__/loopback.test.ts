@@ -2,11 +2,20 @@
  * The page's plain HTTP reaches the worker's own loopback ports and nothing else (`loopback.ts`):
  * main learns the ports from the worker's `nfx.play.open` answers as they pass the gate, forgets
  * them when the worker is gone, and cancels every other `http:` request of the window's session.
+ * And its `https:` reaches no private host (an IP literal that is not public, or `localhost`,
+ * `*.localhost`, `*.local`), a redirect's target included, by the renderer's own rules
+ * (`publicIpLiteral`, which `isPublicHost` reads too, and `isAlwaysLocalName`).
  */
 import { FrameDecoder, encodeFrame } from '@nutflix-runtime/worker';
 import { describe, expect, it } from 'vitest';
 
 import {
+  isAlwaysLocalName,
+  isPublicHost,
+  publicIpLiteral,
+} from '../../../../packages/renderer/src/net/hosts.ts';
+import {
+  PRIVATE_HOST_SCHEMES,
   REFUSALS_LOGGED,
   WorkerPorts,
   allowRequest,
@@ -141,9 +150,12 @@ describe('what the window’s session may request', () => {
     'ws://127.0.0.1:7777/',
     'wss://relay.example/',
     'https://images.example/a.png',
-  ])('everything that is not plain HTTP is left to the page’s policy: %s', (url) => {
-    expect(allowRequest(url, ports)).toEqual({ allow: true });
-  });
+  ])(
+    'what is not plain HTTP (nor https: to a private literal) is left to the page’s policy: %s',
+    (url) => {
+      expect(allowRequest(url, ports)).toEqual({ allow: true });
+    },
+  );
 
   it('a URL that does not parse is refused', () => {
     expect(allowRequest('::not a url', ports)).toEqual({ allow: false, port: null });
@@ -151,6 +163,113 @@ describe('what the window’s session may request', () => {
 
   it('with no play open yet, no plain HTTP passes at all', () => {
     expect(allowRequest(stream(4100), new WorkerPorts())).toMatchObject({ allow: false });
+  });
+});
+
+describe('https: to a private host', () => {
+  const ports = new WorkerPorts();
+  ports.served(stream(4100));
+
+  // Chromium hands the listener a canonical URL, and Node's WHATWG `URL` reads the other spellings
+  // of an IPv4 address (hex, octal, one number) the same way, so they are refused as well.
+  it.each([
+    ['loopback', 'https://127.0.0.1/', 443],
+    ['loopback on the worker’s port: only its plain HTTP passes', 'https://127.0.0.1:4100/x', 4100],
+    ['loopback elsewhere in 127/8', 'https://127.1.2.3:8443/', 8443],
+    ['loopback in hex', 'https://0x7f.1/', 443],
+    ['loopback in octal', 'https://0177.0.0.1/', 443],
+    ['loopback as one number', 'https://2130706433/', 443],
+    ['this network', 'https://0/', 443],
+    ['RFC 1918 10/8', 'https://10.0.0.1/', 443],
+    ['RFC 1918 172.16/12', 'https://172.16.0.1/', 443],
+    ['RFC 1918 192.168/16', 'https://192.168.1.1:8443/admin', 8443],
+    ['CGNAT, and so a tailnet address', 'https://100.64.0.1/', 443],
+    ['link-local (cloud metadata)', 'https://169.254.169.254/latest', 443],
+    ['IPv6 loopback', 'https://[::1]/', 443],
+    ['IPv6 link-local', 'https://[fe80::1]/', 443],
+    ['IPv6 unique-local', 'https://[fd00::1]/', 443],
+    ['IPv4-mapped loopback', 'https://[::ffff:127.0.0.1]/', 443],
+    ['IPv4-mapped LAN', 'https://[::ffff:192.168.0.1]/', 443],
+    ['NAT64 of a private address', 'https://[64:ff9b::a00:1]/', 443],
+    ['6to4 of a private address', 'https://[2002:c0a8:101::]/', 443],
+    // Names that are local whatever DNS says: Chromium maps localhost itself; .local is mDNS.
+    ['localhost', 'https://localhost/', 443],
+    ['localhost in capitals', 'https://LOCALHOST:8443/', 8443],
+    ['localhost with a trailing dot', 'https://localhost./', 443],
+    ['a name under localhost', 'https://app.localhost/', 443],
+    ['a name under localhost, mixed case, trailing dot', 'https://App.LocalHost.:9000/', 9000],
+    ['an mDNS name', 'https://printer.local/', 443],
+    ['an mDNS name in capitals, trailing dot', 'https://NAS.LOCAL./x', 443],
+  ])('refused: %s', (_what, url, port) => {
+    expect(allowRequest(url, ports)).toEqual({ allow: false, port, scheme: 'https' });
+  });
+
+  it.each([
+    'https://93.184.215.14/o',
+    'https://[2606:4700::6810:84e5]/o',
+    'https://web.nutflix.xyz/o',
+    // Names that only look local, and others whose address only DNS knows (a known limit).
+    'https://localhost.example/',
+    'https://local.example/',
+    'https://example.localdomain/',
+    'https://box.internal/',
+    // Kept (the maintainer, 2026-11-26): only the viewer's Settings choose WebSocket hosts.
+    'wss://192.168.1.5/',
+    'wss://100.64.0.1:7777/',
+    'wss://127.0.0.1/',
+    'wss://localhost:7777/',
+    'wss://relay.local/',
+    'ws://127.0.0.1:7777/',
+  ])('allowed: %s', (url) => {
+    expect(allowRequest(url, ports)).toEqual({ allow: true });
+  });
+
+  it('guards https: alone, the one switch for wss:', () => {
+    expect([...PRIVATE_HOST_SCHEMES]).toEqual(['https:']);
+  });
+
+  it('reads a name as always local in any case, with or without one trailing dot', () => {
+    for (const n of [
+      'localhost',
+      'LocalHost.',
+      'a.localhost',
+      'b.a.LOCALHOST.',
+      'nas.local',
+      'NAS.Local.',
+    ])
+      expect(isAlwaysLocalName(n), n).toBe(true);
+    for (const n of [
+      'localhost.example',
+      'mylocalhost',
+      'local',
+      'local.example',
+      'nas.locale',
+      'a.local..',
+    ])
+      expect(isAlwaysLocalName(n), n).toBe(false);
+    // The page refuses every one of them already: main only repeats a narrower rule.
+    for (const n of ['localhost', 'a.localhost', 'nas.local', 'nas.local.'])
+      expect(isPublicHost(n), n).toBe(false);
+  });
+
+  it('reads the renderer’s own table: the same answer as isPublicHost for every literal', () => {
+    for (const h of [
+      '127.0.0.1',
+      '10.0.0.1',
+      '100.64.0.1',
+      '169.254.1.1',
+      '93.184.215.14',
+      '8.8.8.8',
+      '[::1]',
+      '[fd00::1]',
+      '[::ffff:7f00:1]',
+      '[2606:4700::6810:84e5]',
+      '[::1',
+      '999.1.1.1',
+    ])
+      expect(publicIpLiteral(h), h).toBe(isPublicHost(h));
+    for (const name of ['web.nutflix.xyz', 'localhost', 'nas.local'])
+      expect(publicIpLiteral(name), name).toBeNull();
   });
 });
 
@@ -299,6 +418,22 @@ describe('the guard in the session', () => {
       'wss://relay.example.org/',
       'http://127.0.0.1:631/',
       'app://nutflix/index.html',
+    ]);
+  });
+
+  it('cancels a redirect’s target too: Electron restarts a followed redirect through the same listener', () => {
+    const f = fakeSession();
+    const log: [string, unknown][] = [];
+    installLoopbackGuard(f.ses, new WorkerPorts(), (name, fields) => log.push([name, fields]));
+    // The origin a beacon named, then the URL its 302 pointed at (Electron 45.2.1:
+    // `FollowRedirect` → `RestartInternal` → `onBeforeRequest` with the new URL).
+    expect(f.send('https://cdn.example/o/' + 'ab'.repeat(32))).toEqual({});
+    expect(f.send('https://192.168.1.1/cgi-bin/reboot')).toEqual({ cancel: true });
+    expect(f.send('https://[::1]:8443/')).toEqual({ cancel: true });
+    // By scheme and port only.
+    expect(log).toEqual([
+      ['private-refused', { scheme: 'https', port: 443 }],
+      ['private-refused', { scheme: 'https', port: 8443 }],
     ]);
   });
 

@@ -22,6 +22,11 @@
  *     event reaches main's shortcut before the page, and a page's synthetic one does not;
  *   - a real click can take the page to fullscreen, a real Esc leaves it and the menu bar is back.
  *     What the menu bar does during fullscreen is recorded in the log, not asserted;
+ *   - the app's guard (`loopback.ts`), in the app's session: a redirect from a port the worker
+ *     serves to another loopback port is cancelled before that server sees it, which is what shows
+ *     that Electron hands a redirect's target to the same `onBeforeRequest` listener (the guard's
+ *     `https:` rule for private IP literals relies on it; a TLS origin here would need a trusted
+ *     certificate, so the redirect is plain HTTP);
  *   - the app's guard on plain HTTP (`loopback.ts`), in the app's session: a page's `fetch` and
  *     `<video>` reach a port the worker serves, never another loopback port (that server sees no
  *     request at all), and once the worker is gone and another took a new port, only the new port
@@ -287,6 +292,34 @@ async function observeFullscreen(win: BrowserWindow): Promise<{
     during,
     after,
     menuBarBack: win.isMenuBarVisible() && !win.isMenuBarAutoHide(),
+  };
+}
+
+/** A loopback HTTP server that answers every request with a 302 to `to`, and records its paths. */
+async function redirectingServer(to: string): Promise<{
+  readonly port: number;
+  readonly paths: string[];
+  close(): void;
+}> {
+  const paths: string[] = [];
+  const server = createServer((req, res) => {
+    paths.push(req.url ?? '');
+    res.writeHead(302, {
+      location: to,
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-store',
+    });
+    res.end();
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return {
+    port: (server.address() as AddressInfo).port,
+    paths,
+    close: () => {
+      server.close();
+    },
   };
 }
 
@@ -886,6 +919,10 @@ async function run(v: ProofVerdict): Promise<void> {
   const workerServer = await countingServer('not a video', 'video/mp4');
   const otherServer = await countingServer('a service the page must not reach', 'text/plain');
   const nextServer = await countingServer('not a video', 'video/mp4');
+  const redirectTarget = await countingServer('a service a redirect must not reach', 'text/plain');
+  const redirector = await redirectingServer(
+    `http://127.0.0.1:${String(redirectTarget.port)}/redirected`,
+  );
   try {
     // What the gate learns from a worker's `nfx.play.open` answer. The proof's own page is served
     // from loopback (so that no other rule of Chromium's can stand in for the guard), and its port
@@ -931,6 +968,25 @@ async function run(v: ProofVerdict): Promise<void> {
       `fetch ${String(toOther['fetched'])}, the server saw ${String(otherServer.paths.length)}`,
     );
 
+    // A port the worker serves answers with a redirect to one it does not: Electron restarts the
+    // followed redirect through `onBeforeRequest`, so the guard cancels it there.
+    ports.served(`http://127.0.0.1:${String(redirector.port)}${fetchPath}`);
+    const toRedirect = await probe(redirector.port);
+    v.note('http-guard-redirect', {
+      toRedirect,
+      redirectorSaw: [...redirector.paths],
+      targetSaw: [...redirectTarget.paths],
+      refusedPorts: [...refusedPorts],
+    });
+    v.check(
+      'httpRedirectTargetRefused',
+      redirector.paths.includes(fetchPath) &&
+        toRedirect['fetched'] === 'refused' &&
+        redirectTarget.paths.length === 0 &&
+        refusedPorts.includes(redirectTarget.port),
+      `fetch ${String(toRedirect['fetched'])}, the redirector saw ${String(redirector.paths.length)}, its target ${String(redirectTarget.paths.length)}`,
+    );
+
     // The worker is gone, and the next one's server took a new port.
     ports.reset();
     ports.served(`http://127.0.0.1:${String(nextServer.port)}${mediaPath}`);
@@ -954,7 +1010,8 @@ async function run(v: ProofVerdict): Promise<void> {
     );
     page.destroy();
   } finally {
-    for (const s of [pageServer, workerServer, otherServer, nextServer]) s.close();
+    for (const s of [pageServer, workerServer, otherServer, nextServer, redirectTarget, redirector])
+      s.close();
   }
 }
 
