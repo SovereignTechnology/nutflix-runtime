@@ -18,10 +18,13 @@
  *     launched on a runner). `test-build` makes it too.
  *
  * A `test` root may also carry `play`: a relay on 127.0.0.1 and one NFX address, the install job's
- * packaged-playback proof (`src/main/play-proof.ts`). Main holds the same baked root as the updater
- * (`packaging/stage.ts`), and with it the data worker joins the root's private DHT and the window
- * opens and plays that video. A `release` or `launch` root refuses the field, as it refuses a DHT,
- * so no build that can ship or that CI launches in a release's place carries it.
+ * packaged-playback proof (`src/main/play-proof.ts`). A test root on the PUBLIC DHT (`dht: null`,
+ * the real-host proof, never CI) may instead name public `wss://` relays there, all of them, to
+ * play a live video as a viewer does (test 2: nfxd's); a root on a private DHT may not. Main
+ * holds the same baked root as the updater (`packaging/stage.ts`), and with it the data worker
+ * joins the root's DHT and the window opens and plays that video. A `release` or `launch` root
+ * refuses the field, as it refuses a DHT, so no build that can ship or that CI launches in a
+ * release's place carries it.
  *
  * Pure and runtime-neutral: it runs in Bare, in Node and in the tests.
  */
@@ -50,10 +53,14 @@ export interface TrustRoot {
 
 /**
  * The install job's playback proof, baked into a TEST build: the catalog relays the window uses and
- * the one video it opens and plays (`src/main/play-proof.ts`). Every address is on loopback.
+ * the one video it opens and plays (`src/main/play-proof.ts`). Every address is on loopback, unless
+ * the root is on the public DHT and every relay is a public `wss://` origin (the real-host proof).
  */
 export interface PlayProof {
-  /** `ws://127.0.0.1:<port>`: where the manifest and the seeders' beacons are. */
+  /**
+   * `ws://127.0.0.1:<port>`: where the manifest and the seeders' beacons are. On the public DHT
+   * only, bare `wss://` origins instead, all of them.
+   */
   readonly relays: readonly string[];
   /** The NFX address to open, `38504:<creator>:nfx:testnet:1:<video id>`. */
   readonly video: string;
@@ -144,7 +151,7 @@ export function parseTrustRoot(x: unknown): TrustRoot {
       return refuse('a test delay must be 0 to 60000 ms');
     delayMs = d;
     if (upgrade === null) return refuse('a test build needs an upgrade link');
-    if (hasPlay) play = parsePlay(r['play']);
+    if (hasPlay) play = parsePlay(r['play'], dht === null);
   }
   return Object.freeze({
     v: 1 as const,
@@ -158,16 +165,24 @@ export function parseTrustRoot(x: unknown): TrustRoot {
   });
 }
 
-/** A test root's `play`: exactly its two fields, every relay on loopback, one NFX address. */
-function parsePlay(x: unknown): PlayProof {
+/**
+ * A test root's `play`: exactly its two fields, one NFX address, and every relay on loopback; or,
+ * on the public DHT (`publicDht`), every relay a bare `wss://` origin. Never the two mixed.
+ */
+function parsePlay(x: unknown, publicDht: boolean): PlayProof {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return refuse('play: not an object');
   const p = x as Record<string, unknown>;
   const keys = Object.keys(p).sort();
   if (keys.length !== PLAY_KEYS.length || keys.some((k, i) => k !== PLAY_KEYS[i]))
     return refuse('play: wrong fields');
   const relays = stringList(p['relays'], 'play relays', MAX_RELAYS);
-  if (relays.some((u) => !LOOPBACK_RELAY.test(u)))
-    return refuse('a play relay must be ws://127.0.0.1:<port>');
+  const allPublic = publicDht && relays.every((u) => RELEASE_RELAY.test(u));
+  if (!allPublic && relays.some((u) => !LOOPBACK_RELAY.test(u)))
+    return refuse(
+      publicDht
+        ? 'play relays must all be ws://127.0.0.1:<port>, or all bare wss:// origins'
+        : 'a play relay must be ws://127.0.0.1:<port>',
+    );
   const video = p['video'];
   if (typeof video !== 'string' || !PLAY_VIDEO.test(video))
     return refuse('play: the video must be an NFX address on nfx:testnet:1');

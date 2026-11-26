@@ -216,12 +216,41 @@ describe('the trust root', () => {
     expect(() =>
       parseTrustRoot(testRoot({ dht: null, relays: ['wss://relay.example.org'] })),
     ).toThrow(/a test relay must be ws:\/\/127\.0\.0\.1/);
+    expect(() => parseTrustRoot(testRoot({ dht: [] }))).toThrow(TrustRootError);
+  });
+
+  it('takes public play relays only in a test root on the public DHT, all of them public', () => {
+    const live = {
+      relays: ['wss://relay.example.org', 'wss://relay.example.net:7443'],
+      video: PLAY.video,
+    };
+    const r = parseTrustRoot(testRoot({ dht: null, play: live }));
+    expect(r.play).toEqual(live);
+    expect(r.relays.every((u) => u.startsWith('ws://127.0.0.1:'))).toBe(true);
+    expect(decodeBakedRoot(encodeBakedRoot(r))).toEqual(r);
+    // On a private DHT (CI's install job), loopback only, as before.
+    expect(() => parseTrustRoot(testRoot({ play: live }))).toThrow(
+      /a play relay must be ws:\/\/127\.0\.0\.1/,
+    );
+    for (const relays of [
+      ['wss://relay.example.org', 'ws://127.0.0.1:7778'],
+      ['ws://relay.example.org'],
+      ['wss://relay.example.org/path'],
+      ['wss://user@relay.example.org'],
+      ['https://relay.example.org'],
+    ])
+      expect(() => parseTrustRoot(testRoot({ dht: null, play: { ...PLAY, relays } }))).toThrow(
+        /play relays must all be ws:\/\/127\.0\.0\.1:<port>, or all bare wss:\/\/ origins/,
+      );
+    // A release or launch root still opens no video, whatever its relays.
+    expect(() => parseTrustRoot(releaseShape({ play: live }))).toThrow(
+      /a release build opens no video by itself/,
+    );
     expect(() =>
       parseTrustRoot(
-        testRoot({ dht: null, play: { ...PLAY, relays: ['wss://relay.example.org'] } }),
+        releaseShape({ channel: 'launch', relays: ['ws://127.0.0.1:7777'], play: live }),
       ),
-    ).toThrow(/a play relay must be ws:\/\/127\.0\.0\.1/);
-    expect(() => parseTrustRoot(testRoot({ dht: [] }))).toThrow(TrustRootError);
+    ).toThrow(/a launch build opens no video by itself/);
   });
 
   it('takes a playback proof in a test root only, and keeps it through the baked constant', () => {

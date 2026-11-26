@@ -16,6 +16,9 @@
  *              it watched), both seeders here stop, and a FRESH fetcher (nutflix-pear's `dialNfx`
  *              and `FilesClient`, a new node and key, nothing stored) fetches the whole clip from
  *              the endpoint that beacon names: it can only come from Y. Its verdict is `T3`
+ *   test 2     with `--t2-video <address>`: a second test build whose root's `play` is that live
+ *              video on the network's own public relays (nfxd's: read only), on its own throwaway
+ *              link; the playing machine installs it and plays from what the beacons name
  *   test 4     shape (b): `shells/pear-v2/proof/realhost.ts prepare` (in the background, from the
  *              start) makes a throwaway Pear v2.6.5 line and a throwaway v2 app link on the public
  *              DHT; after test 3, two new seeders (honest and lying again) serve the same clip, and
@@ -25,7 +28,7 @@
  * 0 only when every test it ran passed on this side (`--no-t4`: test 4 is not run).
  *
  *   node shells/pear-v3/scripts/realhost/seed-side.ts --work <dir> --nonce <hex> [--wait-min 60]
- *        [--no-t4]
+ *        [--no-t4] [--t2-video <NFX address>] [--only-t2]
  *
  * The playing machine finds this one by `--nonce` (`topicOf`): the tunnel is announced on that
  * topic from the start, and the relay's `INFO_PATH` names the link once it is seeded.
@@ -69,7 +72,11 @@ import {
   type Clip,
   type Served,
 } from '../pear-ci/playback.ts';
-import type { TrustRoot } from '../../src/update/root.ts';
+import type { PlayProof, TrustRoot } from '../../src/update/root.ts';
+import {
+  DEFAULT_MESH_RELAYS,
+  SCOPED_RELAY,
+} from '../../../../packages/renderer/src/settings/defaults.ts';
 import {
   PublicPear,
   RELAY_PORT,
@@ -107,6 +114,19 @@ const WAIT_MS = minutesArg(arg('wait-min', '60'), 'wait-min');
 const NONCE = arg('nonce');
 /** Test 4 (shape b) is on unless `--no-t4` says it is not run. */
 const T4 = !argv.includes('--no-t4');
+/**
+ * Test 2: `--t2-video <NFX address>`, a live video on the network's own relays (the app's defaults,
+ * read only: nothing is published there). Absent, test 2 is not run.
+ */
+const T2_VIDEO = argv.includes('--t2-video') ? arg('t2-video') : undefined;
+if (
+  T2_VIDEO !== undefined &&
+  !/^38504:[0-9a-f]{64}:nfx:testnet:1:[a-z0-9][a-z0-9-]{0,63}$/.test(T2_VIDEO)
+)
+  throw new Error('--t2-video is an NFX address on nfx:testnet:1');
+const T2_RELAYS: readonly string[] = [SCOPED_RELAY, ...DEFAULT_MESH_RELAYS];
+/** Test 2 alone (`guest.sh both --only-t2`): no clip, seeders, tunnel or tests 1, 3 and 4. */
+const ONLY_T2 = argv.includes('--only-t2');
 
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 const isMedia = (role: Role | undefined): boolean => role === 'init' || role === 'segment';
@@ -364,6 +384,114 @@ function startV2(): {
   };
 }
 
+/** A link on the public DHT, seeding a throwaway test build whose root names `play`. */
+interface Seeded {
+  readonly link: string;
+  readonly verlink: string | undefined;
+  readonly appSha: string;
+  readonly seed: ReturnType<PublicPear['start']>;
+}
+
+/**
+ * `pear touch`, a TEST root naming that link, the public DHT and `play` (a throwaway key: its
+ * notices could only come from this machine's relay), `package.ts test-build` of linux-x64, then
+ * `pear build`, `pear stage` and `pear seed` on the public DHT. Each `name` has its own directory.
+ */
+async function seededBuild(pear: PublicPear, name: string, play: PlayProof): Promise<Seeded> {
+  const dir = join(WORK, name);
+  mkdirSync(dir, { recursive: true });
+  let touched: Awaited<ReturnType<PublicPear['run']>> | undefined;
+  for (
+    let attempt = 1;
+    attempt <= 3 && !(touched?.code === 0 && succeeded(touched.records));
+    attempt++
+  ) {
+    touched = await pear.run(`${name}-touch-${String(attempt)}`, ['touch', '--json'], 180);
+    if (touched.code !== 0) await sleep(10_000);
+  }
+  const link = field(lastRecord(touched?.records ?? [], 'final'), 'link');
+  if (link === undefined || !/^pear:\/\/[a-z0-9]{52}$/.test(link))
+    throw new Error(`pear touch: no link: ${tail(touched?.out ?? '', 6)}`);
+  say(`${name}: throwaway link ${link}`);
+  const root: TrustRoot = {
+    v: 1,
+    channel: 'test',
+    pubkey: getPublicKey(generateSecretKey()),
+    relays: [RELAY_URL],
+    upgrade: link,
+    dht: null,
+    delayMs: 0,
+    play,
+  };
+  const rootFile = join(dir, 'trust-root.json');
+  writeFileSync(rootFile, `${JSON.stringify(root)}\n`);
+  const base = (
+    JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as { version: string }
+  ).version;
+  const version = base.replace(/\.(\d+)$/, (_m, n: string) => `.${String(Number(n) + 1)}`);
+  const out = join(dir, 'out');
+  const code = await runNode(
+    [
+      join(PKG_DIR, 'scripts', 'package.ts'),
+      'test-build',
+      '--platform',
+      'linux',
+      '--arch',
+      'x64',
+      '--out',
+      out,
+      '--update-root',
+      rootFile,
+      '--app-version',
+      version,
+      '--appimage-runtime-dir',
+      join(PKG_DIR, 'out', 'appimage-runtime'),
+    ],
+    PKG_DIR,
+  );
+  if (code !== 0) throw new Error(`package.ts test-build: exit ${String(code)}`);
+  const appImage = join(out, 'make', 'appimage', 'x64', 'Nutflix.AppImage');
+  const appSha = sha256(readFileSync(appImage));
+  say(`${name}: test build ${version}, sha256 ${appSha}`);
+  const project = join(dir, 'project');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, 'package.json'), deploymentPackageJson({ version }));
+  const deploy = join(dir, 'deployment');
+  const built = await pear.run(
+    `${name}-build`,
+    [
+      'build',
+      '--package',
+      join(project, 'package.json'),
+      '--target',
+      deploy,
+      '--json',
+      '--linux-x64-app',
+      appImage,
+    ],
+    900,
+  );
+  if (built.code !== 0 || !succeeded(built.records))
+    throw new Error(`pear build: ${failureMessage(built.records) ?? tail(built.out, 6)}`);
+  const staged = await pear.run(`${name}-stage`, ['stage', '--json', link, deploy], 1500);
+  if (staged.code !== 0 || !succeeded(staged.records))
+    throw new Error(`pear stage: ${failureMessage(staged.records) ?? tail(staged.out, 6)}`);
+  const verlink = field(lastRecord(staged.records, 'addendum'), 'verlink');
+  say(`${name}: staged ${String(verlink)}`);
+  const seed = pear.start(`${name}-seed`, ['seed', '--no-tty', '--json', link]);
+  const until = Date.now() + 300_000;
+  while (lastRecord(parseRecords(seed.read()), 'announced') === undefined) {
+    if (seed.exited()) throw new Error(`pear seed exited: ${tail(seed.read(), 6)}`);
+    if (Date.now() > until) {
+      await seed.stop();
+      throw new Error('pear seed never announced');
+    }
+    await sleep(1000);
+  }
+  say(`${name}: pear seed announced on the public DHT`);
+  return { link, verlink, appSha, seed };
+}
+
 async function main(): Promise<number> {
   mkdirSync(WORK, { recursive: true });
   const summary: Record<string, unknown> = {};
@@ -378,7 +506,8 @@ async function main(): Promise<number> {
   let tunnel: Awaited<ReturnType<typeof tunnelServer>> | undefined;
   let ctl: DHT | undefined;
   let stopAnnounce: (() => void) | undefined;
-  let seed: ReturnType<PublicPear['start']> | undefined;
+  const seeds: ReturnType<PublicPear['start']>[] = [];
+  let t2Prep: Promise<void> | undefined;
   let pear: PublicPear | undefined;
   let v2: ReturnType<typeof startV2> | undefined;
   const verdicts: Record<string, string> = {};
@@ -464,6 +593,31 @@ async function main(): Promise<number> {
       problems: seederProblems(h.log, l.log, clip.roles),
     });
 
+    // `--only-t2`: test 2 alone, on the playing machine itself (`guest.sh both`): its link only.
+    if (ONLY_T2) {
+      if (T2_VIDEO === undefined) throw new Error('--only-t2 needs --t2-video');
+      rel.state = { t4: 'off', t2: 'preparing' };
+      const fetched = await fetchPear('linux-x64', join(WORK, 'tools'));
+      const p = new PublicPear(fetched.bin, join(WORK, 'pear-home'), join(WORK, 'logs'));
+      pear = p;
+      try {
+        const t2 = await seededBuild(p, 't2', { relays: [...T2_RELAYS], video: T2_VIDEO });
+        seeds.push(t2.seed);
+        rel.info = { t2: { link: t2.link, appSha256: t2.appSha, video: T2_VIDEO } };
+        rel.state = { ...rel.state, t2: 'ready' };
+        say(`test 2: link ${t2.link} seeded (its play: ${T2_VIDEO})`);
+      } catch (e) {
+        summary['T2prep'] = e instanceof Error ? e.message.slice(0, 600) : String(e);
+        rel.state = { ...rel.state, t2: 'failed' };
+        say(`test 2: no link: ${String(summary['T2prep'])}`);
+      }
+      const until = Date.now() + WAIT_MS;
+      while (Date.now() < until && !rel.marks.includes('finished')) await sleep(2000);
+      summary['marks'] = rel.marks;
+      verdicts['T2-link'] = summary['T2prep'] === undefined ? 'PASS' : 'FAIL';
+      return summary['T2prep'] === undefined ? 0 : 1;
+    }
+
     // ---- the seeders and the tunnel, on the public DHT -----------------------------------------------
     const honest = await startSeeder('honest', clip, false, order);
     const liar = await startSeeder('liar', clip, true, order);
@@ -475,110 +629,41 @@ async function main(): Promise<number> {
     say(`tunnel ${tunnel.key} on the meeting topic; node nat ${JSON.stringify(natFacts(ctl))}`);
     summary['natX'] = natFacts(ctl);
 
-    // ---- Pear and the link ----------------------------------------------------------------------
+    // ---- Pear and the links ---------------------------------------------------------------------
     const fetched = await fetchPear('linux-x64', join(WORK, 'tools'));
     say(`pear CLI ${fetched.asset} sha256 ${fetched.sha256} (pinned, checked)`);
-    pear = new PublicPear(fetched.bin, join(WORK, 'pear-home'), join(WORK, 'logs'));
-    let touched: Awaited<ReturnType<PublicPear['run']>> | undefined;
-    for (
-      let attempt = 1;
-      attempt <= 3 && !(touched?.code === 0 && succeeded(touched.records));
-      attempt++
-    ) {
-      touched = await pear.run(`touch-${String(attempt)}`, ['touch', '--json'], 180);
-      if (touched.code !== 0) await sleep(10_000);
-    }
-    const link = field(lastRecord(touched?.records ?? [], 'final'), 'link');
-    if (link === undefined || !/^pear:\/\/[a-z0-9]{52}$/.test(link))
-      throw new Error(`pear touch: no link: ${tail(touched?.out ?? '', 6)}`);
-    say(`throwaway link ${link}`);
-
-    // ---- the test build -----------------------------------------------------------------------------
-    const releaseKey = generateSecretKey();
-    const root: TrustRoot = {
-      v: 1,
-      channel: 'test',
-      pubkey: getPublicKey(releaseKey),
-      relays: [RELAY_URL],
-      upgrade: link,
-      dht: null,
-      delayMs: 0,
-      play: { relays: [RELAY_URL], video: addr },
-    };
-    const rootFile = join(WORK, 'trust-root.json');
-    writeFileSync(rootFile, `${JSON.stringify(root)}\n`);
-    const base = (
-      JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as { version: string }
-    ).version;
-    const version = base.replace(/\.(\d+)$/, (_m, p: string) => `.${String(Number(p) + 1)}`);
-    const out = join(WORK, 'out');
-    const code = await runNode(
-      [
-        join(PKG_DIR, 'scripts', 'package.ts'),
-        'test-build',
-        '--platform',
-        'linux',
-        '--arch',
-        'x64',
-        '--out',
-        out,
-        '--update-root',
-        rootFile,
-        '--app-version',
-        version,
-        '--appimage-runtime-dir',
-        join(PKG_DIR, 'out', 'appimage-runtime'),
-      ],
-      PKG_DIR,
-    );
-    if (code !== 0) throw new Error(`package.ts test-build: exit ${String(code)}`);
-    const appImage = join(out, 'make', 'appimage', 'x64', 'Nutflix.AppImage');
-    const appSha = sha256(readFileSync(appImage));
-    say(`test build ${version}: ${appImage} sha256 ${appSha}`);
-
-    // ---- pear build, stage, seed on the public DHT ------------------------------------------------------
-    const project = join(WORK, 'project');
-    mkdirSync(project, { recursive: true });
-    writeFileSync(join(project, 'package.json'), deploymentPackageJson({ version }));
-    const deploy = join(WORK, 'deployment');
-    const built = await pear.run(
-      'build',
-      [
-        'build',
-        '--package',
-        join(project, 'package.json'),
-        '--target',
-        deploy,
-        '--json',
-        '--linux-x64-app',
-        appImage,
-      ],
-      900,
-    );
-    if (built.code !== 0 || !succeeded(built.records))
-      throw new Error(`pear build: ${failureMessage(built.records) ?? tail(built.out, 6)}`);
-    const staged = await pear.run('stage', ['stage', '--json', link, deploy], 1500);
-    if (staged.code !== 0 || !succeeded(staged.records))
-      throw new Error(`pear stage: ${failureMessage(staged.records) ?? tail(staged.out, 6)}`);
-    const verlink = field(lastRecord(staged.records, 'addendum'), 'verlink');
-    say(`staged: ${String(verlink)}`);
-    seed = pear.start('seed', ['seed', '--no-tty', '--json', link]);
-    const s = seed;
-    const until = Date.now() + 300_000;
-    while (lastRecord(parseRecords(s.read()), 'announced') === undefined) {
-      if (s.exited()) throw new Error(`pear seed exited: ${tail(s.read(), 6)}`);
-      if (Date.now() > until) throw new Error('pear seed never announced');
-      await sleep(1000);
-    }
-    say('pear seed: announced on the public DHT');
-    summary['link'] = link;
-    summary['verlink'] = verlink;
-    summary['appSha256'] = appSha;
-    process.stdout.write(`REALHOST_LINK ${link}\n`);
+    const p = new PublicPear(fetched.bin, join(WORK, 'pear-home'), join(WORK, 'logs'));
+    pear = p;
+    const t1 = await seededBuild(p, 't1', { relays: [RELAY_URL], video: addr });
+    seeds.push(t1.seed);
+    summary['link'] = t1.link;
+    summary['verlink'] = t1.verlink;
+    summary['appSha256'] = t1.appSha;
+    process.stdout.write(`REALHOST_LINK ${t1.link}\n`);
     process.stdout.write(`REALHOST_TUNNEL ${tunnel.key}\n`);
-    process.stdout.write(`REALHOST_APP_SHA256 ${appSha}\n`);
+    process.stdout.write(`REALHOST_APP_SHA256 ${t1.appSha}\n`);
     process.stdout.write('REALHOST_READY\n');
-    rel.info = { link, appSha256: appSha, addr };
+    rel.info = { link: t1.link, appSha256: t1.appSha, addr };
+    const s = t1.seed;
+
+    // Test 2's link, made while test 1 runs: a test root whose `play` is nfxd's live video on the
+    // network's own public relays (a root on the public DHT may name them, `src/update/root.ts`).
+    if (T2_VIDEO !== undefined) {
+      rel.state = { ...rel.state, t2: 'preparing' };
+      t2Prep = seededBuild(p, 't2', { relays: [...T2_RELAYS], video: T2_VIDEO }).then(
+        (t2) => {
+          seeds.push(t2.seed);
+          rel.info = { ...rel.info, t2: { link: t2.link, appSha256: t2.appSha, video: T2_VIDEO } };
+          rel.state = { ...rel.state, t2: 'ready' };
+          say(`test 2: link ${t2.link} seeded (its play: ${T2_VIDEO})`);
+        },
+        (e: unknown) => {
+          summary['T2prep'] = e instanceof Error ? e.message.slice(0, 600) : String(e);
+          rel.state = { ...rel.state, t2: 'failed' };
+          say(`test 2: no link: ${String(summary['T2prep'])}`);
+        },
+      );
+    }
 
     // Test 4's link, made while test 1 runs: Pear v2's own fetch, copy and stage take a while.
     if (T4) v2 = startV2();
@@ -716,7 +801,9 @@ async function main(): Promise<number> {
       await sleep(90_000);
     }
     await v2?.stop();
-    await seed?.stop();
+    // Test 2's link may still be on its way: its seed is stopped with the others.
+    if (t2Prep !== undefined) await Promise.race([t2Prep, sleep(600_000)]);
+    for (const x of seeds) await x.stop();
     if (pear !== undefined) {
       const sc = await pear.run('sidecar-shutdown', ['sidecar', 'shutdown'], 90);
       say(`pear seed stopped; sidecar shutdown: exit ${String(sc.code)}`);
