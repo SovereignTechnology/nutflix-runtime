@@ -137,7 +137,7 @@ export interface TunnelStats {
 export async function tunnelServer(
   node: DHT,
   port: number,
-): Promise<{ key: string; stats: TunnelStats; close(): Promise<void> }> {
+): Promise<{ key: string; keyPair: KeyPair; stats: TunnelStats; close(): Promise<void> }> {
   const keyPair = DHT.keyPair();
   const stats: TunnelStats = { connections: 0, remotes: [] };
   const server = node.createServer({}, (socket) => {
@@ -277,7 +277,10 @@ export class RealhostRelay {
   info: Record<string, string> | null = null;
   beacons: () => readonly NostrEvent[] = () => [];
 
-  private constructor(readonly beaconEveryMs: number) {
+  readonly beaconEveryMs: number;
+
+  private constructor(beaconEveryMs: number) {
+    this.beaconEveryMs = beaconEveryMs;
     this.#http = createHttpServer((req, res) => {
       const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
       if (req.method === 'OPTIONS') {
@@ -365,7 +368,7 @@ export class RealhostRelay {
         ev !== null &&
         typeof ev === 'object' &&
         ACCEPTED_KINDS.has(ev.kind) &&
-        verifyEvent(ev as Parameters<typeof verifyEvent>[0]);
+        verifyEvent(ev as unknown as Parameters<typeof verifyEvent>[0]);
       if (ok) this.published.push(ev);
       this.#send(ws, ['OK', id, ok, ok ? '' : 'blocked: beacons only']);
     }
@@ -404,11 +407,14 @@ export interface PearRun {
  */
 export class PublicPear {
   #seq = 0;
-  constructor(
-    readonly bin: string,
-    readonly home: string,
-    readonly logDir: string,
-  ) {
+  readonly bin: string;
+  readonly home: string;
+  readonly logDir: string;
+
+  constructor(bin: string, home: string, logDir: string) {
+    this.bin = bin;
+    this.home = home;
+    this.logDir = logDir;
     mkdirSync(home, { recursive: true });
     mkdirSync(logDir, { recursive: true });
   }
