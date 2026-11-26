@@ -83,20 +83,17 @@ const SANDBOX_OFF = argv.includes('--sandbox-off');
 /** GET `path` on the seeding machine's relay, through the tunnel: its JSON, or null. */
 function getJson<T>(path: string): Promise<T | null> {
   return new Promise((r) => {
-    const req = request(
-      { host: '127.0.0.1', port: RELAY_PORT, path, timeout: 20_000 },
-      (res) => {
-        let body = '';
-        res.on('data', (c: Buffer) => (body += c.toString('utf8')));
-        res.on('end', () => {
-          try {
-            r(JSON.parse(body) as T);
-          } catch {
-            r(null);
-          }
-        });
-      },
-    );
+    const req = request({ host: '127.0.0.1', port: RELAY_PORT, path, timeout: 20_000 }, (res) => {
+      let body = '';
+      res.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      res.on('end', () => {
+        try {
+          r(JSON.parse(body) as T);
+        } catch {
+          r(null);
+        }
+      });
+    });
     req.on('error', () => {
       r(null);
     });
@@ -129,18 +126,21 @@ async function runApp(
       r(c);
     });
   });
-  let gone = false;
+  const st: { gone: boolean; ready: ReadyFields | null; failure: string | null } = {
+    gone: false,
+    ready: null,
+    failure: null,
+  };
   void exited.then(() => {
-    gone = true;
+    st.gone = true;
   });
   const events: string[] = [];
   const collected: { name: string; fields: Record<string, unknown> }[] = [];
   const updates: Record<string, unknown>[] = [];
-  let ready: ReadyFields | null = null;
-  let failure: string | null = null;
   let buf = '';
   child.stderr.on('data', (c: Buffer) => {
-    for (const l of c.toString('utf8').split(/\r?\n/)) if (l !== '') tail.push(`err ${l.slice(0, 300)}`);
+    for (const l of c.toString('utf8').split(/\r?\n/))
+      if (l !== '') tail.push(`err ${l.slice(0, 300)}`);
     if (tail.length > 300) tail.splice(0, tail.length - 300);
   });
   child.stdout.on('data', (c: Buffer) => {
@@ -151,7 +151,7 @@ async function runApp(
       tail.push(`out ${line.slice(0, 300)}`);
       const f = parseReadyLine(line);
       if (f !== null) {
-        ready = f;
+        st.ready = f;
         continue;
       }
       const name = eventName(line);
@@ -164,17 +164,17 @@ async function runApp(
         say(`${name} ${JSON.stringify(fields)}`);
       }
       if ((FAILURE_EVENTS as readonly string[]).includes(name))
-        failure ??= `the app reported ${name} ${JSON.stringify(fields)}`;
+        st.failure ??= `the app reported ${name} ${JSON.stringify(fields)}`;
     }
   });
   const deadline = started + timeoutS * 1000;
   let reason = '';
   for (;;) {
-    if (failure !== null) {
-      reason = failure;
+    if (st.failure !== null) {
+      reason = st.failure;
       break;
     }
-    if (gone) {
+    if (st.gone) {
       reason = 'the app exited';
       break;
     }
@@ -185,12 +185,13 @@ async function runApp(
     }
     await sleep(250);
   }
-  const readyNow = ready as ReadyFields | null;
+  const readyNow = st.ready;
   const bad = readyNow === null ? ['no ready line'] : readyProblems(readyNow, 'off', 'on');
   say(`ready ${JSON.stringify(readyNow)}; against a sandbox-off launch: ${JSON.stringify(bad)}`);
   const verdictBad = bad.filter((b) => !b.startsWith('rendererSandbox:'));
-  if (reason === '' && verdictBad.length > 0) reason = `the ready line is wrong: ${verdictBad.join('; ')}`;
-  if (reason === '' && !gone) await onDone();
+  if (reason === '' && verdictBad.length > 0)
+    reason = `the ready line is wrong: ${verdictBad.join('; ')}`;
+  if (reason === '' && !st.gone) await onDone();
   const stopped = await stop(child, exited);
   return {
     ok: reason === '',
@@ -231,7 +232,8 @@ async function main(): Promise<number> {
         info = got?.info ?? null;
       } else if (!LOCAL && tunnel === undefined) {
         const keys = await lookupTunnel(node, topic).catch(() => []);
-        if (keys.length > 1) say(`${String(keys.length)} tunnels on the topic; the first answering wins`);
+        if (keys.length > 1)
+          say(`${String(keys.length)} tunnels on the topic; the first answering wins`);
         for (const k of keys) {
           const c = await tunnelClient(node, k, RELAY_PORT);
           if ((await status()) !== null) {
@@ -250,7 +252,9 @@ async function main(): Promise<number> {
       if (info === null) {
         if (Date.now() - beat > 30_000) {
           beat = Date.now();
-          say(`waiting for the seeding machine (${tunnel === undefined ? 'no tunnel on the topic yet' : 'tunnel up, link not seeded yet'})`);
+          say(
+            `waiting for the seeding machine (${tunnel === undefined ? 'no tunnel on the topic yet' : 'tunnel up, link not seeded yet'})`,
+          );
         }
         await sleep(5000);
       }
@@ -259,7 +263,9 @@ async function main(): Promise<number> {
     const APP_SHA = info.appSha256;
     if (!/^pear:\/\/[a-z0-9]{52}$/.test(LINK) || !/^[0-9a-f]{64}$/.test(APP_SHA))
       throw new Error('the seeding machine named no link or digest of the right shape');
-    say(`link ${LINK}; staged AppImage sha256 ${APP_SHA}; tunnel remotes ${JSON.stringify(tunnel?.stats.remotes)}`);
+    say(
+      `link ${LINK}; staged AppImage sha256 ${APP_SHA}; tunnel remotes ${JSON.stringify(tunnel?.stats.remotes)}`,
+    );
     summary['link'] = LINK;
 
     // ---- pear install, from the public DHT ---------------------------------------------------------
@@ -276,15 +282,20 @@ async function main(): Promise<number> {
         ['install', '--json', '--timeout', '300', LINK],
         900,
       );
-      say(`pear install attempt ${String(attempt)}: exit ${String(last.code)}, ${String(last.ms)} ms`);
+      say(
+        `pear install attempt ${String(attempt)}: exit ${String(last.code)}, ${String(last.ms)} ms`,
+      );
       if (last.code === 0 && succeeded(last.records)) break;
       say(tail(last.out, 8));
     }
-    if (last === undefined || last.code !== 0 || !succeeded(last.records))
-      throw new Error(`pear install: ${failureMessage(last?.records ?? []) ?? tail(last?.out ?? '', 6)}`);
+    if (last?.code !== 0 || !succeeded(last.records))
+      throw new Error(
+        `pear install: ${failureMessage(last?.records ?? []) ?? tail(last?.out ?? '', 6)}`,
+      );
     const dest = field(lastRecord(last.records, 'app'), 'dest');
     const peers = last.records.filter((r) => r.tag === 'stats').map((r) => r.data['peers']);
-    if (dest === undefined || !existsSync(dest)) throw new Error(`pear install says ${String(dest)}`);
+    if (dest === undefined || !existsSync(dest))
+      throw new Error(`pear install says ${String(dest)}`);
     const got = createHash('sha256').update(readFileSync(dest)).digest('hex');
     summary['install'] = {
       ms: last.ms,
@@ -297,7 +308,10 @@ async function main(): Promise<number> {
     // ---- the switch, as main stores it after the native confirmation --------------------------------
     const worker = join(home, '.config', 'nutflix-runtime', 'worker');
     mkdirSync(worker, { recursive: true });
-    writeFileSync(join(worker, 'seeding.json'), `${JSON.stringify({ v: 1, watched: true, videos: {} })}\n`);
+    writeFileSync(
+      join(worker, 'seeding.json'),
+      `${JSON.stringify({ v: 1, watched: true, videos: {} })}\n`,
+    );
     if (SANDBOX_OFF) {
       const choice = { v: 1, choice: 'run-anyway', at: new Date().toISOString() };
       writeFileSync(
@@ -307,7 +321,9 @@ async function main(): Promise<number> {
       );
       say('no user namespaces here: the app runs with its stored "Run anyway" choice, sandbox off');
     }
-    summary['sandbox'] = SANDBOX_OFF ? 'off (stored Run anyway; this machine has no user namespaces)' : 'on';
+    summary['sandbox'] = SANDBOX_OFF
+      ? 'off (stored Run anyway; this machine has no user namespaces)'
+      : 'on';
 
     // ---- the installed app plays, then seeds ------------------------------------------------------------
     let heldMs = 0;
@@ -325,7 +341,9 @@ async function main(): Promise<number> {
       const dirs = existsSync(cache)
         ? readdirSync(cache).filter((d) => /^appimage-[0-9a-f]{32}$/.test(d))
         : [];
-      say(`first start with no argument: exit ${String(first.status)}; extractions ${JSON.stringify(dirs)}`);
+      say(
+        `first start with no argument: exit ${String(first.status)}; extractions ${JSON.stringify(dirs)}`,
+      );
       if (dirs.length !== 1) throw new Error('no single extraction of the installed AppImage');
       const appdir = join(cache, dirs[0] ?? '');
       exe = join(appdir, 'AppRun');
@@ -342,7 +360,9 @@ async function main(): Promise<number> {
         if (s?.done === true || Date.now() > until) break;
         if (Date.now() - beat > 30_000) {
           beat = Date.now();
-          say(`seeding; waiting for the seeding machine to finish (${String(Math.round((Date.now() - from) / 1000))} s)`);
+          say(
+            `seeding; waiting for the seeding machine to finish (${String(Math.round((Date.now() - from) / 1000))} s)`,
+          );
         }
         await sleep(5000);
       }
@@ -358,7 +378,9 @@ async function main(): Promise<number> {
           onReady: hold,
         });
     for (const e of r.collected) say(`${e.name} ${JSON.stringify(e.fields)}`);
-    say(`launch: ${r.ok ? 'ok' : 'FAIL'} ${r.reason}; events ${r.events.join(', ')}; held ${String(heldMs)} ms; stop: ${stopLine(r.stopped)}`);
+    say(
+      `launch: ${r.ok ? 'ok' : 'FAIL'} ${r.reason}; events ${r.events.join(', ')}; held ${String(heldMs)} ms; stop: ${stopLine(r.stopped)}`,
+    );
     if (!r.ok) say(r.tail.slice(-60).join('\n'));
     const byPath = (p: string): Record<string, unknown> | undefined =>
       r.collected.find((e) => e.name === 'play-proof' && e.fields['path'] === p)?.fields;
@@ -378,7 +400,9 @@ async function main(): Promise<number> {
       heldForReverseMs: heldMs,
       updates: r.updates.slice(-3),
     };
-    say(`test 1 on Y: ${problems.length === 0 && r.ok ? 'PLAYED' : 'NOT PLAYED'} ${JSON.stringify(problems)}`);
+    say(
+      `test 1 on Y: ${problems.length === 0 && r.ok ? 'PLAYED' : 'NOT PLAYED'} ${JSON.stringify(problems)}`,
+    );
   } catch (e) {
     summary['error'] = e instanceof Error ? (e.stack ?? e.message) : String(e);
     say(`FAIL ${String(summary['error'])}`);

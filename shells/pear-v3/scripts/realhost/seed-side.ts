@@ -41,7 +41,13 @@ import {
   verifyHyperdhtBind,
   type Role,
 } from '@sovit/core/nfx';
-import { dialNfx, hyperdhtEndpoint, listenNfx, nodeCrypto, type NfxFileSource } from '@sovit/seeder';
+import {
+  dialNfx,
+  hyperdhtEndpoint,
+  listenNfx,
+  nodeCrypto,
+  type NfxFileSource,
+} from '@sovit/seeder';
 
 import { PKG_DIR } from '../../packaging/paths.ts';
 import { deploymentPackageJson } from '../pear-ci/deployment.ts';
@@ -176,7 +182,10 @@ async function startSeeder(
 /** `node <script> ...` without blocking this process's event loop (its DHT nodes must answer). */
 function runNode(args: readonly string[], cwd: string): Promise<number | null> {
   return new Promise((resolveRun) => {
-    const child = spawn(process.execPath, [...args], { cwd, stdio: ['ignore', 'inherit', 'inherit'] });
+    const child = spawn(process.execPath, [...args], {
+      cwd,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
     child.once('exit', resolveRun);
     child.once('error', () => {
       resolveRun(null);
@@ -191,16 +200,19 @@ async function fetchFromRuntime(
   beacon: NostrEvent,
 ): Promise<Record<string, unknown>> {
   const parsed = parseBeacon(beacon, Math.floor(Date.now() / 1000));
-  if (!parsed.ok) return { ok: false, why: `the app's beacon does not parse: ${parsed.error.reason}` };
+  if (!parsed.ok)
+    return { ok: false, why: `the app's beacon does not parse: ${parsed.error.reason}` };
   const b = parsed.value;
   const addr = VideoAddr.parse(clip.video);
   if (!addr.ok) return { ok: false, why: 'the clip address' };
   if (b.creator !== creator || b.content.video.toString() !== clip.video)
     return { ok: false, why: "the app's beacon names another video" };
   const ep = b.content.endpoints.find(
-    (e) => e.t === 'hyperdht' && verifyHyperdhtBind(e.peer, e.bind, b.seeder, addr.value.namespace.toString()),
+    (e) =>
+      e.t === 'hyperdht' &&
+      verifyHyperdhtBind(e.peer, e.bind, b.seeder, addr.value.namespace.toString()),
   );
-  if (ep === undefined || ep.t !== 'hyperdht')
+  if (ep?.t !== 'hyperdht')
     return { ok: false, why: "the app's beacon names no verified hyperdht endpoint" };
   const node = await publicNode();
   say(`fresh fetcher node: nat ${JSON.stringify(natFacts(node))}`);
@@ -219,7 +231,9 @@ async function fetchFromRuntime(
   const raw = (conn.socket as unknown as { rawStream?: { remoteHost?: string } }).rawStream;
   const remote = addrFacts(raw?.remoteHost);
   const dialMs = Date.now() - t;
-  say(`fresh fetcher dialed the app's endpoint in ${String(dialMs)} ms; remote ${JSON.stringify(remote)}`);
+  say(
+    `fresh fetcher dialed the app's endpoint in ${String(dialMs)} ms; remote ${JSON.stringify(remote)}`,
+  );
   const files = conn.files(addr.value);
   if (files === undefined) {
     conn.destroy('done');
@@ -356,7 +370,11 @@ async function main(): Promise<number> {
     say(`pear CLI ${fetched.asset} sha256 ${fetched.sha256} (pinned, checked)`);
     pear = new PublicPear(fetched.bin, join(WORK, 'pear-home'), join(WORK, 'logs'));
     let touched: Awaited<ReturnType<PublicPear['run']>> | undefined;
-    for (let attempt = 1; attempt <= 3 && !(touched?.code === 0 && succeeded(touched.records)); attempt++) {
+    for (
+      let attempt = 1;
+      attempt <= 3 && !(touched?.code === 0 && succeeded(touched.records));
+      attempt++
+    ) {
       touched = await pear.run(`touch-${String(attempt)}`, ['touch', '--json'], 180);
       if (touched.code !== 0) await sleep(10_000);
     }
@@ -379,8 +397,9 @@ async function main(): Promise<number> {
     };
     const rootFile = join(WORK, 'trust-root.json');
     writeFileSync(rootFile, `${JSON.stringify(root)}\n`);
-    const base = (JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as { version: string })
-      .version;
+    const base = (
+      JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as { version: string }
+    ).version;
     const version = base.replace(/\.(\d+)$/, (_m, p: string) => `.${String(Number(p) + 1)}`);
     const out = join(WORK, 'out');
     const code = await runNode(
@@ -414,7 +433,16 @@ async function main(): Promise<number> {
     const deploy = join(WORK, 'deployment');
     const built = await pear.run(
       'build',
-      ['build', '--package', join(project, 'package.json'), '--target', deploy, '--json', '--linux-x64-app', appImage],
+      [
+        'build',
+        '--package',
+        join(project, 'package.json'),
+        '--target',
+        deploy,
+        '--json',
+        '--linux-x64-app',
+        appImage,
+      ],
       900,
     );
     if (built.code !== 0 || !succeeded(built.records))
@@ -447,12 +475,17 @@ async function main(): Promise<number> {
     const appBeacon = (): NostrEvent | undefined =>
       [...rel.published]
         .reverse()
-        .find((e) => e.kind === 20464 && e.pubkey !== honest?.key.pubkey && e.pubkey !== liar?.key.pubkey);
+        .find(
+          (e) =>
+            e.kind === 20464 && e.pubkey !== honest?.key.pubkey && e.pubkey !== liar?.key.pubkey,
+        );
     let lastBeat = 0;
     let playedAt = 0;
     while (Date.now() < deadline) {
       const h = honest.log;
-      const wholeMedia = h.served.filter((x) => complete(x) && isMedia(clip.roles.get(x.sha))).length;
+      const wholeMedia = h.served.filter(
+        (x) => complete(x) && isMedia(clip.roles.get(x.sha)),
+      ).length;
       if (wholeMedia >= 3 && playedAt === 0) playedAt = Date.now();
       if (Date.now() - lastBeat > 20_000) {
         lastBeat = Date.now();
@@ -489,7 +522,9 @@ async function main(): Promise<number> {
     if (b === undefined) {
       summary['reverse'] = { ok: false, why: 'the app published no beacon in time' };
     } else {
-      say(`the app's beacon: ${JSON.stringify({ kind: b.kind, seeder: b.pubkey, content: JSON.parse(b.content) as unknown })}`);
+      say(
+        `the app's beacon: ${JSON.stringify({ kind: b.kind, seeder: b.pubkey, content: JSON.parse(b.content) as unknown })}`,
+      );
       seedersUp = false;
       await honest.close();
       await liar.close();

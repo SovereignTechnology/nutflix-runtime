@@ -145,7 +145,7 @@ export async function tunnelServer(
     const raw = (socket as unknown as { rawStream?: { remoteHost?: string } }).rawStream;
     if (stats.remotes.length < 8) stats.remotes.push(addrFacts(raw?.remoteHost));
     const tcp = netConnect(port, '127.0.0.1');
-    splice(socket as unknown as Duplex, tcp as unknown as Duplex);
+    splice(socket as unknown as Duplex, tcp);
   });
   await server.listen(keyPair);
   return {
@@ -167,7 +167,7 @@ export function topicOf(nonce: string): Buffer {
 
 /** Keeps `keyPair` announced on `topic` (records expire), until `stop`. */
 export function announceLoop(node: DHT, topic: Buffer, keyPair: KeyPair): () => void {
-  let stopped = false;
+  const state = { stopped: false };
   const once = async (): Promise<void> => {
     try {
       const q = view(node).announce(topic, keyPair);
@@ -178,13 +178,13 @@ export function announceLoop(node: DHT, topic: Buffer, keyPair: KeyPair): () => 
     }
   };
   void (async () => {
-    while (!stopped) {
+    while (!state.stopped) {
       await once();
-      for (let i = 0; i < 60 && !stopped; i++) await sleep(5000);
+      for (let i = 0; i < 60 && !state.stopped; i++) await sleep(5000);
     }
   })();
   return () => {
-    stopped = true;
+    state.stopped = true;
   };
 }
 
@@ -211,7 +211,7 @@ export async function tunnelClient(
       const raw = (socket as unknown as { rawStream?: { remoteHost?: string } }).rawStream;
       if (stats.remotes.length < 8) stats.remotes.push(addrFacts(raw?.remoteHost));
     });
-    splice(tcp as unknown as Duplex, socket as unknown as Duplex);
+    splice(tcp, socket as unknown as Duplex);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -268,7 +268,12 @@ export class RealhostRelay {
   readonly #http: HttpServer;
   readonly #wss: WebSocketServer;
   readonly #stored: NostrEvent[] = [];
-  readonly #subs = new Set<{ ws: WebSocket; id: string; filters: Filter[]; timer: NodeJS.Timeout }>();
+  readonly #subs = new Set<{
+    ws: WebSocket;
+    id: string;
+    filters: Filter[];
+    timer: NodeJS.Timeout;
+  }>();
   /** Beacons clients published, in order. */
   readonly published: NostrEvent[] = [];
   readonly reqs: Filter[][] = [];
@@ -453,29 +458,32 @@ export class PublicPear {
   }
 
   /** Left running (`pear seed`). */
-  start(name: string, args: readonly string[]): { read(): string; exited(): boolean; stop(): Promise<void> } {
+  start(
+    name: string,
+    args: readonly string[],
+  ): { read(): string; exited(): boolean; stop(): Promise<void> } {
     const { logFile, fd } = this.#open(name);
     const child = spawn(this.bin, [...args], { env: this.env, stdio: ['ignore', fd, fd] });
-    let done = false;
+    const st = { done: false };
     const exited = new Promise<void>((resolve) => {
       child.once('exit', () => {
-        done = true;
+        st.done = true;
         closeSync(fd);
         resolve();
       });
       child.once('error', () => {
-        done = true;
+        st.done = true;
         resolve();
       });
     });
     return {
       read: () => readFileSync(logFile, 'utf8'),
-      exited: () => done,
+      exited: () => st.done,
       stop: async () => {
-        if (done) return;
+        if (st.done) return;
         killTreeOf(child.pid);
         await Promise.race([exited, sleep(10_000)]);
-        if (!done) {
+        if (!st.done) {
           killTreeOf(child.pid, true);
           await Promise.race([exited, sleep(5_000)]);
         }
