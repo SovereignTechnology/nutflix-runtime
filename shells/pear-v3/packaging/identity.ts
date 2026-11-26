@@ -13,8 +13,13 @@ export const APP = {
    * executable's name (`Nutflix`, `Nutflix.exe`, `Nutflix.app/Contents/MacOS/Nutflix`).
    */
   productName: 'Nutflix',
-  /** macOS bundle id (a bundle id is a maintainer's choice; this one is not nutflix-pear's). */
-  appId: 'xyz.sovit.nutflix.runtime',
+  /**
+   * App id: macOS bundle id, and the AppStream / Flatpak / desktop-file id of the Linux packages
+   * (the maintainer, 2026-11-26: `pro.sovtech.*`; nutflix-pear is `pro.sovtech.Nutflix`). Not
+   * `pro.sovtech.Nutflix.Runtime`: Flatpak reads `<app-id>.<Name>` as an extension of `<app-id>`.
+   * Frozen once a release ships: Flathub and the stores key an app by it.
+   */
+  appId: 'pro.sovtech.NutflixRuntime',
   description: 'A Pear-native Nutflix: free NFX videos over HyperDHT',
   author: 'Sovereign Technology',
   license: 'AGPL-3.0-or-later',
@@ -26,7 +31,8 @@ export const APP = {
  * Windows refuses an update signed by another publisher.
  */
 export const MSIX = {
-  identity: 'SovereignTechnology.Nutflix',
+  /** Not nutflix-pear's `SovereignTechnology.Nutflix`: two apps, two Windows packages (2026-11-26). */
+  identity: 'SovereignTechnology.NutflixRuntime',
   publisher: 'CN=Sovereign Technology (TEST)',
   publisherDisplayName: 'Sovereign Technology',
   minOsVersion: '10.0.19045.0',

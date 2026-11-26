@@ -239,3 +239,14 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    runs Bare 1.24.3, and the locked `bare-fs` needs Bare 1.28 or later. It needs its own pins, and
    its renderer must work on Chromium 130. It follows on a target only after passing the same
    install-and-launch test there.
+
+## Amendment, 2026-11-26: the app id
+
+The maintainer's decision, while planning Linux distribution (apt/dnf at `pkg.nutflix.xyz`, Flathub,
+Snap, AUR, Nix): every Nutflix app id lives under `pro.sovtech`. nutflix-pear is `pro.sovtech.Nutflix`,
+and this app was renamed with it, before any release, from `xyz.sovit.nutflix.runtime` to
+**`pro.sovtech.NutflixRuntime`** (macOS bundle id, AppStream and Flatpak id). It is not
+`pro.sovtech.Nutflix.Runtime`, because Flatpak reads `<app-id>.<Name>` as an extension of `<app-id>`.
+The MSIX identity moved from `SovereignTechnology.Nutflix` to `SovereignTechnology.NutflixRuntime`,
+so that the two apps are two Windows packages. Nothing on disk moves: the user-data directory is named
+after `name` (`nutflix-runtime`), not the app id. Both ids freeze at the first release.
