@@ -86,7 +86,7 @@ case "$side" in
     chmod -R o+rX "$REPO" 2>/dev/null || true
     d=$REPO
     while [ "$d" != / ]; do chmod o+x "$d" 2>/dev/null || true; d=$(dirname "$d"); done
-    runuser -u rh -- env HOME=/home/rh PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
+    runuser -u rh -- env HOME=/home/rh TMPDIR=/tmp PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
       node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost --local "$@" || true
     wait "$seedpid" || true
     sed 's/^/[seed] /' /tmp/realhost-seed.log | grep -v 'waiting:' | tail -40
@@ -100,7 +100,7 @@ case "$side" in
     chmod -R o+rX "$REPO" 2>/dev/null || true
     d=$REPO
     while [ "$d" != / ]; do chmod o+x "$d" 2>/dev/null || true; d=$(dirname "$d"); done
-    runuser -u rh -- env HOME=/home/rh PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
+    runuser -u rh -- env HOME=/home/rh TMPDIR=/tmp PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
       node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost "$@"
     ;;
   *)
