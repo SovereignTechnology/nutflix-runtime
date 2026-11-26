@@ -299,6 +299,40 @@ describe('seed what you watch', () => {
     expect((call?.a as { sid: string }).sid).toBe(SID);
   });
 
+  // A launch or a reload makes a fresh controller, and nothing has read the switch yet: the first
+  // play must ask the worker, never trust the controller's starting value (found on real hosts).
+  it('on, first play after a launch: the switch is read, then the play is handed over', async () => {
+    const w = world();
+    w.worker.answers['seeding.status'] = () => ({ ...IDLE, watched: true });
+    w.worker.answers['seeding.watch'] = () => ({});
+    const v = video();
+    w.c.onPlay({ sid: SID, video: v, peers: [] });
+    await settle();
+    expect(w.worker.calls[0]?.m).toBe('seeding.status');
+    const call = w.worker.calls.find((c) => c.m === 'seeding.watch');
+    expect((call?.a as { manifest: { id: string } }).manifest.id).toBe(v.event.id);
+    expect((call?.a as { sid: string }).sid).toBe(SID);
+    expect(w.c.watching).toBe(true);
+  });
+
+  it('off, first play after a launch: the switch is read, and nothing is handed over', async () => {
+    const w = world();
+    w.c.onPlay({ sid: SID, video: video(), peers: [] });
+    await settle();
+    expect(w.worker.count('seeding.status')).toBe(1);
+    expect(w.worker.count('seeding.watch')).toBe(0);
+  });
+
+  it('a switch already read is not asked for again', async () => {
+    const w = world();
+    await w.c.refreshSeeding();
+    w.c.onPlay({ sid: SID, video: video(), peers: [] });
+    w.c.onPlay({ sid: SID, video: video(), peers: [] });
+    await settle();
+    expect(w.worker.count('seeding.status')).toBe(1);
+    expect(w.worker.count('seeding.watch')).toBe(0);
+  });
+
   it('the switch goes through main, which asks the user', async () => {
     const w = world();
     w.worker.answers['app.seeding.set'] = () => IDLE;
