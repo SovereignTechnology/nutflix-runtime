@@ -73,6 +73,24 @@ case "$side" in
     work=$(mktemp -d /tmp/realhost-seed.XXXXXX)
     node shells/pear-v3/scripts/realhost/seed-side.ts --work "$work" "$@"
     ;;
+  both)
+    # A dry run on ONE machine (no NAT between the two sides): the mechanics, not the proof.
+    mkdir -p shells/pear-v3/out/appimage-runtime
+    curl --proto '=https' --tlsv1.2 -fsSL -o shells/pear-v3/out/appimage-runtime/runtime-x86_64 \
+      "https://github.com/SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1/runtime-x86_64"
+    work=$(mktemp -d /tmp/realhost-seed.XXXXXX)
+    node shells/pear-v3/scripts/realhost/seed-side.ts --work "$work" "$@" > /tmp/realhost-seed.log 2>&1 &
+    seedpid=$!
+    sysctl -w kernel.unprivileged_userns_clone=1 >/dev/null 2>&1 || true
+    id rh >/dev/null 2>&1 || useradd -m -s /bin/bash rh
+    chmod -R o+rX "$REPO" 2>/dev/null || true
+    d=$REPO
+    while [ "$d" != / ]; do chmod o+x "$d" 2>/dev/null || true; d=$(dirname "$d"); done
+    runuser -u rh -- env HOME=/home/rh PATH="$PATH" xvfb-run -a -s '-screen 0 1280x800x24' \
+      node shells/pear-v3/scripts/realhost/play-side.ts --work /home/rh/realhost --local "$@" || true
+    wait "$seedpid" || true
+    sed 's/^/[seed] /' /tmp/realhost-seed.log | grep -v 'waiting:' | tail -40
+    ;;
   play)
     # Chromium's user-namespace sandbox, for an unprivileged user in this throwaway VM.
     sysctl -w kernel.unprivileged_userns_clone=1 >/dev/null 2>&1 || true

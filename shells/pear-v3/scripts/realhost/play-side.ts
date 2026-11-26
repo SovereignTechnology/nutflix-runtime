@@ -58,6 +58,8 @@ const arg = (name: string, dflt?: string): string => {
 const WORK = resolve(arg('work'));
 const NONCE = arg('nonce');
 const WAIT_MS = Number(arg('wait-min', '30')) * 60_000;
+/** A dry run on ONE machine (`guest.sh both`): the relay is already on this loopback, no tunnel. */
+const LOCAL = argv.includes('--local');
 
 /** GET `path` on the seeding machine's relay, through the tunnel: its JSON, or null. */
 function getJson<T>(path: string): Promise<T | null> {
@@ -107,7 +109,10 @@ async function main(): Promise<number> {
     let beat = 0;
     while (info === null) {
       if (Date.now() > deadline) throw new Error('the seeding machine never named a seeded link');
-      if (tunnel === undefined) {
+      if (LOCAL && (await status()) !== null) {
+        const got = await getJson<{ info: { link: string; appSha256: string } | null }>(INFO_PATH);
+        info = got?.info ?? null;
+      } else if (!LOCAL && tunnel === undefined) {
         const keys = await lookupTunnel(node, topic).catch(() => []);
         if (keys.length > 1) say(`${String(keys.length)} tunnels on the topic; the first answering wins`);
         for (const k of keys) {
