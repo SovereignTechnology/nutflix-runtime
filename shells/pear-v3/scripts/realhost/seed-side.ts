@@ -65,6 +65,7 @@ import {
   addrFacts,
   fetchPear,
   field,
+  hex,
   lastRecord,
   natFacts,
   parseRecords,
@@ -149,15 +150,15 @@ async function startSeeder(
     keyPair,
     source,
     firewall: (remotePublicKey) => {
-      log.dialers.add(Buffer.from(remotePublicKey).toString('hex'));
+      log.dialers.add(hex(remotePublicKey));
       return false;
     },
     onConnection: (c) => {
       const raw = (c.socket as unknown as { rawStream?: { remoteHost?: string } }).rawStream;
-      remotes.set(Buffer.from(c.remotePublicKey).toString('hex'), addrFacts(raw?.remoteHost));
+      remotes.set(hex(c.remotePublicKey), addrFacts(raw?.remoteHost));
     },
   });
-  say(`${name} seeder up: peer ${keyPair.publicKey.toString('hex')}; nat ${JSON.stringify(natFacts(node))}`);
+  say(`${name} seeder up: peer ${hex(keyPair.publicKey)}; nat ${JSON.stringify(natFacts(node))}`);
   return {
     name,
     log,
@@ -296,9 +297,10 @@ async function main(): Promise<number> {
     say(`clip ${clip.video}: ${String(clip.files.size)} files, ${String(clip.durationSec)} s`);
     const creator = new Key();
     const addr = `38504:${creator.pubkey}:${clip.video}`;
-    relay = await RealhostRelay.start(RELAY_PORT);
+    const rel = await RealhostRelay.start(RELAY_PORT);
+    relay = rel;
     const at = Math.floor(Date.now() / 1000) - 3600;
-    relay.store(
+    rel.store(
       creator.sign({
         kind: 38504,
         created_at: at,
@@ -334,7 +336,7 @@ async function main(): Promise<number> {
       });
     };
     let seedersUp = true;
-    relay.beacons = () => {
+    rel.beacons = () => {
       if (!seedersUp || honest === undefined || liar === undefined) return [];
       const now = Math.floor(Date.now() / 1000);
       return [beaconOf(honest, now - 1), beaconOf(liar, now)];
@@ -438,12 +440,12 @@ async function main(): Promise<number> {
     process.stdout.write(`REALHOST_TUNNEL ${tunnel.key}\n`);
     process.stdout.write(`REALHOST_APP_SHA256 ${appSha}\n`);
     process.stdout.write('REALHOST_READY\n');
-    relay.info = { link, appSha256: appSha };
+    rel.info = { link, appSha256: appSha };
 
     // ---- wait for the app on the other machine ------------------------------------------------------
     const deadline = Date.now() + WAIT_MS;
     const appBeacon = (): NostrEvent | undefined =>
-      [...relay.published]
+      [...rel.published]
         .reverse()
         .find((e) => e.kind === 20464 && e.pubkey !== honest?.key.pubkey && e.pubkey !== liar?.key.pubkey);
     let lastBeat = 0;
@@ -455,7 +457,7 @@ async function main(): Promise<number> {
       if (Date.now() - lastBeat > 20_000) {
         lastBeat = Date.now();
         say(
-          `waiting: tunnel ${String(tunnel.stats.connections)} conn; honest ${String(h.dialers.size)} dialer(s), ${String(h.served.filter(complete).length)} files whole, ${String(h.bytes)} B; liar ${String(liar.log.served.filter((x) => x.bad && complete(x)).length)} bad whole; app beacons ${String(relay.published.length)}; pear seed ${s.exited() ? 'EXITED' : 'up'}`,
+          `waiting: tunnel ${String(tunnel.stats.connections)} conn; honest ${String(h.dialers.size)} dialer(s), ${String(h.served.filter(complete).length)} files whole, ${String(h.bytes)} B; liar ${String(liar.log.served.filter((x) => x.bad && complete(x)).length)} bad whole; app beacons ${String(rel.published.length)}; pear seed ${s.exited() ? 'EXITED' : 'up'}`,
         );
       }
       const b = appBeacon();

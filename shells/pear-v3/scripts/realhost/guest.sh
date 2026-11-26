@@ -46,7 +46,14 @@ if ! npm run build >/tmp/realhost-build.log 2>&1; then tail -60 /tmp/realhost-bu
 echo "[guest] built"
 
 case "$side" in
-  check) ;;
+  check)
+    files="shells/pear-v3/scripts/realhost shells/pear-v3/src/update/root.ts shells/pear-v3/src/__tests__/update-gate.test.ts shells/pear-v3/packaging/update-root.ts"
+    # shellcheck disable=SC2086
+    npx --no-install prettier --check $files || true
+    # shellcheck disable=SC2086
+    npx --no-install eslint $files || true
+    npx --no-install vitest run shells/pear-v3/src/__tests__/update-gate.test.ts 2>&1 | tail -25
+    ;;
   seed)
     mkdir -p shells/pear-v3/out/appimage-runtime
     curl --proto '=https' --tlsv1.2 -fsSL -o shells/pear-v3/out/appimage-runtime/runtime-x86_64 \

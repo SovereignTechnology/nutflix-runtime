@@ -18,7 +18,7 @@ import { connect as netConnect, createServer as createNetServer, type Server } f
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 
-import DHT from 'hyperdht';
+import DHT, { type KeyPair } from 'hyperdht';
 import { verifyEvent } from 'nostr-tools/pure';
 import { WebSocketServer, type WebSocket } from 'ws';
 
@@ -72,13 +72,30 @@ const FW = ['UNKNOWN', 'OPEN', 'CONSISTENT', 'RANDOM'];
 export const firewallName = (n: unknown): string =>
   typeof n === 'number' ? (FW[n] ?? String(n)) : 'none';
 
+/**
+ * What this proof reads of a node beyond `packages/worker/src/types/holepunch.d.ts`: dht-rpc
+ * 6.28's getters (`index.js`: `host` is the address the network sees, `randomized` a NAT that
+ * changes the port per peer) and hyperdht 6.36's `announce`/`lookup`.
+ */
+interface NodeView {
+  readonly online: boolean;
+  readonly firewalled: boolean;
+  readonly randomized: boolean;
+  readonly host: string | null;
+  announce(topic: Uint8Array, keyPair: KeyPair): { finished(): Promise<void> };
+  lookup(topic: Uint8Array): AsyncIterable<{ peers: { publicKey: Uint8Array }[] }>;
+}
+const view = (node: DHT): NodeView => node as unknown as NodeView;
+export const hex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
+
 /** This machine's DHT node as the public network sees it. */
 export function natFacts(node: DHT): Record<string, unknown> {
+  const v = view(node);
   return {
-    online: node.online,
-    firewalled: node.firewalled,
-    randomized: node.randomized,
-    publicAddress: addrFacts(node.host),
+    online: v.online,
+    firewalled: v.firewalled,
+    randomized: v.randomized,
+    publicAddress: addrFacts(v.host),
   };
 }
 
@@ -123,7 +140,7 @@ export async function tunnelServer(
 ): Promise<{ key: string; stats: TunnelStats; close(): Promise<void> }> {
   const keyPair = DHT.keyPair();
   const stats: TunnelStats = { connections: 0, remotes: [] };
-  const server = node.createServer((socket) => {
+  const server = node.createServer({}, (socket) => {
     stats.connections += 1;
     const raw = (socket as unknown as { rawStream?: { remoteHost?: string } }).rawStream;
     if (stats.remotes.length < 8) stats.remotes.push(addrFacts(raw?.remoteHost));
@@ -132,7 +149,7 @@ export async function tunnelServer(
   });
   await server.listen(keyPair);
   return {
-    key: keyPair.publicKey.toString('hex'),
+    key: hex(keyPair.publicKey),
     keyPair,
     stats,
     close: () => server.close(),
@@ -149,11 +166,11 @@ export function topicOf(nonce: string): Buffer {
 }
 
 /** Keeps `keyPair` announced on `topic` (records expire), until `stop`. */
-export function announceLoop(node: DHT, topic: Buffer, keyPair: { publicKey: Buffer; secretKey: Buffer }): () => void {
+export function announceLoop(node: DHT, topic: Buffer, keyPair: KeyPair): () => void {
   let stopped = false;
   const once = async (): Promise<void> => {
     try {
-      const q = node.announce(topic, keyPair);
+      const q = view(node).announce(topic, keyPair);
       await q.finished();
       say('announced the tunnel on the meeting topic');
     } catch (e) {
@@ -174,9 +191,8 @@ export function announceLoop(node: DHT, topic: Buffer, keyPair: { publicKey: Buf
 /** The tunnel keys announced on `topic` (the newest lookups first), possibly none. */
 export async function lookupTunnel(node: DHT, topic: Buffer): Promise<string[]> {
   const found = new Set<string>();
-  const q = node.lookup(topic);
-  for await (const reply of q as AsyncIterable<{ peers: { publicKey: Buffer }[] }>)
-    for (const p of reply.peers) found.add(p.publicKey.toString('hex'));
+  for await (const reply of view(node).lookup(topic))
+    for (const p of reply.peers) found.add(hex(p.publicKey));
   return [...found];
 }
 
