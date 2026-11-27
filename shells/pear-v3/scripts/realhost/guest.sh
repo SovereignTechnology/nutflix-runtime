@@ -97,7 +97,7 @@ play_user() {
 
 case "$side" in
   check)
-    files="shells/pear-v3/scripts/realhost shells/pear-v2/proof/realhost.ts shells/pear-v3/src/update/root.ts shells/pear-v3/src/__tests__/update-gate.test.ts shells/pear-v3/packaging/update-root.ts"
+    files="shells/pear-v3/scripts/realhost shells/pear-v2/proof/realhost.ts shells/pear-v3/src/update/root.ts shells/pear-v3/src/__tests__/update-gate.test.ts shells/pear-v3/packaging/update-root.ts shells/pear-v3/src/main/play-proof.ts shells/pear-v3/src/__tests__/play-proof.test.ts"
     # Every check runs and counts; the formatter's output is handed back only after they have.
     set +e
     # shellcheck disable=SC2086
@@ -106,7 +106,7 @@ case "$side" in
     # shellcheck disable=SC2086
     npx --no-install eslint $files
     lint=$?
-    npx --no-install vitest run shells/pear-v3/src/__tests__/update-gate.test.ts 2>&1 | tail -25
+    npx --no-install vitest run shells/pear-v3/src/__tests__/update-gate.test.ts shells/pear-v3/src/__tests__/play-proof.test.ts 2>&1 | tail -25
     unit=${PIPESTATUS[0]}
     set -e
     if [ "$fmt" != 0 ]; then
