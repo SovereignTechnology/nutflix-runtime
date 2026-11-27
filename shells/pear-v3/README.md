@@ -311,7 +311,8 @@ than 1.29.4 (`smoke.ts bare`).
 4. with `--no-sandbox`, the warning comes first and no window opens;
 5. every launch says `updates: off`: a package made for release starts no updater.
 
-What is launched: Linux, the `.AppImage` itself, once mounted with FUSE and once with no FUSE tools;
+What is launched: Linux, the `.AppImage` itself, once mounted with FUSE and three times with no FUSE
+tools (the last with an argument);
 macOS, the `.app`'s executable; Windows, the executable inside the
 unpacked `.msix` (`makeappx unpack`). The `shell` job does not install the `.msix` (it is unsigned);
 the `install` job below does.
@@ -494,7 +495,9 @@ The AppImage carries this repository's patched type-2 runtime
 - With FUSE usable, it mounts as usual. It is static, so it needs a `fusermount` helper (the `fuse3`
   package gives one) and not `libfuse.so.2`.
 - With no usable FUSE, it extracts to a private per-user cache and runs from there. The first start
-  is slower; the app then shows a notice, once per version, to install `fuse3`.
+  is slower; the app then shows a notice, once per version, to install `fuse3`. It hands the app every
+  argument it was started with: the pinned build is `nutflix.2`, because with `nutflix.1` a start
+  with one argument failed before the app ran.
 - The sandbox needs unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not
   setuid. CI runs the AppImage twice with Ubuntu 24.04's restriction still on (it must reach the
   warning, and after "Run anyway" it must run with the sandbox off), then lifts the restriction on

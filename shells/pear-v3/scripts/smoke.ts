@@ -688,11 +688,14 @@ async function stockLaunch(
 
 const NOTICE_EVENT = 'fuse-notice-shown';
 
+/** A plain argument, not a switch: main reads only switches, so it changes nothing about the run. */
+const SMOKE_ARGUMENT = 'nutflix-smoke-argument';
+
 /**
- * The real AppImage with no `fusermount` on PATH (AppRun's three tools only), twice, in its own
- * config and cache: the first start extracts privately and shows the notice; the second reuses the
- * extraction and does not show it again. With no `unshare` on PATH either, AppRun asks Chromium
- * first, and a sandbox that starts must let both starts go on as usual.
+ * The real AppImage with no `fusermount` on PATH (AppRun's three tools only), in its own config and
+ * cache: the first start extracts privately and shows the notice; the second reuses the extraction
+ * and does not show it again; the third has an argument. With no `unshare` on PATH either, AppRun
+ * asks Chromium first, and a sandbox that starts must let each start go on as usual.
  */
 async function noFuse(file: string, timeout: number): Promise<number> {
   const dir = mkdtempSync(join(tmpdir(), 'shell-v3-nofuse-'));
@@ -731,6 +734,12 @@ async function noFuse(file: string, timeout: number): Promise<number> {
       return 1;
     }
     process.stdout.write('SMOKE   proved: the second start reuses it, with no second notice\n');
+    // With an argument: the runtime copies the list for AppRun, and `nutflix.1` wrote its closing
+    // NULL past the end, so `Nutflix.AppImage <argument>` failed before the app ran.
+    const third = await launch(file, [SMOKE_ARGUMENT], 'ready', timeout, { env });
+    report('no FUSE, a start with an argument', third);
+    if (!third.ok) return 1;
+    process.stdout.write('SMOKE   proved: a start with an argument runs too\n');
     return 0;
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
