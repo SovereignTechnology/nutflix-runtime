@@ -112,7 +112,7 @@ describe('the AppImage maker', () => {
       'utf8',
     );
     expect(APPIMAGE_RUNTIME_DOWNLOAD).toContain(
-      'SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.1',
+      'SovereignTechnology/nutflix-runtime/releases/download/appimage-runtime-20251108-nutflix.2',
     );
     expect(Object.keys(APPIMAGE_RUNTIMES).sort()).toEqual(['arm64', 'x64']);
     for (const pin of Object.values(APPIMAGE_RUNTIMES)) {
