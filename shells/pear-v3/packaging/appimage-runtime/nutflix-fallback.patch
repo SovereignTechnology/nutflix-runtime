@@ -185,7 +185,19 @@
              fprintf(stderr, "Failed to extract AppImage\n");
              exit(EXIT_EXECERROR);
          }
-@@ -1658,7 +1791,7 @@
+@@ -1628,7 +1761,10 @@
+             strcat(apprun_path, apprun_fname);
+ 
+             // create copy of argument list without the --appimage-extract-and-run parameter
+-            char* new_argv[argc];
++            // nutflix-runtime: room for every argument and the NULL. `argc` alone fits only when the
++            // switch is there to be removed; with no FUSE (or APPIMAGE_EXTRACT_AND_RUN) the NULL
++            // landed past the end.
++            char* new_argv[argc + 1];
+             int new_argc = 0;
+             new_argv[new_argc++] = strdup(apprun_path);
+             for (int i = 1; i < argc; ++i) {
+@@ -1658,7 +1794,7 @@
          int rv = waitpid(pid, &status, 0);
          status = rv > 0 && WIFEXITED (status) ? WEXITSTATUS (status) : EXIT_EXECERROR;
  

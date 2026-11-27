@@ -8,6 +8,10 @@
 #   commit          SovereignTechnology/nfx, 40 lowercase hex
 #   source sha256   of GitHub's archive of that commit,
 #                   https://github.com/SovereignTechnology/nfx/archive/<commit>.tar.gz
+#                   The repository was renamed nfx -> nutflix on 2026-11-26. GitHub names the
+#                   archive's top folder after the repository, so every commit's archive got new
+#                   bytes that day (same files inside); the old address redirects and serves them.
+#                   A source sha256 pinned before the rename no longer matches.
 #   library sha256  of nfx-web-lib-<commit, 12 hex>.tar, which nfx's web/player/lib-tar.sh builds
 #                   from that source: api.d.ts, player.d.ts, player.js, wasm/nfx_wasm_bg.wasm
 #
@@ -33,7 +37,7 @@
 # one it built.
 #
 # tool <name> <version> [<sha256 of the x86_64-unknown-linux-musl release tarball>]
-nfx 04209ade5e0b33cdedf2d3d2ce2da974726c1b9c 1d8e942c4f77b2c580b45613927e5bcb142273b98a1c7e9a4cc3babdb54b5368 f2a21e618d8b8927051bd4b304d40ddc69654654bb3cd80baa4534848e55423a
+nfx 04209ade5e0b33cdedf2d3d2ce2da974726c1b9c d4daae4615c0cfc17b1d3b9201b2c3f0d4ce2b98a76241f4533eb21a35fa7fb8 f2a21e618d8b8927051bd4b304d40ddc69654654bb3cd80baa4534848e55423a
 tool rust 1.98.0
 tool wasm-pack 0.15.1 410101009739b9d01c7d5affaaad6e9c9a24b4cba6791a4805db8e89b9bf7af2
 tool wasm-bindgen 0.2.128 b51f0208fdff83515a787bd8ab9ac5865ed84dabb66d0c709957bb59793c645f

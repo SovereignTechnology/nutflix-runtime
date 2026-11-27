@@ -6,7 +6,8 @@ app cannot start or tell the user why. ADR 0001's amendment, item 3 requires the
 and to tell the user how to start faster.
 
 `nutflix-fallback.patch` changes [AppImage/type2-runtime](https://github.com/AppImage/type2-runtime)
-at release `20251108` (commit `dd6cebe`) in two ways:
+at release `20251108` (commit `dd6cebe`) in two ways, and fixes two upstream bugs on the path they
+take:
 
 - **It falls back by itself.** With no setuid `fusermount`, no usable `/dev/fuse`, or `no_new_privs`
   set, it extracts and runs instead of exiting. It sets `NUTFLIX_APPIMAGE_NO_FUSE=1` so the app can
@@ -18,6 +19,12 @@ at release `20251108` (commit `dd6cebe`) in two ways:
   complete. It is kept per build, so only the first start is slow. A new build removes older
   extractions unless a running copy holds them. With no usable cache directory, it uses a new private
   directory for that one run and removes it afterwards.
+- **Its cleanup removes something.** In this static musl build, upstream's removal of an extraction
+  removed nothing.
+- **AppRun gets its arguments.** Upstream's copy of the argument list has room for its closing `NULL`
+  only when `--appimage-extract-and-run` is removed from it. Started with no FUSE, or with
+  `APPIMAGE_EXTRACT_AND_RUN` set, the `NULL` landed past the end, and with some argument counts the
+  start failed (`Failed to run (null): Bad address`).
 
 `build.sh` builds it from the pinned commit in a build image pinned by digest. `test.sh` proves each
 behavior above on a real machine, including that a planted extraction never runs. The
