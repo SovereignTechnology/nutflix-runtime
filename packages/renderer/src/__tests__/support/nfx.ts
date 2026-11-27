@@ -21,7 +21,7 @@ import { hyperdhtEndpoint } from '@sovit/seeder';
 import DHT from 'hyperdht';
 import { FakeRelayPool, type PoolLike } from '@sovit/core/nostr';
 
-import { RuntimeNetworkAdapter } from '../../adapter/adapter.js';
+import { RuntimeNetworkAdapter, type RuntimeAdapterOptions } from '../../adapter/adapter.js';
 import type { FetchFn } from '../../net/http.js';
 import type { NfxPlayerLib } from '../../player/nfx-lib.js';
 import { DEFAULT_NFX, DEFAULT_SETTINGS } from '../../settings/defaults.js';
@@ -93,7 +93,14 @@ export function manifest(
 
 export type RawEndpoint = Readonly<Record<string, unknown>>;
 
-export const https = (url: string): RawEndpoint => ({ t: 'https', url });
+export const https = (url: string, renditions?: readonly string[]): RawEndpoint =>
+  renditions === undefined ? { t: 'https', url } : { t: 'https', url, renditions };
+
+/** A `webrtc` endpoint naming trackers (read by nobody here). */
+export const webrtc = (...trackers: string[]): RawEndpoint => ({
+  t: 'webrtc',
+  tracker_urls: trackers,
+});
 
 /** A real NFX-12 endpoint: a fresh HyperDHT key whose `bind` names `seeder` on `NS`. */
 export function hyperdht(
@@ -247,6 +254,8 @@ export function rig(
     readonly settings?: SettingsStore;
     readonly worker?: FakeWorker;
     readonly player?: NfxPlayerLib | null;
+    readonly beaconOrigins?: boolean | undefined;
+    readonly onPlay?: RuntimeAdapterOptions['onPlay'];
   } = {},
 ): Rig {
   const read = o.read ?? [READ_A];
@@ -260,6 +269,8 @@ export function rig(
   let n = 0;
   const adapter = new RuntimeNetworkAdapter({
     player: () => o.player ?? null,
+    beaconOrigins: o.beaconOrigins,
+    onPlay: o.onPlay,
     pool: r.pool,
     settings: store,
     worker,

@@ -54,6 +54,7 @@ export const PROOF_FIELDS = [
   'httpWorkerPortReached',
   'httpOtherPortRefused',
   'httpFollowsWorker',
+  'httpRedirectTargetRefused',
 ] as const;
 
 export type ProofField = (typeof PROOF_FIELDS)[number];

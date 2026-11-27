@@ -3,8 +3,10 @@
  * puts the worker's pipe on `globalThis.nutflixWorkerPipe` before it runs (a preload bridge, or a
  * test's init script), and optionally `globalThis.nutflixOpenLink(url)`, which receives an
  * `https:` link a viewer clicked, and `globalThis.nutflixWatchOnly = true` for a shell with no
- * seeding, publishing or signer (`RendererOptions.seedPublish`). The renderer checks the pipe's
- * shape and starts. Without a pipe
+ * seeding, publishing or signer (`RendererOptions.seedPublish`). That shell is the pinned
+ * `pear run` one, whose window may fetch from loopback alone, so it also gets no `https` origins
+ * from beacons (`RendererOptions.beaconOrigins`). The renderer checks the pipe's shape and
+ * starts. Without a pipe
  * it says so, as text. The build writes the pinned WASM's sha256 into this bundle.
  */
 import { startRenderer } from './main.js';
@@ -30,6 +32,7 @@ if (root !== null) {
         pipe,
         openLink: typeof open === 'function' ? (open as (url: string) => void) : undefined,
         seedPublish: bridge['nutflixWatchOnly'] !== true,
+        beaconOrigins: bridge['nutflixWatchOnly'] !== true,
         loadPlayer: createPlayerLoader({
           baseUrl: document.baseURI,
           wasmSha256: __NFX_WASM_SHA256__,

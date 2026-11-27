@@ -33,8 +33,8 @@ import type {
 import { probePlayer, type ProbeEnv } from '../probe.js';
 import { DEFAULT_NFX } from '../settings/defaults.js';
 import { isSettingsPatch, isStunServer } from '../settings/validate.js';
-import { webrtcOff, webrtcPlan, webrtcStatusText } from '../settings/webrtc.js';
-import { WEBRTC_NOTE_ID, installWebRtcNote } from '../settings/webrtc-note.js';
+import { beaconOriginsText, webrtcOff, webrtcPlan, webrtcStatusText } from '../settings/webrtc.js';
+import { ORIGINS_NOTE_ID, WEBRTC_NOTE_ID, installWebRtcNote } from '../settings/webrtc-note.js';
 import { FakeWorker } from './support/fake-worker.js';
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -293,6 +293,20 @@ describe('the WebRTC settings', () => {
     expect(webrtcStatusText('WebAssembly is missing.', nfx({ webrtc: false }))).toBe(
       'WebRTC is off. WebAssembly is missing.',
     );
+    // Off means no peer: a video its seeders serve over HTTPS still plays, from those hosts.
+    expect(webrtcStatusText(null, nfx({ webrtc: false }))).toMatch(
+      /no peer connections\. Videos play over HyperDHT, or from the HTTPS hosts/,
+    );
+    // A window that fetches no HTTPS (shape b) says HyperDHT alone.
+    expect(webrtcStatusText(null, nfx({ webrtc: false }), false)).toMatch(
+      /you switched it off: videos play over HyperDHT alone\.$/,
+    );
+  });
+
+  it('says which hosts a play may reach besides peers, only where the web player may fetch them', () => {
+    expect(beaconOriginsText(true)).toMatch(/HTTPS.*see your IP address/s);
+    expect(beaconOriginsText(false)).toBeNull();
+    expect(beaconOriginsText(true, false)).toBeNull();
   });
 
   it('takes the three fields in a patch, and refuses what is not one', () => {
@@ -362,6 +376,48 @@ describe('the WebRTC settings', () => {
     expect(document.getElementById(WEBRTC_NOTE_ID)?.textContent).toBe('again');
     note.stop();
     expect(document.getElementById(WEBRTC_NOTE_ID)).toBeNull();
+    root.remove();
+  });
+
+  it('keeps the HTTPS-hosts line after the status line, or right after the row without one', async () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    const row = document.createElement('div');
+    row.className = 'nf-settings__row';
+    const sw = document.createElement('input');
+    sw.setAttribute('role', 'switch');
+    sw.id = 'x-nfx-webrtc';
+    row.append(sw);
+    // `@sovit/ui`'s own notice, after the row.
+    const theirs = document.createElement('p');
+    root.append(row, theirs);
+    let status: string | null = 'off';
+    let hosts: string | null = '<b>hosts</b> see your IP address';
+    const note = installWebRtcNote(
+      root,
+      () => status,
+      () => hosts,
+    );
+    await flush();
+    const s = document.getElementById(WEBRTC_NOTE_ID);
+    const h = document.getElementById(ORIGINS_NOTE_ID);
+    expect([row.nextElementSibling, s?.nextElementSibling, h?.nextElementSibling]).toEqual([
+      s,
+      h,
+      theirs,
+    ]);
+    expect(h?.textContent).toBe(hosts);
+    expect(h?.querySelector('b')).toBeNull();
+    status = null;
+    note.refresh();
+    await flush();
+    expect(document.getElementById(WEBRTC_NOTE_ID)).toBeNull();
+    expect(row.nextElementSibling).toBe(h);
+    hosts = null;
+    note.refresh();
+    expect(document.getElementById(ORIGINS_NOTE_ID)).toBeNull();
+    expect(row.nextElementSibling).toBe(theirs);
+    note.stop();
     root.remove();
   });
 });

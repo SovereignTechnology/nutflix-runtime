@@ -60,19 +60,53 @@ export interface NfxIceServer {
   readonly urls: string[];
 }
 
+/**
+ * An origin with the renditions beacons say it serves (the library's `OriginSource`): a hint for
+ * the order it tries origins in, never a constraint (nfx #85). Absent: every rendition.
+ */
+export interface NfxOriginSource {
+  readonly url: string;
+  readonly renditions?: string[];
+}
+
 /** `open()`'s options, as this renderer passes them (always a signed manifest). */
 export interface NfxOpenOptions {
   /** The signed kind-38504 event as JSON; the library verifies it again (NFX-02). */
   readonly manifestJson: string;
-  /** The worker's loopback origin (NFX-05 §6), alone. */
-  readonly origins: string[];
+  /**
+   * Origin bases (NFX-05 §6), tried in this order: the worker's loopback origin first when it has
+   * a session, then the `https` origins of beacons (`../adapter/endpoints.ts`). The session takes
+   * every file from the first one that holds an allowed rendition.
+   */
+  readonly origins: (string | NfxOriginSource)[];
   /** The renditions the session may play, preferred first; absent: every rendition. */
   readonly renditions?: string[];
-  readonly signaling: NfxNostrSignaling;
-  readonly iceServers: NfxIceServer[];
+  /**
+   * The mesh. Absent: no mesh at all, every byte from the origin, and no peer connection (the
+   * library then builds plain hls.js, with no p2p loader): what a play does with WebRTC off.
+   */
+  readonly signaling?: NfxNostrSignaling;
+  /** With `signaling` only. */
+  readonly iceServers?: NfxIceServer[];
   readonly onEvent?: (event: NfxPlayerEvent) => void;
   /** Aborting it cancels `open()`, or destroys the session once open. */
   readonly signal?: AbortSignal;
+}
+
+/**
+ * The part of the library's `Stats` this renderer reads (`Session.stats()`): which origin the
+ * session plays from, and the mesh's byte counters. The library counts bytes only with the mesh on
+ * (p2p-media-loader's `onChunkDownloaded`, segments only); with it off, `mesh` is `null` and there
+ * is no byte count at all, only `verified` (files its loader checked).
+ */
+export interface NfxStats {
+  /** The one origin every file of the session comes from. */
+  readonly origin: string;
+  readonly verified: number;
+  readonly mesh: {
+    readonly bytes: { readonly http: number; readonly p2p: number };
+    readonly peers: number;
+  } | null;
 }
 
 /** One video playing in one element. */
@@ -80,6 +114,8 @@ export interface NfxLibSession {
   readonly levels: readonly NfxLevel[];
   /** Play `index` from now on, or -1 to let hls.js pick; throws `RangeError` for any other. */
   setLevel(index: number): void;
+  /** A snapshot; the pinned library has it, a test's fake may not. */
+  stats?(): NfxStats;
   /** Stops hls.js, the p2p loader, its signaling sockets and peers. Idempotent. */
   destroy(): void;
 }

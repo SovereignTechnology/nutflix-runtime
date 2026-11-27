@@ -20,7 +20,7 @@ import type { PlayerLoader } from './player/load.js';
 import { probeCapabilities, probePlayer, type CapabilityReport, type ProbeEnv } from './probe.js';
 import { installSandboxChoice } from './settings/sandbox-choice.js';
 import { browserSettingsStore, type SettingsStore } from './settings/store.js';
-import { webrtcStatusText } from './settings/webrtc.js';
+import { beaconOriginsText, webrtcStatusText } from './settings/webrtc.js';
 import { installWebRtcNote } from './settings/webrtc-note.js';
 import { SeedPublish } from './seeding/controller.js';
 import { installSeedPublishPanel } from './seeding/panel.js';
@@ -57,6 +57,12 @@ export interface RendererOptions {
    * worker methods. Default: on.
    */
   readonly seedPublish?: boolean | undefined;
+  /**
+   * `false`: never fetch the `https` origins that beacons name (`RuntimeAdapterOptions.
+   * beaconOrigins`), for a window whose network list is loopback alone (the pinned `pear run`
+   * shell). Default: on, through nfx's web player.
+   */
+  readonly beaconOrigins?: boolean | undefined;
 }
 
 export interface RendererClient {
@@ -101,6 +107,7 @@ export function startRenderer(o: RendererOptions): RendererClient {
     settings,
     worker: link,
     player: () => lib,
+    beaconOrigins: o.beaconOrigins,
     fetch: o.fetch ?? ((input, init) => win.fetch(input, init)),
     createObjectURL: (blob) => URL.createObjectURL(blob),
     revokeObjectURL: (url) => {
@@ -141,8 +148,11 @@ export function startRenderer(o: RendererOptions): RendererClient {
     applyTheme(s.theme);
   });
 
-  const note = installWebRtcNote(o.container, () =>
-    webrtcStatusText(capabilities.reason, settings.get().nfx),
+  const beaconOrigins = o.beaconOrigins !== false;
+  const note = installWebRtcNote(
+    o.container,
+    () => webrtcStatusText(capabilities.reason, settings.get().nfx, beaconOrigins),
+    () => beaconOriginsText(capabilities.player, beaconOrigins),
   );
   const offNoteSettings = settings.onChange(() => {
     note.refresh();

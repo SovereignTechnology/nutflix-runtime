@@ -144,7 +144,26 @@ Bare worker (pear-runtime run() → bare-sidecar's `bare`, Bare.IPC)
   relay's port, so it is refused, and search to such a relay is matched in the page. The Electron
   proof (`scripts/prompt-proof.ts`, below) installs the same guard in the app's session: from a
   page, a `fetch` and a `<video>` reach a worker port, the server on another loopback port sees no
-  request at all, and after the worker is replaced only the new worker's port passes.
+  request at all, a redirect from a worker port to another loopback port is cancelled before its
+  target sees it, and after the worker is replaced only the new worker's port passes.
+- **No `https:` to a private host** (`src/main/loopback.ts`, the same listener).
+  nfx's web player fetches the `https` origins that beacons name, and it follows redirects, so an
+  origin could point its `GET`s at the user's router, a LAN service or a cloud metadata address.
+  Main cancels every `https:` request of the window's session whose host is an IP literal that
+  is not public (loopback, private, CGNAT and so tailnet, link-local, unique-local, and their
+  IPv4-mapped, NAT64 and 6to4 forms) or a name that is always local: `localhost` and
+  `*.localhost` (Chromium maps them to loopback itself) and `*.local` (mDNS), in any case, with or
+  without a trailing dot. The rules are the renderer's own (`publicIpLiteral` and
+  `isAlwaysLocalName` in `packages/renderer/src/net/hosts.ts`). Redirect targets reach the same listener: Electron restarts
+  a followed redirect through `onBeforeRequest` with the new URL (`FollowRedirect` →
+  `RestartInternal` in its `shell/browser/net/proxying_url_loader_factory.cc`, 45.2.1), and the
+  Electron proof's redirect case shows it. **The cost:** a relay on a LAN or tailnet IP literal,
+  or on a `.local` name, gets no NIP-11 document, so search to it is matched in the page. **Not refused:** `wss:`, by the
+  maintainer's call: a WebSocket handshake follows no redirect, and only the viewer's own Settings
+  name WebSocket hosts (no relay hint, NIP-65 list or beacon endpoint opens one), so a relay on a
+  LAN or tailnet address keeps working; adding `'wss:'` to `PRIVATE_HOST_SCHEMES` would refuse
+  it. Plain `http://127.0.0.1:<worker port>` and `ws://127.0.0.1:*` are as above. **Not caught:** any
+  other name that resolves to a private address; main sees the URL, not where it resolves.
 - `webRTCIPHandlingPolicy: 'default_public_interface_only'`.
 - **Navigation, redirects, `<webview>` and `window.open` are denied** for every webContents.
   Every permission is denied except `fullscreen` for the top frame of `app://nutflix`; no device

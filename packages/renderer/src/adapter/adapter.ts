@@ -1,8 +1,9 @@
 /**
  * The renderer's `NetworkAdapter` (`RuntimeNetworkAdapter`): `platform: 'desktop'` (an app, not a
  * page), NFX only, signed out, free videos, over ordinary Nostr relays on the browser's
- * WebSocket, with video fetched by the worker over HyperDHT and, where the probe passed and the
- * viewer has not switched it off, traded over a WebRTC mesh. Modelled on nutflix-pear's
+ * WebSocket, with video fetched by the worker over HyperDHT, or by nfx's web player from the
+ * `https` origins beacons name (nfxd's), and, where the probe passed and the viewer has not
+ * switched it off, traded over a WebRTC mesh. Modelled on nutflix-pear's
  * `packages/app-web/src/adapter/web-adapter.ts` (the submodule's pinned commit). What each call
  * does here:
  *
@@ -10,7 +11,7 @@
  * |---|---|
  * | `settings`, `updateSettings` | Web Storage (`SettingsStore`) |
  * | `feed` (`network`, `tags`, `author`), `search`, `nfxVideo` | core's `NfxCatalog`; search routed by NIP-11 |
- * | `playNfx` | live beacons from core's `NfxBeaconWatch`, then `nfx.play.open` on the worker: its origin for nfx's web player (`WebRtcNfxSession`), or its progressive stream for a plain `<video>` (`RuntimeNfxSession`) |
+ * | `playNfx` | live beacons from core's `NfxBeaconWatch`, then `nfx.play.open` on the worker: its origin, then the beacons' `https` origins, for nfx's web player (`WebRtcNfxSession`), or its progressive stream for a plain `<video>` (`RuntimeNfxSession`); see `playNfx` |
  * | `profile`, `image` | kind 0 from the read relays; images only by signed sha256, as `blob:` |
  * | `video`, `comments` | read-only NIP-71 reads (an NFX copy's thread) |
  * | `signer`, `me` | signed out |
@@ -28,6 +29,7 @@ import type {
   NetworkAdapter,
   NfxAddress,
   NfxPlaySession,
+  NfxRenditionInfo,
   NfxVideo,
   NostrEventId,
   NostrPubkey,
@@ -77,10 +79,10 @@ import { browserRelayInfoFetch } from '../net/relay-info.js';
 import type { NfxPlayerLib } from '../player/nfx-lib.js';
 import type { SettingsStore } from '../settings/store.js';
 import { NFX_NETWORK } from '../settings/defaults.js';
-import { webrtcPlan } from '../settings/webrtc.js';
+import { webrtcPlan, type WebRtcPlan } from '../settings/webrtc.js';
 import { codeOf, type PlayWorker } from '../worker/pipe.js';
 import { canonicalNfxAddress } from './address.js';
-import { hyperdhtEndpoints } from './endpoints.js';
+import { httpsOrigins, hyperdhtEndpoints } from './endpoints.js';
 import { Images } from './images.js';
 import { RuntimeNfxSession } from './session.js';
 import { RuntimeWallet } from './wallet.js';
@@ -109,6 +111,12 @@ export interface RuntimeAdapterOptions {
    * screen counts from the next play on.
    */
   readonly player?: (() => NfxPlayerLib | null) | undefined;
+  /**
+   * `false`: the `https` origins beacons name are never fetched, for a window that may reach
+   * loopback alone (the pinned `pear run` shell); a video only they serve fails, saying why.
+   * Default: nfx's web player fetches them.
+   */
+  readonly beaconOrigins?: boolean | undefined;
   /** The page's `fetch`, for NIP-11 documents and images. */
   readonly fetch: FetchFn;
   readonly createObjectURL: (blob: Blob) => string;
@@ -204,6 +212,36 @@ const WORKER_CODES: Readonly<Partial<Record<ErrorCode, readonly [RuntimeErrorCod
     'not-ready': ['worker-down', 'the worker is not ready'],
     'backend-down': ['worker-down', 'the worker is not running'],
   });
+
+/** Why a play fails when the worker cannot serve it and beacons name only origins it cannot use. */
+export const HTTPS_ONLY = Object.freeze({
+  noPlayer:
+    'this video plays only from the HTTPS hosts its seeders name, through nfx’s web player, which is not available here (Settings says why)',
+  notHere:
+    'this video plays only from the HTTPS hosts its seeders name, and this window does not fetch from HTTPS hosts',
+});
+
+/** The worker's origin for one play: its session, its checked URL, what it found. */
+interface WorkerOrigin {
+  readonly sid: string;
+  readonly originUrl: string;
+  readonly renditions: readonly NfxRenditionInfo[];
+}
+
+/** The worker's renditions as the screens list them. */
+function renditionsOf(opened: {
+  readonly renditions: readonly {
+    readonly id: string;
+    readonly bandwidth: number;
+    readonly resolution?: string | undefined;
+  }[];
+}): NfxRenditionInfo[] {
+  return opened.renditions.map((r) => ({
+    id: r.id,
+    bandwidth: r.bandwidth,
+    ...(r.resolution === undefined ? {} : { resolution: r.resolution }),
+  }));
+}
 
 /** A worker's failure as this client's. */
 export function fromWorker(e: unknown): RuntimeAdapterError {
@@ -363,20 +401,42 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
       throw fromWorker(e);
     }
     const now = (): number => this.#now();
+    // A beacon's `https` origin is of use only to nfx's web player, in a window that may fetch it.
+    const usable = (lib: NfxPlayerLib | null): boolean =>
+      lib !== null && this.#o.beaconOrigins !== false;
     // Live beacons (NFX-04: never stored): wait until a seeder names a HyperDHT endpoint whose
-    // `bind` verifies, at most one republish interval, then take what came.
+    // `bind` verifies, or an origin this play can use, at most one republish interval, then take
+    // what came.
     const events = await this.#beacons.wait(
       video,
       this.#beaconRelays(),
-      (evs) => hyperdhtEndpoints(video, evs, now()).reachable > 0,
+      (evs) =>
+        hyperdhtEndpoints(video, evs, now()).reachable > 0 ||
+        (usable(this.#o.player?.() ?? null) && httpsOrigins(video, evs, now()).reachable > 0),
       this.#o.beaconWaitMs ?? NFX_BEACON_WAIT_MS,
     );
+    // Asked once the beacons are in: a probe that finished meanwhile counts for this play.
+    const player = this.#o.player?.() ?? null;
+    const plan = webrtcPlan(this.#settings().nfx);
+    const httpsUsable = usable(player);
     const found = hyperdhtEndpoints(video, events, now());
     if (found.seeders === 0) fail('no-seeders', 'nobody seeding this NFX video is online');
+    const named = httpsOrigins(video, events, now()).origins;
+    const origins = httpsUsable ? named : [];
+    /** The worker could not serve the play: its reason, or the HTTPS hosts this play cannot use. */
+    const unservable = (e: unknown): RuntimeAdapterError => {
+      const err = fromWorker(e);
+      if (err.code !== 'no-seeders' || named.length === 0 || httpsUsable) return err;
+      return new RuntimeAdapterError(
+        'unsupported',
+        player === null ? HTTPS_ONLY.noPlayer : HTTPS_ONLY.notHere,
+      );
+    };
     const common = {
       video: target.value.addr.toString(),
       root: video.root,
       segs: video.segs,
+      // May be empty: the worker then opens only when it holds the video itself.
       peers: found.peers,
       ...(found.held.seeders > 0 ? { held: found.held } : {}),
       ...(rendition === undefined ? {} : { renditions: [rendition] }),
@@ -406,22 +466,13 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
         await this.#o.worker.close(sid).catch(() => undefined);
         fail('internal', 'the worker gave no playable stream');
       }
-      return {
-        sid,
-        url,
-        rendition: opened.rendition,
-        renditions: opened.renditions.map((r) => ({
-          id: r.id,
-          bandwidth: r.bandwidth,
-          ...(r.resolution === undefined ? {} : { resolution: r.resolution }),
-        })),
-      };
+      return { sid, url, rendition: opened.rendition, renditions: renditionsOf(opened) };
     };
-
-    const player = this.#o.player?.() ?? null;
-    const plan = webrtcPlan(this.#settings().nfx);
-    let session: RuntimeNfxSession | WebRtcNfxSession;
-    if (player !== null && plan !== null) {
+    /**
+     * The worker's origin, the web player's first: `null` when the worker cannot serve this play
+     * (no HyperDHT seeder answered and it does not hold the video) and a beacon's origin can.
+     */
+    const openOrigin = async (): Promise<WorkerOrigin | null> => {
       const sid = (this.#o.newSid ?? randomSid)();
       let opened;
       try {
@@ -429,38 +480,58 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
         // opened only if the player fails.
         opened = await this.#o.worker.open({ ...common, sid, progressive: false });
       } catch (e) {
-        throw fromWorker(e);
+        if (origins.length > 0) return null;
+        throw unservable(e);
       }
       const originUrl = opened.originUrl;
       if (!isWorkerOriginUrl(originUrl)) {
         await this.#o.worker.close(sid).catch(() => undefined);
         fail('internal', 'the worker gave no playable origin');
       }
-      session = new WebRtcNfxSession({
+      return { sid, originUrl, renditions: renditionsOf(opened) };
+    };
+    /** A play through nfx's web player: the worker's origin if any, then the beacons'. */
+    const webPlay = (
+      lib: NfxPlayerLib,
+      worker: WorkerOrigin | null,
+      mesh: WebRtcPlan | null,
+    ): WebRtcNfxSession =>
+      new WebRtcNfxSession({
         videoId: a,
         manifestJson: JSON.stringify(toWire(video.event)),
-        sid,
-        originUrl,
-        renditions: opened.renditions.map((r) => ({
-          id: r.id,
-          bandwidth: r.bandwidth,
-          ...(r.resolution === undefined ? {} : { resolution: r.resolution }),
-        })),
+        sid: worker?.sid ?? null,
+        originUrl: worker?.originUrl ?? null,
+        origins,
+        renditions: worker?.renditions ?? [],
         pin: rendition,
-        meshRelays: plan.meshRelays,
-        iceServers: plan.iceServers,
-        player,
+        meshRelays: mesh?.meshRelays ?? [],
+        iceServers: mesh?.iceServers ?? [],
+        player: lib,
         worker: this.#o.worker,
-        openProgressive,
+        // Without a worker session there is no HyperDHT stream to fall back on.
+        openProgressive: worker === null ? null : openProgressive,
         onClose: (s) => {
           this.#sessions.delete(s);
-          this.#o.onPlayEnded?.(s.sid);
+          const sid = s.sid;
+          if (sid !== null) this.#o.onPlayEnded?.(sid);
         },
         onVerified: this.#o.onVerified,
       });
-    } else {
-      const p = await openProgressive();
-      session = new RuntimeNfxSession({
+
+    /**
+     * WebRTC off, or no web player: the worker's progressive stream over HyperDHT, as before. A
+     * video the worker cannot serve plays from the beacons' origins through the web player, with
+     * no mesh, so with no peer connection, where the web player is here.
+     */
+    const withoutMesh = async (): Promise<RuntimeNfxSession | WebRtcNfxSession> => {
+      let p: ProgressivePlay;
+      try {
+        p = await openProgressive();
+      } catch (e) {
+        if (player === null || origins.length === 0) throw unservable(e);
+        return webPlay(player, null, null);
+      }
+      return new RuntimeNfxSession({
         videoId: a,
         sid: p.sid,
         url: p.url,
@@ -471,16 +542,25 @@ export class RuntimeNetworkAdapter implements NetworkAdapter {
           this.#sessions.delete(s);
         },
       });
-    }
+    };
+    const session =
+      player !== null && plan !== null
+        ? // WebRTC on: the web player, with the mesh.
+          webPlay(player, await openOrigin(), plan)
+        : await withoutMesh();
     this.#sessions.add(session);
     if (this.#isClosed()) {
       await session.close();
       fail('session-closed', 'the app is closing');
     }
-    try {
-      this.#o.onPlay?.({ sid: session.sid, video, peers: found.peers });
-    } catch {
-      // Seeding is a side job of a play: its failure is not the play's.
+    // Seeding takes a play the worker has a session for (`seeding.watch` names it).
+    const sid = session.sid;
+    if (sid !== null) {
+      try {
+        this.#o.onPlay?.({ sid, video, peers: found.peers });
+      } catch {
+        // Seeding is a side job of a play: its failure is not the play's.
+      }
     }
     return session;
   }

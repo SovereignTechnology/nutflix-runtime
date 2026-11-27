@@ -107,11 +107,12 @@ function v6Blocked(g: readonly number[]): boolean {
 const LOCAL_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan', '.intranet'];
 
 /**
- * True when `hostname` (as `URL.hostname` gives it) may be contacted on someone else's say-so:
- * a public unicast IP literal, or a name with at least two labels that is not local.
+ * For an IP literal as `URL.hostname` gives it (IPv4 dotted, IPv6 in brackets): whether it is a
+ * public unicast address. `false` for a malformed literal too, and `null` for a name, which only
+ * DNS can place. The one table `isPublicHost` and the desktop shell's request guard
+ * (`shells/pear-v3/src/main/loopback.ts`) both read.
  */
-export function isPublicHost(hostname: string): boolean {
-  if (hostname === '' || hostname.length > 253 + 2) return false;
+export function publicIpLiteral(hostname: string): boolean | null {
   if (hostname.startsWith('[')) {
     if (!hostname.endsWith(']')) return false;
     const g = v6Groups(hostname.slice(1, -1));
@@ -121,6 +122,29 @@ export function isPublicHost(hostname: string): boolean {
     const n = v4ToInt(hostname);
     return n !== null && !v4Blocked(n);
   }
+  return null;
+}
+
+/**
+ * Names that never leave this machine or its link, whatever DNS says: `localhost` and
+ * `*.localhost`, which Chromium maps to loopback itself (RFC 6761), and `*.local`, mDNS on the
+ * LAN (RFC 6762). Any case, with or without one trailing dot. `isPublicHost` refuses these and
+ * more; the desktop shell's request guard (`shells/pear-v3/src/main/loopback.ts`) refuses these
+ * for `https:`. Other names that resolve privately are DNS's to place, and nothing here sees that.
+ */
+export function isAlwaysLocalName(hostname: string): boolean {
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  return name === 'localhost' || name.endsWith('.localhost') || name.endsWith('.local');
+}
+
+/**
+ * True when `hostname` (as `URL.hostname` gives it) may be contacted on someone else's say-so:
+ * a public unicast IP literal, or a name with at least two labels that is not local.
+ */
+export function isPublicHost(hostname: string): boolean {
+  if (hostname === '' || hostname.length > 253 + 2) return false;
+  const literal = publicIpLiteral(hostname);
+  if (literal !== null) return literal;
   const name = hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
   if (!/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)+$/.test(name)) return false;
   if (name === 'localhost') return false;

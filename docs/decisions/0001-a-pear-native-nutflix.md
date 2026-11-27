@@ -6,7 +6,8 @@ Date: 2026-11-19
 
 Accepted by the maintainer, 2026-11-19. Amended 2026-11-22 after spikes S1 and S2: see
 [the amendment](#amendment-2026-11-22), which takes precedence over the text above it. Its shape (b)
-conditions were changed on 2026-11-24; the note at its end says what changed and why.
+conditions were changed on 2026-11-24; the note at its end says what changed and why. Amended
+again on 2026-11-26 ([nfxd's videos](#amendment-2026-11-26-nfxds-videos)).
 
 ## Context
 
@@ -239,3 +240,35 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
    runs Bare 1.24.3, and the locked `bare-fs` needs Bare 1.28 or later. It needs its own pins, and
    its renderer must work on Chromium 130. It follows on a target only after passing the same
    install-and-launch test there.
+
+## Amendment, 2026-11-26: nfxd's videos
+
+The maintainer asked for videos that only nfxd serves to play ("build nfxd playback now"). nfxd's
+beacons name `iroh`, `https`, `webrtc` and `stun` endpoints and no `hyperdht` one, so decision 4's
+HyperDHT-only start never opened them. In v1:
+
+- **nfxd-only videos play from the `https` origins its beacons name, plus the WebRTC mesh, in the
+  renderer**, through nfx's web player, as nutflix-pear's web app plays them: `https:` only, a
+  public host, at most 8 origins, only what beacons name (no fallback origin). With HyperDHT
+  seeders too, the worker's loopback origin comes first and the beacons' origins after it.
+- **The worker stays HyperDHT-only.** It fetches no `https`, and Bare gets no TLS stack.
+- **WebRTC off still means no peer connection.** Such a video then plays through the web player
+  with no signaling, from the origins alone. Without the web player (the probe failed), and in
+  shape (b), whose window may reach loopback alone, it fails and says why.
+- **Privacy:** the hosts beacons name see the viewer's IP address and which videos it plays, as any
+  seeder does; Settings says so beside the WebRTC switch.
+- **No `https:` to a private host (shape a).** The page refuses an origin whose host is not
+  public, but the player follows redirects, so main cancels every `https:` request of the window
+  to an IP literal that is not public (loopback, private, CGNAT and so tailnet, link-local,
+  unique-local and their mapped forms) or to `localhost`, `*.localhost` or `*.local`, redirect
+  targets included: Electron hands a followed redirect to the same `onBeforeRequest` listener.
+  The cost: a relay on a LAN or tailnet IP literal, or on a `.local` name, gets no NIP-11
+  document, so search to it is matched in the page. `wss:` is not refused (the maintainer's
+  call): a WebSocket handshake follows no redirect, and only the viewer's own Settings name
+  WebSocket hosts, so such a relay still works. Any other name that resolves to a private address
+  is not caught.
+- **Known limit:** "seed what you watch" re-seeds over HyperDHT only a play the worker has a
+  session for. A video only `https` origins serve, which the worker does not hold, has no such
+  session, so watching it here does not re-seed it to nutflix-pear desktop users. Changing that is
+  a change to the worker
+  ([#39](https://github.com/SovereignTechnology/nutflix-runtime/issues/39)).
