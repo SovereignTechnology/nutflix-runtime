@@ -9,7 +9,7 @@ UPSTREAM=https://github.com/AppImage/type2-runtime.git
 COMMIT=dd6cebedcbddde9c82f89b011e8e1d40b6e43868
 ALPINE=alpine:3.21@sha256:bc21487101ae47172509130ee1092cc273a831968d64b617776d1f69c81e42ab
 # Bump with every change to nutflix-fallback.patch: `--appimage-version` prints it.
-VERSION="type2-${COMMIT:0:7}-nutflix.1"
+VERSION="type2-${COMMIT:0:7}-nutflix.2"
 
 arch=${1:?usage: build.sh <x86_64|aarch64> <out-dir>}
 case "$arch" in x86_64 | aarch64) ;; *)
