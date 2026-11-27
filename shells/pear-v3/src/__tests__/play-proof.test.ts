@@ -9,7 +9,10 @@ import {
   SETTINGS_KEY as RENDERER_KEY,
   parseStoredSettings,
 } from '../../../../packages/renderer/src/settings/store.ts';
-import { NFX_NETWORK as RENDERER_NETWORK } from '../../../../packages/renderer/src/settings/defaults.ts';
+import {
+  DEFAULT_STUN_SERVERS,
+  NFX_NETWORK as RENDERER_NETWORK,
+} from '../../../../packages/renderer/src/settings/defaults.ts';
 import {
   CLICK_PLAY_CODE,
   HAS_PLAY_CODE,
@@ -21,6 +24,7 @@ import {
   SETTINGS_KEY,
   UNANSWERED_STUN,
   isOffLoopback,
+  isPublicPlay,
   parseSample,
   readSettingsCode,
   runPlayProof,
@@ -63,6 +67,27 @@ describe('what the proof stores and opens', () => {
     // Nothing public in either.
     for (const s of [settingsFor(PLAY, 'progressive'), settingsFor(PLAY, 'webrtc')])
       expect(s).not.toMatch(/wss:|nutflix\.xyz|primal|ditto/);
+  });
+
+  it('uses the renderer’s default STUN only for a play on public relays (a public-DHT root)', () => {
+    const live = {
+      relays: ['wss://relay.example.org', 'wss://relay.example.net'],
+      video: PLAY.video,
+    };
+    expect(isPublicPlay(live)).toBe(true);
+    expect(isPublicPlay(PLAY)).toBe(false);
+    const webrtc = parseStoredSettings(settingsFor(live, 'webrtc'));
+    expect(webrtc.nfx).toMatchObject({
+      scopedRelays: live.relays,
+      webrtc: true,
+      meshRelays: live.relays,
+      stunServers: [...DEFAULT_STUN_SERVERS],
+    });
+    expect(parseStoredSettings(settingsFor(live, 'progressive')).nfx?.webrtc).toBe(false);
+    // Every other play keeps the STUN address nothing answers.
+    expect(parseStoredSettings(settingsFor(PLAY, 'webrtc')).nfx?.stunServers).toEqual([
+      UNANSWERED_STUN,
+    ]);
   });
 
   it('follows the renderer’s own Watch route of the root’s video', () => {

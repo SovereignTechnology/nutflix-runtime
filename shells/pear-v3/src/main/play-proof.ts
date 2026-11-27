@@ -8,7 +8,8 @@
  *
  *   1. stores the viewer's settings as the Settings screen stores them: the root's relay as the
  *      network's relay, and WebRTC off (then on, with that relay for signaling and a STUN address
- *      nothing answers on), and loads the page again so that the renderer reads them;
+ *      nothing answers on; for a play on public relays, the real-host proof's, the renderer's
+ *      default STUN), and loads the page again so that the renderer reads them;
  *   2. follows the renderer's own link route to the root's video, `#/watch/<address>`;
  *   3. presses "Play — free";
  *   4. measures the `<video>`: its media time, Chromium's own frame counts
@@ -25,6 +26,7 @@
  * Only a test build bundles it: any other root's main gets `play-proof-off.ts` in its place
  * (`packaging/stage.ts`), and must not hold this module's own words (`PLAY_PROOF_WORDS`).
  */
+import { DEFAULT_STUN_SERVERS } from '../../../../packages/renderer/src/settings/defaults.ts';
 import type { PlayProof } from '../update/root.ts';
 import type { Fields } from './log.ts';
 import { APP_URL } from './schemes.ts';
@@ -35,6 +37,22 @@ export const SETTINGS_KEY = 'nutflix.runtime.settings.v1';
 export const NFX_NETWORK = 'nfx:testnet:1';
 /** A STUN address on loopback that nothing answers: WebRTC on, and no address leaves the machine. */
 export const UNANSWERED_STUN = '127.0.0.1:9';
+
+/**
+ * A play on public relays: only a test root on the public DHT may name them (`src/update/root.ts`,
+ * the real-host proof, never CI), and then every one of them is a `wss://` origin.
+ */
+export function isPublicPlay(play: PlayProof): boolean {
+  return play.relays.every((u) => u.startsWith('wss://'));
+}
+
+/**
+ * The STUN servers a play's WebRTC path uses: for a public play, the renderer's defaults, as a
+ * viewer's app has them (its peers are out there); for every other play, `UNANSWERED_STUN`.
+ */
+export function stunFor(play: PlayProof): readonly string[] {
+  return isPublicPlay(play) ? [...DEFAULT_STUN_SERVERS] : [UNANSWERED_STUN];
+}
 /** How long each play is watched once it plays, ms. */
 export const MEASURE_MS = 6_000;
 /** The button the Watch page shows for a free NFX video (`@sovit/ui`). */
@@ -55,7 +73,7 @@ export function settingsFor(play: PlayProof, path: PlayPath): string {
         scopedRelays: [...play.relays],
         webrtc: path === 'webrtc',
         meshRelays: [...play.relays],
-        stunServers: [UNANSWERED_STUN],
+        stunServers: [...stunFor(play)],
       },
     },
   });
