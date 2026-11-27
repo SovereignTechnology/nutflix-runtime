@@ -18,15 +18,17 @@ UI, playing free NFX videos that the [worker](../worker/README.md) fetches over 
   dialog.
 - **Nostr** runs here, over the browser's WebSocket, with core's own catalogue (`NfxCatalog`),
   NIP-11-aware search (`RelaySearchSupport`) and live beacon watch (`NfxBeaconWatch`: beacons are
-  ephemeral, so they need a live subscription). The default relays are the desktop app's:
-  `wss://relay.nutflix.xyz` (the scoped relay) first, then four public read relays.
+  ephemeral, so they need a live subscription). The default relays are `wss://relay.nutflix.xyz`
+  (the scoped relay) first, then two public relays, `wss://relay.primal.net` and
+  `wss://relay.ditto.pub`, each read and write. That is the desktop app's list at the pinned commit
+  without `relay.damus.io` and `nos.lol`.
 - **Playback** (ADR decision 4). The `t: 'hyperdht'` endpoints of verified beacons go to the
   worker's `nfx.play.open`, and then one of two paths plays:
-  - **The WebRTC player**, when the probe passed and the viewer has not switched WebRTC off: nfx's
-    web player (hls.js, p2p-media-loader, `nfx_wasm`) with the worker's loopback origin as its one
-    origin, and a mesh signaled over Nostr (NFX-10 §6) that reaches browsers and
-    `nfxd --mesh-relay`. If it fails to start or stops with a fatal error, the same `<video>` goes
-    on from the worker's progressive stream.
+  - **The WebRTC player**, when the probe passed and the viewer has not switched WebRTC off: the
+    nutflix (formerly nfx) web player (hls.js, p2p-media-loader, `nfx_wasm`) with the worker's
+    loopback origin as its one origin, and a mesh signaled over Nostr (NFX-10 §6) that reaches
+    browsers and `nutflixd --mesh-relay` (`nfxd` before its 0.1.5). If it fails to start or stops
+    with a fatal error, the same `<video>` goes on from the worker's progressive stream.
   - **The hyper-only path:** `progressiveUrl` in a plain `<video>`.
 
   Leaving the page closes the session.
@@ -38,8 +40,10 @@ UI, playing free NFX videos that the [worker](../worker/README.md) fetches over 
 
 The renderer reaches the worker through a `WorkerPipe` (`src/worker/pipe.ts`): a framed byte
 duplex, the 4-byte-length JSON frames of the worker's protocol. Each shell supplies one. The bundle
-(`dist/app`) finds it on `globalThis.nutflixWorkerPipe`, set before the page's script runs, and
-optionally `globalThis.nutflixOpenLink(url)`, which receives an `https:` link a viewer clicked.
+(`dist/app`) finds it on `globalThis.nutflixWorkerPipe`, set before the page's script runs. Two
+more globals are optional: `globalThis.nutflixOpenLink(url)`, which receives an `https:` link a
+viewer clicked, and `globalThis.nutflixWatchOnly = true`, which a shell with no seeding, publishing
+or signer sets (shape (b)); the renderer then shows none of those controls and calls none.
 The shell sends `init` before it hands the pipe over: a renderer never names a path for the worker
 to write.
 
@@ -73,7 +77,8 @@ cannot read or open: only the native Account menu opens it, and this page only p
   `blob:`; `connect-src` is `wss:` relays, `https:` (the viewer's relays' NIP-11 documents and
   signed images: the hosts are the viewer's, and each is checked by `isPublicHost`), loopback and
   `blob:`. What the WebRTC player added, and why:
-  - `script-src 'wasm-unsafe-eval'`: compiles nfx's WASM verifier. JavaScript `eval` stays refused.
+  - `script-src 'wasm-unsafe-eval'`: compiles nutflix's WASM verifier. JavaScript `eval` stays
+    refused.
   - `media-src blob:`: hls.js plays through a `MediaSource`, whose URL is a `blob:`.
   - `connect-src blob:`: the library's `init` fetches the WASM from a URL, so it is handed a `blob:`
     of the bytes this page has already checked against the pin. No new host of any kind.
@@ -95,8 +100,8 @@ cannot read or open: only the native Account menu opens it, and this page only p
 
 ## The pinned library
 
-`nfx-web.lock` pins nfx's web library by commit, source sha256 and tar sha256. The tar is committed
-(`pinned/`), `scripts/build.ts` refuses any other bytes, and the `nfx-lib` job of
+`nfx-web.lock` pins nutflix's web library by commit, source sha256 and tar sha256. The tar is
+committed (`pinned/`), `scripts/build.ts` refuses any other bytes, and the `nfx-lib` job of
 `.github/workflows/webrtc.yml` rebuilds it from the pinned source and compares. The lock says why.
 Nothing is loaded from a CDN.
 
@@ -108,14 +113,17 @@ Nothing is loaded from a CDN.
 | `src/adapter/adapter.ts` | `RuntimeNetworkAdapter` | `adapter/web-adapter.ts`, `playNfx` rewritten for the worker |
 | `src/adapter/endpoints.ts` | the verified `hyperdht` endpoints of beacons | `adapter/endpoints.ts`, for `https` origins |
 | `src/adapter/session.ts` | one hyper-only play: a `url` source, closed through the worker | new |
-| `src/adapter/webrtc-session.ts` | one play through nfx's player, with the runtime fallback | `adapter/session.ts`, adapted |
-| `src/player/*` | the library's API as used here; its loader (sha256, SRI, `init`) | `nfx-lib.ts`, `site/entry.ts` |
+| `src/adapter/webrtc-session.ts` | one play through nutflix's player, with the runtime fallback | `adapter/session.ts`, adapted |
+| `src/player/*` | the library's API as used here; its loader (sha256, SRI, `init`) | `nfx-lib.ts`; `packages/app-web/site/entry.ts` |
 | `src/adapter/{images,address,wallet}.ts`, `src/net/*`, `src/shell/routes.ts` | signed images, NFX addresses, no wallet, bounded HTTP, hosts, hash routes | the same files, renamed |
-| `src/settings/*` | defaults (the desktop app's), the checks, Web Storage, what WebRTC's settings mean and the line Settings shows; the sandbox section (`sandbox-choice.ts`, new) | `settings/*`, trimmed |
+| `src/settings/*` | defaults (the desktop app's, but for the general relays), the checks, Web Storage, what WebRTC's settings mean and the line Settings shows; the sandbox section (`sandbox-choice.ts`, new) | `settings/*`, trimmed |
+| `src/seeding/*` | Settings › Seeding and publishing: the controller (beacons, seed what you watch, publish), its panel, and the tap that hands WebRTC-verified files to the worker | new |
 | `src/shell/offer.ts` | what the shell offers | `shell/offer.ts` |
 | `src/worker/pipe.ts` | `WorkerPipe`, `WorkerLink` over the worker's `WorkerClient` | new |
 | `src/links.ts`, `src/probe.ts` | the `https:` gate and click guard; the capability probe | new |
-| `scripts/build.ts`, `scripts/nfx-lib.ts`, `index.html` | the bundle, with SRI and the policy; the pinned library, checked | `scripts/build-site.ts`, `scripts/csp-sri.mjs` (reused) |
+| `src/update-banner.ts`, `src/update-text.ts` | the update status main sends, shown as fixed text | new |
+| `src/errors.ts` | how the adapter fails: a code, and a message in this client's own words | `errors.ts`, adapted |
+| `scripts/build.ts`, `scripts/policy.ts`, `scripts/nfx-lib.ts`, `scripts/nfx-lib.sh`, `index.html` | the bundle, with SRI and the policy; the pinned library, checked, and the tool that builds and re-pins it | `packages/app-web/scripts/build-site.ts` and `nfx-lib.sh`; the repository's `scripts/csp-sri.mjs` (reused) |
 
 ## Tests
 
@@ -127,9 +135,15 @@ as root). It runs with `RTCPeerConnection` and WebAssembly removed: the fallback
 own job.
 
 `npm run test:netns` (`e2e/netns/`, the `webrtc` workflow) is the real WebRTC path: two viewers,
-then a viewer and `nfxd --mesh-relay`, through a stock strfry, on the player's default scheduling.
+then a viewer and `nfxd --mesh-relay` at the pinned commit, through a stock strfry, on the player's
+default scheduling.
 A viewer must play past segments its own seeder was never asked for, which can have come only over
 WebRTC, with a sha256 check on what reached the `SourceBuffer`s. The candidate filter refuses loopback, so these run in three Linux network
 namespaces joined by a bridge, with global-looking addresses and no way out; a firewall rule in
 each one counts anything that tries to leave, and the job fails unless that is zero. No switch in
 the product exists for this.
+
+`npm run test:publish` (`e2e/publish/`, the `seed-publish` workflow) is seed and publish for real:
+the built worker under the real Bare runtime behind the shell's gate, the built bundle in a real
+Chrome, the system's ffmpeg, a stock strfry and a hyperdht testnet, in a network namespace with
+loopback alone.

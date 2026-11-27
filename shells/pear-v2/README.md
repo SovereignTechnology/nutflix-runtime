@@ -40,14 +40,16 @@ A SovTech release is announced by a Nostr event of kind 30071 with the tag `d = 
 signed by the release key
 `83d8bce2f7d6966f306e6f1a712497cf0a2c77d073923136a0e2bb54963b3434` (hex; `RELEASE_PUBKEY` in
 [`shells/pear-v3/packaging/update-root.ts`](../pear-v3/packaging/update-root.ts)) and published to
-`wss://relay.nutflix.xyz`, `wss://relay.primal.net` and `wss://relay.ditto.pub`. Its `verlink` tag
-is the versioned link, and its other tags are `version` and one `artifact` per package
-([`shells/pear-v3`'s README](../pear-v3/README.md#what-counts-as-a-notice) has the format).
+`wss://relay.primal.net` and `wss://relay.ditto.pub`. It is also sent to `wss://relay.nutflix.xyz`,
+which is expected to refuse this kind ([`docs/release.md`](../../docs/release.md#the-notice)). Its
+`verlink` tag is the versioned link. The app also reads `version` and one `artifact` per package,
+and the notice carries `commit`, `x`, `files` and `size` as well, as nutflix-pear's release notices
+do ([`shells/pear-v3`'s README](../pear-v3/README.md#what-counts-as-a-notice) has the format).
 
 Before you run a link, fetch that event with any Nostr tool, check that its id and signature verify
 and that its author is that key (for example `nak req -k 30071 -a <key> -t d=nutflix-runtime
-wss://relay.nutflix.xyz`, then `nak verify`), and run exactly its `verlink`. Take the newest such
-event: kind 30071 is replaceable, so relays keep one per author and `d` tag.
+wss://relay.primal.net wss://relay.ditto.pub`, then `nak verify`), and run exactly its `verlink`.
+Take the newest such event: kind 30071 is replaceable, so relays keep one per author and `d` tag.
 
 **No notice for a shape (b) build exists yet.** The notices this format describes name shape (a)'s
 Pear v3 builds. Because a relay keeps only the newest event per `d` tag, a shape (b) notice could not

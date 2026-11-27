@@ -3,16 +3,19 @@
 A Pear-native Nutflix: a peer-to-peer video app that lives on the Pear network. It is installed
 from a `pear://` link and updates itself from that same link. There is no download server.
 
-**Status: pre-alpha.** Nothing here runs yet. The design is in
-[ADR 0001](docs/decisions/0001-a-pear-native-nutflix.md), and the spikes that gate it are in
-[`docs/spikes/`](docs/spikes/).
+**Status: pre-alpha.** The worker, the renderer and both shells are in the tree. CI packages the
+Pear v3 app on five targets, launches it, installs it with `pear install` and plays a video in it.
+Nothing is released yet: there is no production `pear://` link. The design is in
+[ADR 0001](docs/decisions/0001-a-pear-native-nutflix.md), the spikes behind it are in
+[`docs/spikes/`](docs/spikes/), and the release runbook is [`docs/release.md`](docs/release.md).
 
 ## What it is for
 
 - **Watch free NFX videos** seeded by [nutflix-pear](https://github.com/SovereignTechnology/nutflix-pear)
   desktop apps, over HyperDHT (NFX-12) natively in the app's Bare worker.
-- **Trade video with web browsers and nfxd** over WebRTC, signaled over Nostr (NFX-10 §6). This
-  runs in the app's Chromium window, and is the same player as the web client.
+- **Trade video with web browsers and nutflixd** (`nfxd` before its 0.1.5) over WebRTC, signaled
+  over Nostr (NFX-10 §6). This runs in the app's Chromium window, and is the same player as the web
+  client.
 - **Fall back to HyperDHT alone** where the runtime has no WebRTC, WebAssembly or Media Source
   Extensions.
 - **Seed what it plays, and publish** new videos from the app.
@@ -43,8 +46,8 @@ with deployed seeders.
 
 ## Layout
 
-- `vendor/nutflix-pear`: nutflix-pear, a git submodule pinned to one commit. Its `core` and
-  `seeder` packages are npm workspaces here, built from source.
+- `vendor/nutflix-pear`: nutflix-pear, a git submodule pinned to one commit. Its `core`, `seeder`
+  and `ui` packages are npm workspaces here, built from source.
 - `packages/worker`: the Bare worker, the data plane. Its protocol is in
   [its README](packages/worker/README.md).
 - `packages/renderer`: the Chromium renderer, nutflix-pear's UI over a worker pipe. See
