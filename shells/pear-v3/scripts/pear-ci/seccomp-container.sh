@@ -61,18 +61,19 @@ kill "$x" 2>/dev/null
 exit "$rc"'
 
 # smoke.ts <mode> in a fresh container, stopped after 7 minutes whatever it is doing. Any options
-# before the mode go to `docker run`.
+# before the mode go to `docker run`. The client forwards SIGTERM to the container's first process,
+# which ignores it, so the client is killed 30 s later and the container removed by name.
 in_container() {
   local mode=${*: -1}
   local opts=("${@:1:$#-1}")
   local name="nutflix-$mode-$$"
   local rc=0
   echo "== $mode${opts[*]:+ (${opts[*]})}"
-  timeout 420 docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
+  timeout -k 30 420 docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
     --shm-size 1g -v "$repo:$repo:ro" -v "$node_dir:$node_dir:ro" \
     -v "$file:/nutflix/Nutflix.AppImage:ro" -e HOME=/tmp -e PATH="$node_dir/bin:/usr/bin:/bin" \
     -w "$repo" "${opts[@]}" "$image" sh -c "$inner" "$mode" || rc=$?
-  if [ "$rc" = 124 ]; then
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
     echo "$mode: no verdict in 420 s" >&2
     docker rm -f "$name" >/dev/null 2>&1 || true
   fi
