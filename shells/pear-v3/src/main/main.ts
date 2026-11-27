@@ -676,7 +676,11 @@ function rendererSandbox(wc: WebContents): RendererSandbox {
   const pid = wc.getOSProcessId();
   if (process.platform !== 'linux') return fromMetrics(app.getAppMetrics(), pid);
   try {
-    return fromProcStatus(readFileSync(`/proc/${String(pid)}/status`, 'utf8'));
+    // Main is the browser process: a filter it has too was not put there by Chromium's sandbox.
+    return fromProcStatus(
+      readFileSync(`/proc/${String(pid)}/status`, 'utf8'),
+      readFileSync('/proc/self/status', 'utf8'),
+    );
   } catch {
     return 'unknown';
   }

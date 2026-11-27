@@ -212,7 +212,8 @@ The maintainer's decisions after [S1](../spikes/S1-pear-v2-pin.md) and
      app's own connections (the worker in both shapes, and shape (a)'s updater), not Pear's
      sidecar.
 2. **Without Chromium's sandbox, the app runs only if the user chooses to (shape a).** The AppImage's
-   `AppRun` adds `--no-sandbox` only when the kernel limits user namespaces and Chromium itself then
+   `AppRun` adds `--no-sandbox` only when user namespaces look out of reach (a kernel setting limits
+   them, or making them fails, as under a container's seccomp profile) and Chromium itself then
    reports that its sandbox cannot start, because Chromium would otherwise abort before app code.
    The main process detects the switch before any window opens and shows a warning, with Quit as
    the default and "Run anyway" as the choice. The choice is stored per install and can be revoked

@@ -242,9 +242,11 @@ them in CI, and no test drives the native message boxes.
 ### Without Chromium's sandbox (amendment, item 2)
 
 Main never adds `--no-sandbox`. The AppImage's launcher (`packaging/apprun.ts`) passes it in one
-case: the kernel limits user namespaces, as stock Ubuntu 24.04 and later do, **and** Chromium itself
-then reports that its sandbox cannot start. Without that, Chromium would abort before any app code
-and the user would never see a warning. If the switch is on the command line, main shows a native warning before any window and before the worker:
+case: the user namespaces Chromium's sandbox needs look out of reach, **and** Chromium itself then
+reports that its sandbox cannot start. They look out of reach when a kernel setting limits them, as
+stock Ubuntu 24.04 and later do, or when making them fails, as in a container whose seccomp profile
+refuses them (Docker's default), where no setting says so. Without that, Chromium would abort before
+any app code and the user would never see a warning. If the switch is on the command line, main shows a native warning before any window and before the worker:
 **Quit is the default** (Enter, Escape and closing the box all quit); "Run anyway" is the choice. It
 is stored in `<userData>/sandbox-consent.json`, and a red banner stays at the top of the window
 while the sandbox is off (the title says so too). Two things forget the choice, so that the next
@@ -299,8 +301,9 @@ than 1.29.4 (`smoke.ts bare`).
 3. the packaged app is launched with no switch, and prints `NUTFLIX_SHELL_READY {…}`: **the window
    loaded `app://nutflix`, the renderer mounted in it, the worker answered main's `status`, the
    page's own `status` came back through the preload, main's gate and the worker (`pipe`), and the
-   OS is confining the renderer** (`rendererSandbox`: seccomp on Linux, Electron's process metrics
-   on macOS and Windows). Every build prints this line; no switch makes it
+   OS is confining the renderer** (`rendererSandbox`: on Linux, a seccomp filter that the browser
+   process does not have, so a container's own filter does not count; Electron's process metrics on
+   macOS and Windows). Every build prints this line; no switch makes it
    print. The line must also show the WebRTC IP policy as Chromium reports it for this window
    (`default_public_interface_only`) and that the renderer's whole WebRTC player probe passed: the
    pinned nfx library loaded through `app:` under the real policy, and its WASM verifier started.
@@ -498,7 +501,11 @@ The AppImage carries this repository's patched type-2 runtime
 - The sandbox needs unprivileged user namespaces, because the AppImage's `chrome-sandbox` is not
   setuid. CI runs the AppImage twice with Ubuntu 24.04's restriction still on (it must reach the
   warning, and after "Run anyway" it must run with the sandbox off), then lifts the restriction on
-  its throwaway runner and requires an OS-enforced sandbox.
+  its throwaway runner and requires an OS-enforced sandbox. It then runs it three times in containers
+  with no network (`scripts/pear-ci/seccomp-container.sh`). Under Docker's default seccomp profile,
+  which refuses the namespaces with no setting to say so, it must reach the warning, and after "Run
+  anyway" run with its renderer read as not confined. Under a filter that allows them, the sandbox
+  must start and the renderer must read as confined.
 
 ## Layout
 

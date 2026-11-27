@@ -163,12 +163,34 @@ describe('external links', () => {
 });
 
 describe('what the OS is doing to the renderer', () => {
-  it('reads seccomp on Linux, and only filter mode counts', () => {
-    expect(fromProcStatus('Name:\tNutflix\nSeccomp:\t2\nSeccomp_filters:\t3\n')).toBe('enforced');
-    expect(fromProcStatus('Seccomp:\t0\n')).toBe('absent');
-    expect(fromProcStatus('Seccomp:\t1\n')).toBe('absent');
-    expect(fromProcStatus('Seccomp_filters:\t2\n')).toBe('unknown');
-    expect(fromProcStatus('')).toBe('unknown');
+  const status = (mode: number, filters?: number): string =>
+    `Name:\tNutflix\nSeccomp:\t${String(mode)}\n${filters === undefined ? '' : `Seccomp_filters:\t${String(filters)}\n`}Speculation_Store_Bypass:\tthread vulnerable\n`;
+
+  it("reads seccomp on Linux: a filter counts only when it is Chromium's, not the browser's too", () => {
+    // A desktop: the browser has no filter; the sandbox gave the renderer one.
+    expect(fromProcStatus(status(2, 1), status(0, 0))).toBe('enforced');
+    expect(fromProcStatus(status(2, 3), status(0, 0))).toBe('enforced');
+    // In a container whose runtime filters every process, with the sandbox on top.
+    expect(fromProcStatus(status(2, 2), status(2, 1))).toBe('enforced');
+    // The same container under --no-sandbox: the renderer has only the container's filter.
+    expect(fromProcStatus(status(2, 1), status(2, 1))).toBe('absent');
+    expect(fromProcStatus(status(2, 1), status(2, 2))).toBe('absent');
+    // --no-sandbox on a desktop, and strict mode, which is not Chromium's.
+    expect(fromProcStatus(status(0, 0), status(0, 0))).toBe('absent');
+    expect(fromProcStatus(status(1, 0), status(0, 0))).toBe('absent');
+  });
+
+  it('with no filter count (before Linux 5.9), trusts a filter only when the browser has none', () => {
+    expect(fromProcStatus(status(2), status(0))).toBe('enforced');
+    expect(fromProcStatus(status(2), status(2))).toBe('unknown');
+    expect(fromProcStatus(status(2, 1), status(2))).toBe('unknown');
+    expect(fromProcStatus(status(0), status(2))).toBe('absent');
+  });
+
+  it('is unknown when it cannot read a mode', () => {
+    expect(fromProcStatus('Seccomp_filters:\t2\n', status(0, 0))).toBe('unknown');
+    expect(fromProcStatus('', status(0, 0))).toBe('unknown');
+    expect(fromProcStatus(status(2, 1), '')).toBe('unknown');
   });
 
   it("reads Electron's metrics for that process only", () => {

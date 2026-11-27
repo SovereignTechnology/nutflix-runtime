@@ -296,6 +296,14 @@ jobs:
       - name: no FUSE tools, the AppImage runs from a private extraction, with the notice (Xvfb)
         if: matrix.platform == 'linux'
         run: xvfb-run -a node "$SMOKE" no-fuse --file "$LAUNCH_OUT/make/appimage/$ARCH/Nutflix.AppImage" --timeout 180
+      # ADR 0001 amendment, item 2, where no kernel setting says so: in a container whose seccomp
+      # profile refuses user namespaces (Docker's default), the AppImage must reach the warning, and
+      # after "Run anyway" it must run and read its renderer as NOT confined, though Docker's filter
+      # is on every process there. With a filter that allows the namespaces, the sandbox must start
+      # and read as confined. No network in the containers. After the lift above, on purpose.
+      - name: a container's seccomp filter refuses user namespaces, the AppImage reaches the warning (Docker, Xvfb)
+        if: matrix.platform == 'linux'
+        run: bash shells/pear-v3/scripts/pear-ci/seccomp-container.sh "$LAUNCH_OUT/make/appimage/$ARCH/Nutflix.AppImage"
       - name: launch the packaged .app; the window loads and the worker answers
         if: matrix.platform == 'darwin'
         run: node "$SMOKE" ready --exe "$LAUNCH_OUT/Nutflix-$PLATFORM-$ARCH/Nutflix.app/Contents/MacOS/Nutflix"

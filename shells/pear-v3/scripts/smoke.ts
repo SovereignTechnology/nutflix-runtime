@@ -12,6 +12,9 @@
  *   node scripts/smoke.ts no-fuse  --file <file>                 no fusermount: private extraction, the notice once
  *   node scripts/smoke.ts stock-warning   --file <file>          restricted kernel, no stored choice: the warning
  *   node scripts/smoke.ts stock-consented --file <file>          restricted kernel, "Run anyway" stored: runs, sandbox off
+ *   node scripts/smoke.ts seccomp-warning   --file <file>        a seccomp filter refuses user namespaces: the warning
+ *   node scripts/smoke.ts seccomp-consented --file <file>        the same, "Run anyway" stored: runs, sandbox off
+ *   node scripts/smoke.ts seccomp-sandboxed --file <file>        a seccomp filter that allows them: runs, sandbox on
  *   node scripts/smoke.ts msix     --file <file>                 `makeappx unpack`, then `ready` on app/Nutflix.exe
  *   node scripts/smoke.ts bare     --app <resources/app dir> --platform p --arch a
  *
@@ -40,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 import { EVENT_PREFIX, READY_PREFIX } from '../src/shared/ids.ts';
 import { APP, MIN_BARE, bareBinary } from '../packaging/identity.ts';
+import { USERNS_LIMITS, USERNS_PROBE } from '../packaging/apprun.ts';
 import { CONSENT_FILE } from '../src/main/sandbox-gate.ts';
 import { makeAppx } from '../packaging/windows-kit.ts';
 import { describe, processTable, stillRunning, treeOf, type Proc } from './processes.ts';
@@ -619,13 +623,47 @@ function assertRestricted(): void {
   if (v !== '1') throw new Error(`this kernel does not restrict user namespaces (${v})`);
 }
 
+/**
+ * Refuses a machine that is not what the seccomp checks are about: every process here under a
+ * seccomp filter that is not Chromium's (a container's), no kernel setting reporting a limit on user
+ * namespaces, and the namespaces the sandbox needs refused or allowed, as `userns` says. With a
+ * setting reporting a limit, AppRun would ask Chromium because of it, and the run would prove
+ * nothing about the filter.
+ */
+function assertFiltered(userns: 'refused' | 'allowed'): void {
+  const mode = /^Seccomp:\s*(\d+)\s*$/m.exec(readFileSync('/proc/self/status', 'utf8'))?.[1];
+  if (mode !== '2')
+    throw new Error(`this process is under no seccomp filter (Seccomp: ${String(mode)})`);
+  for (const [file, limited] of USERNS_LIMITS) {
+    let v: string;
+    try {
+      v = readFileSync(file, 'utf8').trim();
+    } catch {
+      continue;
+    }
+    if (v === limited) throw new Error(`a kernel setting limits user namespaces (${file} is ${v})`);
+  }
+  const [cmd = '', ...args] = USERNS_PROBE;
+  const probe = spawnSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (probe.error !== undefined) throw new Error(`no ${cmd} here: ${probe.error.message}`);
+  const got = probe.status === 0 ? 'allowed' : 'refused';
+  if (got !== userns)
+    throw new Error(
+      `the namespaces the sandbox needs are ${got} here, not ${userns} (${probe.stderr.trim().slice(0, 200)})`,
+    );
+  process.stdout.write(
+    `SMOKE   here: a seccomp filter on every process, no kernel limit, user namespaces ${got}\n`,
+  );
+}
+
 /** A launch with its own empty config directory, holding a stored "Run anyway" if asked. */
 async function stockLaunch(
   file: string,
   consented: boolean,
   timeout: number,
+  premise: () => void = assertRestricted,
 ): Promise<LaunchResult> {
-  assertRestricted();
+  premise();
   const dir = mkdtempSync(join(tmpdir(), 'shell-v3-config-'));
   try {
     if (consented) {
@@ -654,9 +692,10 @@ const NOTICE_EVENT = 'fuse-notice-shown';
 const SMOKE_ARGUMENT = 'nutflix-smoke-argument';
 
 /**
- * The real AppImage with no `fusermount` on PATH (AppRun's three tools only), twice, in its own
- * config and cache: the first start extracts privately and shows the notice; the second reuses the
- * extraction and does not show it again.
+ * The real AppImage with no `fusermount` on PATH (AppRun's three tools only), in its own config and
+ * cache: the first start extracts privately and shows the notice; the second reuses the extraction
+ * and does not show it again; the third has an argument. With no `unshare` on PATH either, AppRun
+ * asks Chromium first, and a sandbox that starts must let each start go on as usual.
  */
 async function noFuse(file: string, timeout: number): Promise<number> {
   const dir = mkdtempSync(join(tmpdir(), 'shell-v3-nofuse-'));
@@ -743,6 +782,36 @@ export async function main(argv: readonly string[]): Promise<number> {
       report('stock kernel: after Run anyway', r);
       return r.ok ? 0 : 1;
     }
+    // No kernel setting says so, but a seccomp filter (Docker's default profile) refuses the user
+    // namespaces: AppRun must still find out, and the renderer must not read as confined because of
+    // the container's own filter.
+    case 'seccomp-warning': {
+      const r = await stockLaunch(resolve(need(rest, '--file')), false, timeout, () => {
+        assertFiltered('refused');
+      });
+      report('seccomp filter, no user namespaces: the warning', r);
+      return r.ok ? 0 : 1;
+    }
+    case 'seccomp-consented': {
+      const r = await stockLaunch(resolve(need(rest, '--file')), true, timeout, () => {
+        assertFiltered('refused');
+      });
+      report('seccomp filter, no user namespaces: after Run anyway', r);
+      return r.ok ? 0 : 1;
+    }
+    // A filter that allows them: the sandbox starts, and reads as confined, main's filter or not.
+    case 'seccomp-sandboxed': {
+      assertFiltered('allowed');
+      const dir = mkdtempSync(join(tmpdir(), 'shell-v3-config-'));
+      try {
+        const env = { ...process.env, XDG_CONFIG_HOME: dir };
+        const r = await launch(resolve(need(rest, '--file')), [], 'ready', timeout, { env });
+        report('seccomp filter, user namespaces allowed: the sandbox on', r);
+        return r.ok ? 0 : 1;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
     case 'msix': {
       const file = resolve(need(rest, '--file'));
       const dir = mkdtempSync(join(tmpdir(), 'shell-v3-msix-'));
@@ -788,7 +857,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     case undefined:
     default:
-      process.stderr.write('usage: smoke.ts <ready|warning|appimage|msix|bare> …\n');
+      process.stderr.write(
+        'usage: smoke.ts <ready|warning|appimage|no-fuse|stock-…|seccomp-…|msix|bare> …\n',
+      );
       return 2;
   }
 }

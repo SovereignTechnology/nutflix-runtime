@@ -4,7 +4,7 @@
  * `promptSender`, `PromptHost`, the real preload and the real page. Only the worker and the native
  * message box are stand-ins. It checks, from outside the page:
  *
- *   - the renderer process is under a seccomp-bpf filter;
+ *   - the renderer process is under a seccomp-bpf filter of Chromium's own, which main does not have;
  *   - the page's world has no Node, no Electron and nothing from the preload;
  *   - the page's policy refuses fetch, WebSocket, inline script, eval and images;
  *   - a value sent on the prompt's channel by ANOTHER window is dropped;
@@ -549,6 +549,7 @@ async function run(v: ProofVerdict): Promise<void> {
 
   const sandbox = fromProcStatus(
     readFileSync(`/proc/${String(wc.getOSProcessId())}/status`, 'utf8'),
+    readFileSync('/proc/self/status', 'utf8'),
   );
   v.check('rendererSandboxed', sandbox === 'enforced', `the renderer's sandbox is ${sandbox}`);
   v.check('modal', win?.isModal() === true, 'the window is not modal');
